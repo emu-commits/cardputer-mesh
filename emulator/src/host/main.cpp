@@ -16,6 +16,7 @@
 #include "core/mesh.h"
 #include "core/stub_mesh.h"
 #include "host/bridge_mesh.h"
+#include "host/file_store.h"
 #include "host/host_unix.h"
 
 using namespace ui;
@@ -60,10 +61,13 @@ int main(int argc, char** argv) {
     mgr.reg("chat", "Mesh chat", apps::make_chat);
     mgr.reg("nodes", "Nodes", apps::make_node_list);
 
+    host::FileStore state("emu_state.dat"); // return-to-last-position (ARCHITECTURE §6)
+
     app::AppContext ctx;
     ctx.apps = &mgr; ctx.mesh = &meshf; ctx.store = &store; ctx.notify = &notify;
+    ctx.state = &state;
     ctx.now_ms = host::now_ms();
-    mgr.start("launcher", ctx);
+    mgr.restore_session(ctx); // resume last app, else launcher
 
     TextCanvas cyd(CYD_W, CYD_H), bar(CYD_W, BAR_H);
     TextCanvas composite(CYD_W, CYD_H + 1 + BAR_H);
@@ -142,6 +146,7 @@ int main(int argc, char** argv) {
         usleep(33000);
     }
 
+    mgr.shutdown(ctx); // persist current app + resume tokens
     input.stop();
     term.on_stop();
     if (cyd_pty && cyd_pty->ok()) cyd_pty->on_stop();

@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 #include "core/input.h"
+#include "core/persist.h"
 #include "core/text_canvas.h"
 
 namespace mesh { class MeshFacade; class MessageStore; }
@@ -24,6 +25,7 @@ struct AppContext {
     mesh::MeshFacade* mesh = nullptr;
     mesh::MessageStore* store = nullptr;
     nc::NotificationCenter* notify = nullptr;
+    persist::Store* state = nullptr;
     uint32_t now_ms = 0;
 };
 
@@ -50,6 +52,8 @@ public:
     std::vector<std::pair<std::string, std::string>> list() const;
 
     void start(const std::string& id, AppContext& ctx);
+    void restore_session(AppContext& ctx); // resume the saved app, else launcher
+    void shutdown(AppContext& ctx);        // persist current app + flush on exit
     void request_switch(const std::string& id);
     void apply_pending(AppContext& ctx);
 

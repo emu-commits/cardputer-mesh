@@ -10,3 +10,4 @@ cyd_pty.path
 # editor / OS
 *.swp
 .DS_Store
+emu_state.dat

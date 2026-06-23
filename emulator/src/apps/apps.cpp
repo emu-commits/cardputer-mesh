@@ -28,6 +28,14 @@ static std::string hhmm(uint32_t ts_ms) {
 // ---- Launcher --------------------------------------------------------------
 class Launcher : public App {
 public:
+    void on_create(AppContext& ctx) override {
+        if (ctx.state) sel_ = ctx.state->get_int("launcher.sel", 0);
+        int n = (int)ctx.apps->list().size();
+        if (sel_ < 0 || sel_ >= n) sel_ = 0;
+    }
+    void on_pause(AppContext& ctx) override {
+        if (ctx.state) ctx.state->set_int("launcher.sel", sel_);
+    }
     bool on_key(AppContext& ctx, const KeyEvent& k) override {
         auto items = ctx.apps->list();
         if (k.key == Key::Up && sel_ > 0) sel_--;
@@ -58,7 +66,13 @@ private:
 // ---- Chat ------------------------------------------------------------------
 class Chat : public App {
 public:
-    void on_create(AppContext& ctx) override { if (ctx.notify) ctx.notify->mark_read(); }
+    void on_create(AppContext& ctx) override {
+        if (ctx.notify) ctx.notify->mark_read();
+        if (ctx.state) scroll_ = ctx.state->get_int("chat.scroll", 0);
+    }
+    void on_pause(AppContext& ctx) override {
+        if (ctx.state) ctx.state->set_int("chat.scroll", scroll_);
+    }
 
     bool on_key(AppContext& ctx, const KeyEvent& k) override {
         if (k.key == Key::Enter) {
@@ -117,6 +131,14 @@ private:
 // ---- Node list -------------------------------------------------------------
 class NodeList : public App {
 public:
+    void on_create(AppContext& ctx) override {
+        if (ctx.state) sel_ = ctx.state->get_int("nodes.sel", 0);
+        int n = (int)ctx.mesh->nodes().size();
+        if (sel_ < 0 || (n > 0 && sel_ >= n)) sel_ = 0;
+    }
+    void on_pause(AppContext& ctx) override {
+        if (ctx.state) ctx.state->set_int("nodes.sel", sel_);
+    }
     bool on_key(AppContext& ctx, const KeyEvent& k) override {
         auto ns = ctx.mesh->nodes();
         if (k.key == Key::Up && sel_ > 0) { sel_--; return true; }

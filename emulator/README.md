@@ -18,6 +18,10 @@ A PC-native dev emulator for the Cardputer ADV mesh communicator firmware
 - **NotificationCenter** — resident background service rendering the built-in
   1.14" screen (status strip + iOS-style notifications). Classifies mesh RX
   (DM / @mention) and accepts calendar/timer/reminder events.
+- **State persistence** (`persist::Store`) — return-to-last-position: the active
+  app + per-app resume tokens are checkpointed on every mode switch and on exit,
+  so a relaunch resumes where you left off. Host backing = a flat `emu_state.dat`;
+  on device = NVS + SD.
 
 ## Layout
 
@@ -103,8 +107,9 @@ diagnostics go to `mesh_bridge.log`, never to the protocol stdout.
 - `src/host/` — POSIX glue (termios raw input, stdout/PTY sinks, monotonic clock).
   Replaced on device by the Plai HAL + UART sink.
 
-## Next (Phase 1 follow-ups)
+## Next
 
-- R1-Neo `MeshFacade` backend (Meshtastic serial API over `/dev/ttyACM*`).
-- Route the CYD frame to `PtyTerminal` (the faithful "CYD on a serial line" sink).
-- State persistence (`session.dat` + resume tokens) per `ARCHITECTURE.md` §6.
+- Build out the app suite: calculator, calcurse (calendar/todo), nano editor/jrnl.
+- Calendar/timer events into the notification center.
+
+Done: R1-Neo real-mesh backend, `--pty` CYD sink, state persistence.

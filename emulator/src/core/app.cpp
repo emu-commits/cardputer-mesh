@@ -36,6 +36,17 @@ void AppManager::request_switch(const std::string& id) {
     has_pending_ = true;
 }
 
+void AppManager::restore_session(AppContext& ctx) {
+    std::string id = ctx.state ? ctx.state->get("session.active", "launcher") : "launcher";
+    if (fac_.find(id) == fac_.end()) id = "launcher";
+    start(id, ctx);
+}
+
+void AppManager::shutdown(AppContext& ctx) {
+    if (cur_) { cur_->on_pause(ctx); cur_->on_destroy(ctx); cur_.reset(); }
+    if (ctx.state) { ctx.state->set("session.active", cur_id_); ctx.state->flush(); }
+}
+
 void AppManager::apply_pending(AppContext& ctx) {
     if (!has_pending_) return;
     has_pending_ = false;
@@ -45,6 +56,8 @@ void AppManager::apply_pending(AppContext& ctx) {
     if (fac_.find(id) == fac_.end()) return;
     if (cur_) { cur_->on_pause(ctx); cur_->on_destroy(ctx); }
     start(id, ctx);
+    // Checkpoint: the just-saved resume tokens (in on_pause) + the new active app.
+    if (ctx.state) { ctx.state->set("session.active", id); ctx.state->flush(); }
 }
 
 void AppManager::handle_key(AppContext& ctx, const ui::KeyEvent& k) {
