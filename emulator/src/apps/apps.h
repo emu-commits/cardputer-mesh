@@ -16,5 +16,9 @@ std::unique_ptr<app::App> make_timer();
 std::unique_ptr<app::App> make_calcurse();
 std::unique_ptr<app::App> make_files();
 std::unique_ptr<app::App> make_contacts();
+std::unique_ptr<app::App> make_settings();
+std::unique_ptr<app::App> make_wizard();
+std::unique_ptr<app::App> make_mesh_status();
+std::unique_ptr<app::App> make_channels();
 
 } // namespace apps

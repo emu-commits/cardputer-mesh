@@ -24,6 +24,8 @@ public:
     uint32_t send_text(uint32_t dest, uint8_t channel, const std::string& text) override;
     void subscribe(mesh::Subscriber cb) override { subs_.push_back(std::move(cb)); }
     void poll(uint32_t now_ms) override;
+    // The connected node is the user's live node; never write config to it.
+    bool config_writable() const override { return false; }
 
 private:
     void handle_line(const std::string& line, uint32_t now_ms);

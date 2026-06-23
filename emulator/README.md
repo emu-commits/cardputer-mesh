@@ -20,7 +20,13 @@ A PC-native dev emulator for the Cardputer ADV mesh communicator firmware
   (countdown presets that fire a notification on expiry — even after you switch
   away), **Files** (mc-style browser over the `fs` seam; enter opens, `v` views
   text with hard-wrapping, `i` info), **Contacts** (abook-style favorites +
-  aliases over the node DB).
+  aliases over the node DB), and the Meshtastic config surface: **Settings**
+  (data-driven groups → items → typed editors, mirroring Plai's settings:
+  LoRa region/preset/slot/hop/TX, owner name/role, security, position, device
+  metrics), **Setup wizard** (guided first-run provisioning; auto-launches on a
+  fresh install), **Mesh status** (read-only identity + radio summary), and
+  **Channels** (primary + secondary channel manager). Config screens go
+  **read-only** when the mesh backend is a live node (`--real`).
 - **`ui_kit`** — the shared widget vocabulary (header/footer chrome, one
   `ListState`+`list()` scrolling-list model, `modal_box` overlays, `input_line`).
   Every app renders through it, enforcing §5.1: one scrolling list per view,
@@ -28,6 +34,10 @@ A PC-native dev emulator for the Cardputer ADV mesh communicator firmware
 - **`fs::FileSystem` + `clip::Clipboard`** — the storage and copy/paste seams.
   Host backings: `UnixFs` (a sandboxed `emu_sd/` tree, auto-seeded) and an
   in-RAM clipboard; on device = SD/LittleFS and the resident 8 KB buffer.
+- **`cfg::Settings`** — the data-driven Meshtastic config model (groups of typed
+  items with options/ranges/`visible_when`), persisted via `persist::Store`. The
+  Settings app + wizard edit it; Mesh status reads it. `MeshFacade::config_writable()`
+  is `false` on the real-node backend so edits never touch the live node.
 - **`MeshFacade` + `StubMesh`** — generates live traffic (DMs, @mentions, channel
   chatter) and auto-replies, so everything animates with no hardware. This is the
   swappable seam: next backend = Muzi R1 Neo over `/dev/ttyACM*` (real RF); on
@@ -129,7 +139,8 @@ diagnostics go to `mesh_bridge.log`, never to the protocol stdout.
 - FZF on-disk index + search (stretch) — the only remaining planned subsystem.
 
 Done: R1-Neo real-mesh backend, `--pty` CYD sink, state persistence, shared
-`ui_kit`, the `fs`/clipboard seams, the app suite (Calc, Calendar/Todo, Editor,
-Timer, Files, Contacts) with calendar/timer events into the notification center,
-and the command palette with per-app context commands + clipboard ops (`^U`
-paste / `^K` cut wired through chat, calc, and the editor).
+`ui_kit`, the `fs`/clipboard/`cfg` seams, the app suite (Calc, Calendar/Todo,
+Editor, Timer, Files, Contacts) with calendar/timer events into the notification
+center, the command palette with per-app context commands + clipboard ops (`^U`
+paste / `^K` cut), and the full Meshtastic config surface (Settings, Setup
+wizard, Mesh status, Channels) with read-only protection for a live node.

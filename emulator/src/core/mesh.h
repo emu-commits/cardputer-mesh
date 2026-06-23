@@ -42,6 +42,9 @@ public:
     virtual uint32_t send_text(uint32_t dest, uint8_t channel, const std::string& text) = 0;
     virtual void subscribe(Subscriber cb) = 0;
     virtual void poll(uint32_t now_ms) = 0; // pump (mirrors MeshService::update())
+    // Whether the device config may be edited. False for a connected real node
+    // we must not reconfigure (e.g. the live R1 Neo) -> config screens read-only.
+    virtual bool config_writable() const { return true; }
 };
 
 // Shared rolling history both chat (reads) and the host (appends) use.

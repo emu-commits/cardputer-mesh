@@ -17,6 +17,7 @@ namespace mesh { class MeshFacade; class MessageStore; }
 namespace nc { class NotificationCenter; }
 namespace fs { class FileSystem; }
 namespace clip { class Clipboard; }
+namespace cfg { class Settings; }
 
 namespace app {
 
@@ -30,6 +31,7 @@ struct AppContext {
     persist::Store* state = nullptr;
     fs::FileSystem* fs = nullptr;
     clip::Clipboard* clip = nullptr;
+    cfg::Settings* settings = nullptr;
     uint32_t now_ms = 0;
 };
 

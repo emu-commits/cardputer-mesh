@@ -15,6 +15,7 @@
 #include "core/clipboard.h"
 #include "core/notification_center.h"
 #include "core/mesh.h"
+#include "core/settings.h"
 #include "core/stub_mesh.h"
 #include "host/bridge_mesh.h"
 #include "host/file_store.h"
@@ -71,16 +72,28 @@ int main(int argc, char** argv) {
     mgr.reg("timer", "Timer", apps::make_timer);
     mgr.reg("files", "Files", apps::make_files);
     mgr.reg("contacts", "Contacts", apps::make_contacts);
+    mgr.reg("meshstatus", "Mesh status", apps::make_mesh_status);
+    mgr.reg("channels", "Channels", apps::make_channels);
+    mgr.reg("settings", "Settings", apps::make_settings);
+    mgr.reg("wizard", "Setup wizard", apps::make_wizard);
 
     host::FileStore state("emu_state.dat"); // return-to-last-position (ARCHITECTURE §6)
     host::UnixFs filesystem("emu_sd");      // SD-card sandbox for the file browser
     clip::Clipboard clipboard;              // shared copy/paste buffer (§5)
+    cfg::Settings settings;                 // Meshtastic device config (§ config screens)
+    settings.build_default();
+    settings.load(state);
 
     app::AppContext ctx;
     ctx.apps = &mgr; ctx.mesh = &meshf; ctx.store = &store; ctx.notify = &notify;
-    ctx.state = &state; ctx.fs = &filesystem; ctx.clip = &clipboard;
+    ctx.state = &state; ctx.fs = &filesystem; ctx.clip = &clipboard; ctx.settings = &settings;
     ctx.now_ms = host::now_ms();
-    mgr.restore_session(ctx); // resume last app, else launcher
+    // First-run provisioning: a brand-new install (no saved session, not yet
+    // provisioned) opens the config wizard; otherwise resume the last app.
+    if (state.get("cfg.provisioned", "").empty() && state.get("session.active", "").empty())
+        mgr.start("wizard", ctx);
+    else
+        mgr.restore_session(ctx); // resume last app, else launcher
 
     TextCanvas cyd(CYD_W, CYD_H), bar(CYD_W, BAR_H);
     TextCanvas composite(CYD_W, CYD_H + 1 + BAR_H);
