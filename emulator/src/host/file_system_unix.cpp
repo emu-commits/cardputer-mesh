@@ -55,6 +55,11 @@ std::string UnixFs::real(const std::string& rooted) {
     return root_ + rebuild(norm(rooted));
 }
 
+bool UnixFs::remove(const std::string& path) {
+    std::error_code ec;
+    return stdfs::remove(real(path), ec) && !ec;
+}
+
 std::string UnixFs::join(const std::string& base, const std::string& rel) {
     std::string start = (!rel.empty() && rel[0] == '/') ? rel : (base + "/" + rel);
     return rebuild(norm(start));

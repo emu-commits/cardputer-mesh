@@ -30,6 +30,8 @@ public:
     virtual bool write_text(const std::string& path, const std::string& data) = 0;
     // Append to a file (creating it + parent dirs).
     virtual bool append_text(const std::string& path, const std::string& data) = 0;
+    // Delete a file. Returns false if it didn't exist / couldn't be removed.
+    virtual bool remove(const std::string& path) = 0;
     // Normalize/join: resolve `rel` against `base` (both rooted), clamping to root.
     virtual std::string join(const std::string& base, const std::string& rel) = 0;
 };

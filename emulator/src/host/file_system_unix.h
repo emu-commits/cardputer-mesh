@@ -17,6 +17,7 @@ public:
     bool read_text(const std::string& path, std::string& out, size_t max_bytes) override;
     bool write_text(const std::string& path, const std::string& data) override;
     bool append_text(const std::string& path, const std::string& data) override;
+    bool remove(const std::string& path) override;
     std::string join(const std::string& base, const std::string& rel) override;
 
 private:

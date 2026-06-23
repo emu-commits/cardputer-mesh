@@ -69,6 +69,7 @@ int main(int argc, char** argv) {
     mgr.reg("calc", "Calc", apps::make_calc);
     mgr.reg("calcurse", "Calendar / Todo", apps::make_calcurse);
     mgr.reg("editor", "Editor", apps::make_editor);
+    mgr.reg("journal", "Journal", apps::make_journal);
     mgr.reg("timer", "Timer", apps::make_timer);
     mgr.reg("files", "Files", apps::make_files);
     mgr.reg("contacts", "Contacts", apps::make_contacts);

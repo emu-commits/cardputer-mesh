@@ -18,17 +18,16 @@ using ui::Key; using ui::KeyEvent; using ui::TextCanvas;
 namespace apps {
 
 namespace {
-int prio_rank(char p) { return p == 'A' ? 0 : p == 'B' ? 1 : p == 'C' ? 2 : 3; }
 char cycle_prio(char p) { return p == 'A' ? 'B' : p == 'B' ? 'C' : p == 'C' ? '-' : 'A'; }
 std::string two(int n) { char b[12]; std::snprintf(b, sizeof b, "%02d", n); return b; }
 const char* MON[] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
 } // namespace
 
 class Calcurse : public App {
-    struct Todo { char prio; bool done; std::string text; };
+    struct Todo { char prio; bool done; std::string text; std::string topic; };
     struct Appt { int y, m, d, hh, mm; std::string text; bool fired = false; };
     enum Mode { TODO = 0, CAL = 1 };
-    enum Overlay { NONE, ADD_TODO, ADD_APPT, GRID };
+    enum Overlay { NONE, ADD_TODO, ADD_APPT, GRID, ADD_TOPIC };
 
 public:
     void on_create(AppContext& ctx) override {
@@ -36,14 +35,17 @@ public:
         sy_ = tm.tm_year + 1900; sm_ = tm.tm_mon + 1; sd_ = tm.tm_mday;
         if (ctx.state) {
             mode_ = ctx.state->get_int("calcurse.mode", TODO) == CAL ? CAL : TODO;
+            load_topics(ctx.state->get("calcurse.topics", ""));
             load_todos(ctx.state->get("calcurse.todos", ""));
             load_appts(ctx.state->get("calcurse.appts", ""));
         }
+        if (topics_.empty()) topics_.push_back("general");
         sort_all();
     }
     void on_pause(AppContext& ctx) override {
         if (!ctx.state) return;
         ctx.state->set_int("calcurse.mode", mode_);
+        ctx.state->set("calcurse.topics", dump_topics());
         ctx.state->set("calcurse.todos", dump_todos());
         ctx.state->set("calcurse.appts", dump_appts());
     }
@@ -72,41 +74,76 @@ public:
         c.clear(ui::White, ui::Black);
         if (mode_ == TODO) render_todo(c); else render_cal(c);
         if (overlay_ == GRID) render_grid(c);
-        else if (overlay_ == ADD_TODO || overlay_ == ADD_APPT) render_prompt(c);
+        else if (overlay_ == ADD_TODO || overlay_ == ADD_APPT || overlay_ == ADD_TOPIC) render_prompt(c);
     }
 
     std::vector<Command> commands(AppContext&) override {
         return {
             {"New todo", [this](AppContext&) { mode_ = TODO; overlay_ = ADD_TODO; ibuf_.clear(); }},
+            {"New todo topic", [this](AppContext&) { mode_ = TODO; overlay_ = ADD_TOPIC; ibuf_.clear(); }},
             {"New appointment", [this](AppContext&) { mode_ = CAL; overlay_ = ADD_APPT; ibuf_.clear(); }},
             {"Pick date", [this](AppContext&) { mode_ = CAL; gy_ = sy_; gm_ = sm_; gd_ = sd_; overlay_ = GRID; }},
         };
     }
 
 private:
-    // ---- TODO view ----
+    // ---- TODO view (per-topic) ----
+    std::string cur_topic() { return topics_.empty() ? "general" : topics_[cur_topic_ % topics_.size()]; }
+    void rebuild_vis() {
+        vis_.clear();
+        std::string t = cur_topic();
+        for (int i = 0; i < (int)todos_.size(); ++i) if (todos_[i].topic == t) vis_.push_back(i);
+    }
     bool todo_key(const KeyEvent& k) {
-        if (ls_.move(k, (int)todos_.size(), rows_)) return true;
+        rebuild_vis();
+        if (ls_.move(k, (int)vis_.size(), rows_)) return true;
         if (k.is_char()) {
             if (k.ch == 'a') { overlay_ = ADD_TODO; ibuf_.clear(); return true; }
-            if (todos_.empty()) return true;
-            if (k.ch == ' ') { todos_[ls_.sel].done = !todos_[ls_.sel].done; sort_all(); return true; }
-            if (k.ch == 'p') { todos_[ls_.sel].prio = cycle_prio(todos_[ls_.sel].prio); sort_all(); return true; }
-            if (k.ch == 'd') { todos_.erase(todos_.begin() + ls_.sel); ls_.clamp((int)todos_.size(), rows_); return true; }
+            if (k.ch == 'n') { overlay_ = ADD_TOPIC; ibuf_.clear(); return true; }
+            if (k.ch == '>') { if (!topics_.empty()) { cur_topic_ = (cur_topic_ + 1) % topics_.size(); ls_.sel = 0; } return true; }
+            if (k.ch == '<') { if (!topics_.empty()) { cur_topic_ = (cur_topic_ + topics_.size() - 1) % topics_.size(); ls_.sel = 0; } return true; }
+            if (k.ch == 'X') { delete_topic(); return true; }
+            if (vis_.empty()) return true;
+            int idx = vis_[ls_.sel];
+            if (k.ch == ' ') { todos_[idx].done = !todos_[idx].done; return true; }
+            if (k.ch == 'p') { todos_[idx].prio = cycle_prio(todos_[idx].prio); return true; }
+            if (k.ch == 'd') { todos_.erase(todos_.begin() + idx); rebuild_vis(); ls_.clamp((int)vis_.size(), rows_); return true; }
+            if (k.ch == '[') { reorder(-1); return true; } // move up within topic
+            if (k.ch == ']') { reorder(1); return true; }  // move down within topic
         }
         return false;
     }
+    void reorder(int dir) {
+        rebuild_vis();
+        int a = ls_.sel, b = a + dir;
+        if (a < 0 || a >= (int)vis_.size() || b < 0 || b >= (int)vis_.size()) return;
+        std::swap(todos_[vis_[a]], todos_[vis_[b]]); // both in current topic
+        ls_.sel = b;
+    }
+    void delete_topic() {
+        if (topics_.size() <= 1) return; // keep at least one
+        std::string t = cur_topic();
+        todos_.erase(std::remove_if(todos_.begin(), todos_.end(),
+                                    [&](const Todo& td) { return td.topic == t; }), todos_.end());
+        topics_.erase(topics_.begin() + (cur_topic_ % topics_.size()));
+        if (cur_topic_ >= (int)topics_.size()) cur_topic_ = (int)topics_.size() - 1;
+        ls_.sel = 0;
+    }
     void render_todo(TextCanvas& c) {
-        char r[16]; std::snprintf(r, sizeof r, "%d items", (int)todos_.size());
+        rebuild_vis();
+        char r[28]; std::snprintf(r, sizeof r, "%s  %d/%d", cur_topic().c_str(), cur_topic_ + 1, (int)topics_.size());
         int top = ui::header(c, "Todo", ui::BrightCyan, r);
         rows_ = ui::body_bottom(c) - top + 1;
-        ui::list(c, top, rows_, ls_, (int)todos_.size(), [&](int i) {
-            const Todo& t = todos_[i];
+        if (vis_.empty())
+            c.text(top + 1, 2, "(no todos in this topic — a:add  n:new topic)", ui::Gray, ui::Black, ui::ATTR_DIM);
+        ui::list(c, top, rows_, ls_, (int)vis_.size(), [&](int i) {
+            const Todo& t = todos_[vis_[i]];
             std::string box = t.done ? "[x] " : "[ ] ";
             std::string pr = t.prio == '-' ? "  " : std::string("(") + t.prio + ")";
             return box + pr + " " + t.text;
         }, ui::White, ui::BrightCyan);
-        ui::footer(c, " a:add  spc:done  p:prio  d:del  tab:cal  esc:back ");
+        ui::footer2(c, " a:add  spc:done  p:prio  [ ]:reorder  d:del ",
+                       " < > topic  n:new topic  X:del topic  tab:cal ");
     }
 
     // ---- CAL view ----
@@ -156,7 +193,10 @@ private:
         std::string s = ibuf_;
         size_t a = s.find_first_not_of(' '); if (a == std::string::npos) return;
         s = s.substr(a);
-        if (overlay_ == ADD_TODO) { todos_.push_back({'-', false, s}); sort_all(); ls_.sel = 0; }
+        if (overlay_ == ADD_TODO) { todos_.push_back({'-', false, s, cur_topic()}); ls_.sel = 0; }
+        else if (overlay_ == ADD_TOPIC) {
+            topics_.push_back(s); cur_topic_ = (int)topics_.size() - 1; ls_.sel = 0;
+        }
         else { // ADD_APPT: optional leading "HH:MM "
             int hh = 9, mm = 0; std::string text = s;
             int rd = 0;
@@ -172,9 +212,9 @@ private:
     }
     void render_prompt(TextCanvas& c) {
         int ir, ic, iw, ih;
-        const char* title = (overlay_ == ADD_TODO) ? "New todo" : "New appointment";
-        const char* hint = (overlay_ == ADD_TODO) ? "type text  enter:ok  esc:cancel"
-                                                   : "HH:MM text   enter:ok  esc:cancel";
+        const char* title = (overlay_ == ADD_TODO) ? "New todo" : (overlay_ == ADD_TOPIC) ? "New topic" : "New appointment";
+        const char* hint = (overlay_ == ADD_APPT) ? "HH:MM text   enter:ok  esc:cancel"
+                                                   : "type text  enter:ok  esc:cancel";
         ui::modal_box(c, 5, 40, title, ui::BrightYellow, ir, ic, iw, ih, hint);
         ui::input_line(c, ir + 1, ic, "> ", ibuf_, ui::BrightWhite, iw);
     }
@@ -219,11 +259,8 @@ private:
     }
 
     // ---- sort + (de)serialize ----
+    // Todos keep MANUAL order (so reorder works); only appointments auto-sort.
     void sort_all() {
-        std::stable_sort(todos_.begin(), todos_.end(), [](const Todo& a, const Todo& b) {
-            if (a.done != b.done) return !a.done;
-            return prio_rank(a.prio) < prio_rank(b.prio);
-        });
         std::stable_sort(appts_.begin(), appts_.end(), [](const Appt& a, const Appt& b) {
             if (a.y != b.y) return a.y < b.y;
             if (a.m != b.m) return a.m < b.m;
@@ -232,16 +269,35 @@ private:
             return a.mm < b.mm;
         });
     }
+    std::string dump_topics() const {
+        std::string s; for (size_t i = 0; i < topics_.size(); ++i) { if (i) s += '\n'; s += topics_[i]; }
+        return s;
+    }
+    void load_topics(const std::string& s) {
+        topics_.clear(); size_t i = 0;
+        while (i < s.size()) {
+            size_t nl = s.find('\n', i);
+            std::string t = s.substr(i, nl == std::string::npos ? std::string::npos : nl - i);
+            if (!t.empty()) topics_.push_back(t);
+            if (nl == std::string::npos) break;
+            i = nl + 1;
+        }
+    }
+    // todo line: "<prio><done>\t<topic>\t<text>"
     std::string dump_todos() const {
         std::string s;
-        for (auto& t : todos_) { s += t.prio; s += (t.done ? '1' : '0'); s += '\t'; s += t.text; s += '\n'; }
+        for (auto& t : todos_) { s += t.prio; s += (t.done ? '1' : '0'); s += '\t'; s += t.topic; s += '\t'; s += t.text; s += '\n'; }
         return s;
     }
     void load_todos(const std::string& s) {
         todos_.clear(); size_t i = 0;
         while (i < s.size()) {
             size_t nl = s.find('\n', i); std::string ln = s.substr(i, nl == std::string::npos ? std::string::npos : nl - i);
-            if (ln.size() >= 3 && ln[2] == '\t') todos_.push_back({ln[0], ln[1] == '1', ln.substr(3)});
+            if (ln.size() >= 3 && ln[2] == '\t') {
+                size_t t2 = ln.find('\t', 3);
+                if (t2 != std::string::npos)
+                    todos_.push_back({ln[0], ln[1] == '1', ln.substr(t2 + 1), ln.substr(3, t2 - 3)});
+            }
             if (nl == std::string::npos) break;
             i = nl + 1;
         }
@@ -270,6 +326,9 @@ private:
     Overlay overlay_ = NONE;
     std::vector<Todo> todos_;
     std::vector<Appt> appts_;
+    std::vector<std::string> topics_{"general"};
+    int cur_topic_ = 0;
+    std::vector<int> vis_;
     ui::ListState ls_;
     int rows_ = 1;
     std::string ibuf_;
