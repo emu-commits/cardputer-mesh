@@ -1,12 +1,14 @@
-// Editor — a nano-style text editor for notes/journal entries.
-// UX lessons (nano/vi-insert/micro): direct typing, visible cursor, status shows
-// position + dirty, ^S saves explicitly, and pausing the app checkpoints content
-// to storage (§6 "save at safe points; never per keystroke"). On device the
-// buffer is a gap buffer paged from SD; here a line vector stands in (portable).
+// Editor — a nano-style text editor backed by files on the fs seam.
+// Opens/saves real files under the SD sandbox (default /notes/scratch.txt),
+// supports Save As (path prompt) and Open (kicks to the Files browser, which
+// opens the chosen file back here via an "open:<path>" intent). ^S save,
+// ^K cut line, ^U paste via the shared clipboard. Pausing checkpoints to disk.
+// On device the buffer is a gap buffer paged from SD; a line vector stands in.
 #include "apps/apps.h"
 #include <string>
 #include <vector>
 #include "core/clipboard.h"
+#include "core/fs.h"
 #include "core/ui_kit.h"
 
 using namespace app;
@@ -15,18 +17,18 @@ using ui::Key; using ui::KeyEvent; using ui::TextCanvas;
 namespace apps {
 
 class Editor : public App {
+    enum Overlay { NONE, SAVEAS };
 public:
     void on_create(AppContext& ctx) override {
-        std::string doc = ctx.state ? ctx.state->get("editor.doc", "") : "";
-        split(doc);
-        if (ctx.state) { cy_ = ctx.state->get_int("editor.cy", 0); cx_ = ctx.state->get_int("editor.cx", 0); }
-        clamp_cursor();
-        dirty_ = false;
+        path_ = "/notes/scratch.txt";
+        if (ctx.nav_arg.rfind("open:", 0) == 0) { path_ = ctx.nav_arg.substr(5); ctx.nav_arg.clear(); }
+        load(ctx);
     }
-    void on_pause(AppContext& ctx) override { checkpoint(ctx); } // pause = safe point
+    void on_pause(AppContext& ctx) override { if (dirty_) write(ctx); } // checkpoint
 
     bool on_key(AppContext& ctx, const KeyEvent& k) override {
-        if (k.ctrl && (k.ch == 's' || k.ch == 'S')) { save(ctx); return true; }
+        if (overlay_ == SAVEAS) return saveas_key(ctx, k);
+        if (k.ctrl && (k.ch == 's' || k.ch == 'S')) { write(ctx); status_ = " saved "; return true; }
         if (k.ctrl && (k.ch == 'k' || k.ch == 'K')) { cut_line(ctx); return true; }
         if (k.ctrl && (k.ch == 'u' || k.ch == 'U')) { paste(ctx); return true; }
         switch (k.key) {
@@ -49,10 +51,21 @@ public:
         }
     }
 
+    std::vector<Command> commands(AppContext&) override {
+        return {
+            {"Save", [this](AppContext& c) { write(c); status_ = " saved "; }},
+            {"Save as...", [this](AppContext&) { overlay_ = SAVEAS; pbuf_ = path_; }},
+            {"Open file (browse)", [this](AppContext& c) { c.apps->request_switch("files"); }},
+            {"Cut line", [this](AppContext& c) { cut_line(c); }},
+            {"Copy line", [this](AppContext& c) { if (c.clip) c.clip->set(lines_[cy_]); status_ = " copied "; }},
+            {"Paste", [this](AppContext& c) { paste(c); }},
+        };
+    }
+
     void render(AppContext&, TextCanvas& c) override {
         c.clear(ui::White, ui::Black);
-        char pos[40]; std::snprintf(pos, sizeof pos, "Ln %d, Col %d", cy_ + 1, cx_ + 1);
-        std::string title = std::string("Editor  notes") + (dirty_ ? " *" : "");
+        char pos[40]; std::snprintf(pos, sizeof pos, "Ln %d Col %d", cy_ + 1, cx_ + 1);
+        std::string title = "Editor  " + base(path_) + (dirty_ ? " *" : "");
         int top = ui::header(c, title, ui::BrightGreen, pos);
         int rows = ui::body_bottom(c) - top + 1;
 
@@ -69,26 +82,37 @@ public:
             std::string vis = (xoff_ < (int)ln.size()) ? ln.substr(xoff_, w) : "";
             c.text(top + r, 0, vis, ui::White, ui::Black);
         }
-        // draw the cursor block over its cell
         int crow = top + (cy_ - top_), ccol = cx_ - xoff_;
         if (crow >= top && crow <= ui::body_bottom(c) && ccol >= 0 && ccol < w) {
             char32_t under = (cx_ < (int)lines_[cy_].size()) ? (char32_t)lines_[cy_][cx_] : U' ';
             c.put(crow, ccol, under, ui::Black, ui::BrightGreen, ui::ATTR_INVERSE);
         }
-        ui::footer(c, status_.empty() ? " ^S save  ^K cut  ^U paste  arrows  esc back "
+        ui::footer(c, status_.empty() ? " ^S save  ^K cut  ^U paste  ctrl-p: more  esc back "
                                       : status_);
-    }
-
-    std::vector<Command> commands(AppContext&) override {
-        return {
-            {"Save note", [this](AppContext& c) { save(c); }},
-            {"Cut line", [this](AppContext& c) { cut_line(c); }},
-            {"Copy line", [this](AppContext& c) { if (c.clip) c.clip->set(lines_[cy_]); status_ = " copied "; }},
-            {"Paste", [this](AppContext& c) { paste(c); }},
-        };
+        if (overlay_ == SAVEAS) {
+            int ir, ic, iw, ih;
+            ui::modal_box(c, 5, 46, "Save as (path)", ui::BrightGreen, ir, ic, iw, ih, "enter:save  esc:cancel");
+            ui::input_line(c, ir + 1, ic, "", pbuf_, ui::BrightWhite, iw);
+        }
     }
 
 private:
+    bool saveas_key(AppContext& ctx, const KeyEvent& k) {
+        if (k.key == Key::Esc) { overlay_ = NONE; return true; }
+        if (k.key == Key::Enter) { if (!pbuf_.empty()) path_ = pbuf_; write(ctx); status_ = " saved "; overlay_ = NONE; return true; }
+        if (k.key == Key::Backspace) { if (!pbuf_.empty()) pbuf_.pop_back(); return true; }
+        if (k.is_char() && k.ch >= 0x20 && k.ch < 0x7f) pbuf_ += (char)k.ch;
+        return true;
+    }
+    static std::string base(const std::string& p) { size_t s = p.find_last_of('/'); return s == std::string::npos ? p : p.substr(s + 1); }
+    void load(AppContext& ctx) {
+        std::string doc;
+        if (ctx.fs) ctx.fs->read_text(path_, doc, 64 * 1024);
+        split(doc);
+        cy_ = cx_ = top_ = xoff_ = 0; dirty_ = false; status_.clear();
+    }
+    void write(AppContext& ctx) { if (ctx.fs) ctx.fs->write_text(path_, join()); dirty_ = false; }
+
     void split(const std::string& doc) {
         lines_.clear();
         size_t i = 0;
@@ -105,16 +129,7 @@ private:
         for (size_t i = 0; i < lines_.size(); ++i) { s += lines_[i]; if (i + 1 < lines_.size()) s += '\n'; }
         return s;
     }
-    void clamp_cursor() {
-        if (cy_ < 0) cy_ = 0;
-        if (cy_ >= (int)lines_.size()) cy_ = (int)lines_.size() - 1;
-        clamp_cx();
-    }
-    void clamp_cx() {
-        if (cx_ < 0) cx_ = 0;
-        if (cx_ > (int)lines_[cy_].size()) cx_ = (int)lines_[cy_].size();
-    }
-
+    void clamp_cx() { if (cx_ < 0) cx_ = 0; if (cx_ > (int)lines_[cy_].size()) cx_ = (int)lines_[cy_].size(); }
     void insert_str(const std::string& s) { lines_[cy_].insert(cx_, s); cx_ += (int)s.size(); dirty_ = true; status_.clear(); }
     void split_line() {
         std::string tail = lines_[cy_].substr(cx_);
@@ -124,11 +139,8 @@ private:
     }
     void backspace() {
         if (cx_ > 0) { lines_[cy_].erase(cx_ - 1, 1); cx_--; }
-        else if (cy_ > 0) {
-            cx_ = (int)lines_[cy_ - 1].size();
-            lines_[cy_ - 1] += lines_[cy_];
-            lines_.erase(lines_.begin() + cy_); cy_--;
-        } else return;
+        else if (cy_ > 0) { cx_ = (int)lines_[cy_ - 1].size(); lines_[cy_ - 1] += lines_[cy_]; lines_.erase(lines_.begin() + cy_); cy_--; }
+        else return;
         dirty_ = true; status_.clear();
     }
     void del() {
@@ -139,36 +151,24 @@ private:
     }
     void cut_line(AppContext& ctx) {
         if (ctx.clip) ctx.clip->set(lines_[cy_]);
-        if (lines_.size() > 1) {
-            lines_.erase(lines_.begin() + cy_);
-            if (cy_ >= (int)lines_.size()) cy_ = (int)lines_.size() - 1;
-        } else lines_[0].clear();
+        if (lines_.size() > 1) { lines_.erase(lines_.begin() + cy_); if (cy_ >= (int)lines_.size()) cy_ = (int)lines_.size() - 1; }
+        else lines_[0].clear();
         cx_ = 0; dirty_ = true; status_ = " cut ";
     }
     void paste(AppContext& ctx) {
         if (!ctx.clip || ctx.clip->empty()) return;
-        const std::string& s = ctx.clip->get();
-        for (char ch : s) {
+        for (char ch : ctx.clip->get()) {
             if (ch == '\n') split_line();
             else if (ch != '\r') { lines_[cy_].insert(cx_, 1, ch); cx_++; }
         }
         dirty_ = true; status_ = " pasted ";
     }
-    void save(AppContext& ctx) {
-        if (ctx.state) { ctx.state->set("editor.doc", join()); ctx.state->flush(); }
-        dirty_ = false; status_ = " saved ";
-    }
-    void checkpoint(AppContext& ctx) {
-        if (!ctx.state) return;
-        ctx.state->set("editor.doc", join());
-        ctx.state->set_int("editor.cy", cy_);
-        ctx.state->set_int("editor.cx", cx_);
-    }
 
     std::vector<std::string> lines_{""};
     int cy_ = 0, cx_ = 0, top_ = 0, xoff_ = 0;
     bool dirty_ = false;
-    std::string status_;
+    std::string status_, path_, pbuf_;
+    Overlay overlay_ = NONE;
 };
 
 std::unique_ptr<App> make_editor() { return std::make_unique<Editor>(); }

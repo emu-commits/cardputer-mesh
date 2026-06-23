@@ -60,7 +60,7 @@ public:
         if (step_ >= NSTEP) { render_review(ctx, c); return; }
         cfg::Item* it = item(ctx);
         char r[24]; std::snprintf(r, sizeof r, "step %d/%d", step_ + 1, NSTEP);
-        int top = ui::header(c, "Setup  " + it->label, ui::BrightCyan, r);
+        int top = ui::header(c, "Mesh setup  " + it->label, ui::BrightCyan, r);
         c.text(top, 1, ui::fit(it->hint, c.width() - 2), ui::Gray, ui::Black, ui::ATTR_DIM);
         if (it->type == cfg::ENUM) {
             ui::list(c, top + 2, ui::body_bottom(c) - (top + 2) + 1, opt_, (int)it->options.size(),
@@ -95,7 +95,7 @@ private:
         } else it->value = buf_;
     }
     void render_review(AppContext& ctx, TextCanvas& c) {
-        int top = ui::header(c, "Setup  review", ui::BrightGreen, "done?");
+        int top = ui::header(c, "Mesh setup  review", ui::BrightGreen, "done?");
         int r = top;
         for (int i = 0; i < NSTEP; ++i) {
             cfg::Item* it = nullptr;

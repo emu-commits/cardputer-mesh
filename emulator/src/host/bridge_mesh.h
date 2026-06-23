@@ -27,8 +27,9 @@ public:
     void poll(uint32_t now_ms) override;
     // The connected node is the user's live node; never write config to it.
     bool config_writable() const override { return false; }
-    // Favorite is tracked locally only — we do NOT push set_favorite_node to the
-    // live R1 Neo (per the read-only-on-real-node decision).
+    // EMULATOR-ONLY safeguard: tracked locally, NOT pushed to the live R1 Neo dev
+    // node. The production device build (Plai MeshService) DOES apply favorites
+    // for real (admin set_favorite_node on its own node DB) — see mesh.h.
     void set_favorite(uint32_t id, bool fav) override { if (fav) favs_.insert(id); else favs_.erase(id); }
     bool is_favorite(uint32_t id) const override { return favs_.count(id) > 0; }
 

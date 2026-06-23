@@ -48,8 +48,11 @@ public:
     virtual bool config_writable() const { return true; }
 
     // Meshtastic node favorite (is_favorite in the node DB; pins + biases routing).
-    // On device this is an admin set_favorite_node to the local node. On the real
-    // backend here it is kept local-only (we never write to the live node).
+    // PRODUCTION (device build, Plai MeshService): MUST apply for real via the
+    // admin set_favorite_node on the device's OWN node DB — it affects routing.
+    // EMULATOR ONLY: the BridgeMesh backend keeps this local-only because it
+    // points at the user's *separate* live R1 Neo dev node, which we must not
+    // mutate. The StubMesh tracks it in memory. (See [[project]] notes.)
     virtual void set_favorite(uint32_t id, bool fav) { (void)id; (void)fav; }
     virtual bool is_favorite(uint32_t id) const { (void)id; return false; }
 };

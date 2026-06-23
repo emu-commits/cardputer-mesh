@@ -44,18 +44,23 @@ private:
     }
 
     // ---- group level ----
+    // Row 0 is a launcher for the Mesh setup wizard (#18); rows 1.. are config groups.
     bool groups_key(AppContext& ctx, const KeyEvent& k) {
-        int n = (int)ctx.settings->groups().size();
+        int n = (int)ctx.settings->groups().size() + 1; // +1 for the wizard row
         if (ls_.move(k, n, rows_)) return true;
-        if (k.key == Key::Enter && n) { gi_ = ls_.sel; ls2_ = {}; rebuild_vis(ctx); }
+        if (k.key == Key::Enter) {
+            if (ls_.sel == 0) { ctx.apps->request_switch("wizard"); return true; }
+            gi_ = ls_.sel - 1; ls2_ = {}; rebuild_vis(ctx);
+        }
         return true;
     }
     void render_groups(AppContext& ctx, TextCanvas& c) {
         int top = ui::header(c, "Settings", ui::BrightGreen, ro_ ? "read-only" : "");
         auto& gs = ctx.settings->groups();
         rows_ = ui::body_bottom(c) - top + 1;
-        ui::list(c, top, rows_, ls_, (int)gs.size(), [&](int i) { return gs[i].name; },
-                 ui::White, ui::BrightGreen);
+        ui::list(c, top, rows_, ls_, (int)gs.size() + 1, [&](int i) {
+            return i == 0 ? std::string("Run Mesh setup wizard...") : gs[i - 1].name;
+        }, ui::White, ui::BrightGreen);
         ui::footer(c, " enter:open  esc:back ");
     }
 

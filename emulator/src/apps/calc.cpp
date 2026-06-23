@@ -64,8 +64,16 @@ public:
         // tape occupies body minus 2 rows (preview + input)
         int bottom = c.height() - 3;
         rows_ = bottom - top + 1;
-        ui::list(c, top, rows_, ls_, (int)tape_.size(),
-                 [&](int i) { return tape_[i]; }, ui::Gray, ui::BrightYellow);
+        if (tape_.empty()) {
+            c.text(top + 1, 2, "Type a math expression or a conversion:", ui::Gray, ui::Black, ui::ATTR_DIM);
+            c.text(top + 3, 4, "2+3*4      sqrt(9)/2     2^10", ui::BrightCyan, ui::Black);
+            c.text(top + 4, 4, "10 km in mi    100 f to c", ui::BrightCyan, ui::Black);
+            c.text(top + 5, 4, "1 gb in mb     ans*2", ui::BrightCyan, ui::Black);
+            c.text(top + 7, 2, "funcs: sqrt sin cos log ln  consts: pi e ans", ui::Gray, ui::Black, ui::ATTR_DIM);
+        } else {
+            ui::list(c, top, rows_, ls_, (int)tape_.size(),
+                     [&](int i) { return tape_[i]; }, ui::Gray, ui::BrightYellow);
+        }
 
         // live preview of the in-progress expression
         calc::Result pv = calc::evaluate(input_, ans_);

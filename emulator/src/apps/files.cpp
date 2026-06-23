@@ -30,7 +30,7 @@ public:
     }
 
     bool on_key(AppContext& ctx, const KeyEvent& k) override {
-        if (overlay_ == VIEW) return view_key(k);
+        if (overlay_ == VIEW) return view_key(ctx, k);
         if (overlay_ == INFO) { if (k.key == Key::Esc || k.is_char()) overlay_ = NONE; return true; }
         if (ls_.move(k, (int)items_.size(), rows_)) return true;
         if (k.key == Key::Left || k.key == Key::Backspace) { go_up(ctx); return true; }
@@ -92,10 +92,13 @@ private:
         if (e.is_dir || !ctx.fs) return;
         std::string p = ctx.fs->join(cwd_, e.name);
         if (!ctx.fs->read_text(p, raw_, 32 * 1024)) raw_ = "(cannot read)";
-        view_name_ = e.name; vscroll_ = 0; overlay_ = VIEW;
+        view_name_ = e.name; view_path_ = p; vscroll_ = 0; overlay_ = VIEW;
     }
-    bool view_key(const KeyEvent& k) {
-        if (k.key == Key::Esc || (k.is_char() && k.ch == 'q')) { overlay_ = NONE; return true; }
+    bool view_key(AppContext& ctx, const KeyEvent& k) {
+        if (k.key == Key::Esc || (k.is_char() && k.ch == 'q')) { overlay_ = NONE; return true; } // close -> back to listing
+        if (k.is_char() && (k.ch == 'e')) { // open this file in the editor
+            ctx.nav_arg = "open:" + view_path_; ctx.apps->request_switch("editor"); return true;
+        }
         if (k.key == Key::Up) { if (vscroll_ > 0) vscroll_--; return true; }
         if (k.key == Key::Down) { vscroll_++; return true; }
         if (k.key == Key::PageUp) { vscroll_ = vscroll_ > 10 ? vscroll_ - 10 : 0; return true; }
@@ -134,8 +137,8 @@ private:
             if (li >= (int)dl.size()) break;
             c.text(top + r, 0, dl[li], ui::White, ui::Black);
         }
-        char pos[24]; std::snprintf(pos, sizeof pos, " %d/%d lines ", vscroll_ + 1, (int)dl.size());
-        ui::footer(c, std::string(" up/dn/pgup/pgdn scroll  esc:close ") + pos);
+        char pos[24]; std::snprintf(pos, sizeof pos, " %d/%d ", vscroll_ + 1, (int)dl.size());
+        ui::footer(c, std::string(" up/dn scroll  e:edit  esc:close ") + pos);
     }
     void render_info(TextCanvas& c) {
         const fs::Entry& e = items_[ls_.sel];
@@ -153,7 +156,7 @@ private:
     ui::ListState ls_;
     int rows_ = 1;
     Overlay overlay_ = NONE;
-    std::string raw_, view_name_;
+    std::string raw_, view_name_, view_path_;
     int vscroll_ = 0;
 };
 
