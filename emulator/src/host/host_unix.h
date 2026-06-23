@@ -26,11 +26,18 @@ public:
     PtyTerminal();
     ~PtyTerminal() override;
     void write(const std::string& bytes) override;
+    void on_start() override;
+    void on_stop() override;
     std::string slave_path() const { return slave_; }
     bool ok() const { return master_ >= 0; }
+    // True (and clears) if the last write(s) couldn't be fully delivered — e.g.
+    // no terminal attached yet and the PTY buffer filled. Caller should force a
+    // full repaint so state re-syncs once a reader drains the buffer.
+    bool consume_dropped() { bool d = dropped_; dropped_ = false; return d; }
 private:
     int master_ = -1;
     std::string slave_;
+    bool dropped_ = false;
 };
 
 // Puts stdin in raw mode; poll() returns parsed key events (non-blocking).

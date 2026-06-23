@@ -1,4 +1,5 @@
 #include "host/host_unix.h"
+#include <cerrno>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -21,16 +22,33 @@ void StdoutTerminal::on_stop()  { write("\x1b[0m\x1b[?25h\x1b[?1049l"); }
 
 // ---- PtyTerminal -----------------------------------------------------------
 PtyTerminal::PtyTerminal() {
-    master_ = posix_openpt(O_RDWR | O_NOCTTY);
+    master_ = posix_openpt(O_RDWR | O_NOCTTY | O_NONBLOCK);
     if (master_ >= 0 && grantpt(master_) == 0 && unlockpt(master_) == 0) {
         const char* sp = ptsname(master_);
         if (sp) slave_ = sp;
+        // Raw mode: our ANSI stream has no newlines, so the default canonical
+        // line discipline would buffer everything until a '\n' (never delivering
+        // to the reader). cfmakeraw makes it a transparent byte pipe.
+        termios t;
+        if (tcgetattr(master_, &t) == 0) {
+            cfmakeraw(&t);
+            tcsetattr(master_, TCSANOW, &t);
+        }
     }
 }
 PtyTerminal::~PtyTerminal() { if (master_ >= 0) ::close(master_); }
 void PtyTerminal::write(const std::string& bytes) {
-    if (master_ >= 0) { ssize_t r = ::write(master_, bytes.data(), bytes.size()); (void)r; }
+    if (master_ < 0) return;
+    size_t off = 0;
+    while (off < bytes.size()) {
+        ssize_t w = ::write(master_, bytes.data() + off, bytes.size() - off);
+        if (w > 0) { off += (size_t)w; continue; }
+        if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { dropped_ = true; break; }
+        break; // other error (e.g. no slave yet on some platforms)
+    }
 }
+void PtyTerminal::on_start() { write("\x1b[?25l\x1b[2J\x1b[H"); }
+void PtyTerminal::on_stop()  { write("\x1b[0m\x1b[?25h"); }
 
 // ---- RawInput --------------------------------------------------------------
 void RawInput::start() {

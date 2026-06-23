@@ -5,6 +5,7 @@ emu
 # python bridge venv + runtime logs
 .venv/
 mesh_bridge.log
+cyd_pty.path
 
 # editor / OS
 *.swp

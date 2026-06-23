@@ -30,9 +30,11 @@ int main(int argc, char** argv) {
     std::signal(SIGINT, on_sigint);
 
     bool real = false;
+    bool pty_mode = false;
     std::string port = "/dev/ttyACM0";
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--real") == 0) real = true;
+        else if (std::strcmp(argv[i], "--pty") == 0) pty_mode = true;
         else if (std::strcmp(argv[i], "--port") == 0 && i + 1 < argc) port = argv[++i];
     }
 
@@ -65,15 +67,37 @@ int main(int argc, char** argv) {
 
     TextCanvas cyd(CYD_W, CYD_H), bar(CYD_W, BAR_H);
     TextCanvas composite(CYD_W, CYD_H + 1 + BAR_H);
-    AnsiRenderer renderer;
+    TextCanvas panel(CYD_W, 2 + BAR_H); // built-in panel when CYD is on a PTY
+    AnsiRenderer r_stdout, r_pty;
 
     host::StdoutTerminal term;
     host::RawInput input;
+
+    // In --pty mode the CYD renders to its own pseudo-terminal (the faithful
+    // "CYD on a serial line" sink), matching the hardware: CYD over UART, the
+    // built-in 1.14" screen separate. Attach a terminal to the printed path.
+    std::unique_ptr<host::PtyTerminal> cyd_pty;
+    if (pty_mode) {
+        cyd_pty = std::make_unique<host::PtyTerminal>();
+        if (cyd_pty->ok()) {
+            if (FILE* f = std::fopen("cyd_pty.path", "w")) {
+                std::fprintf(f, "%s\n", cyd_pty->slave_path().c_str());
+                std::fclose(f);
+            }
+            cyd_pty->on_start();
+        } else {
+            pty_mode = false; // fall back to combined view
+        }
+    }
+    bool use_pty = pty_mode && cyd_pty && cyd_pty->ok();
+
     term.on_start();
     input.start();
 
     // A demo non-mesh event so the notification center shows a Reminder too.
     bool fired_reminder = false;
+    uint32_t pty_last_full = 0; // periodic CYD full-repaint so a late-attached
+                                // terminal (or a CYD that resets) re-syncs
 
     while (g_run && !mgr.quit_requested) {
         uint32_t now = host::now_ms();
@@ -91,22 +115,35 @@ int main(int argc, char** argv) {
         mgr.tick(ctx);
         notify.bg_tick(now);
 
-        // Render both surfaces and compose.
         cyd.clear(White, Black);
         mgr.render(ctx, cyd);
         notify.render_status(bar, now);
 
-        composite.clear(White, Black);
-        composite.blit(cyd, 0, 0);
-        composite.hline(CYD_H, 0, CYD_W, U'=', Gray, Black);
-        composite.text(CYD_H, 2, " built-in screen ", Gray, Black, ATTR_DIM);
-        composite.blit(bar, CYD_H + 1, 0);
+        if (use_pty) {
+            // CYD -> its own PTY; built-in screen (+ the CYD's path) -> this terminal.
+            if (now - pty_last_full >= 1000) { r_pty.reset(); pty_last_full = now; }
+            r_pty.render(cyd, *cyd_pty);
+            if (cyd_pty->consume_dropped()) r_pty.reset(); // re-sync once attached
 
-        renderer.render(composite, term);
+            panel.clear(White, Black);
+            panel.text(0, 0, "CYD -> " + cyd_pty->slave_path() + "  (attach: screen <path>)",
+                       BrightCyan, Black, ATTR_BOLD);
+            panel.hline(1, 0, CYD_W, U'=', Gray, Black);
+            panel.blit(bar, 2, 0);
+            r_stdout.render(panel, term);
+        } else {
+            composite.clear(White, Black);
+            composite.blit(cyd, 0, 0);
+            composite.hline(CYD_H, 0, CYD_W, U'=', Gray, Black);
+            composite.text(CYD_H, 2, " built-in screen ", Gray, Black, ATTR_DIM);
+            composite.blit(bar, CYD_H + 1, 0);
+            r_stdout.render(composite, term);
+        }
         usleep(33000);
     }
 
     input.stop();
     term.on_stop();
+    if (cyd_pty && cyd_pty->ok()) cyd_pty->on_stop();
     return 0;
 }

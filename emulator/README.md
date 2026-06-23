@@ -34,6 +34,24 @@ make          # builds ./emu  (g++, C++17, no external deps)
 make run      # or: ./emu
 ```
 
+### Two-screen modes
+
+- **Combined (default):** CYD pane (53x30) on top, built-in screen (53x8) below a
+  divider, in one terminal window.
+- **`--pty` (faithful):** the **CYD renders to its own pseudo-terminal** — the
+  "CYD on a serial line" topology. The built-in screen + status stay in the
+  launching terminal, which prints the CYD's PTY path. Attach a second terminal:
+
+  ```sh
+  ./emu --pty
+  # built-in panel shows e.g.  CYD -> /dev/pts/7
+  # in another terminal:
+  screen /dev/pts/7      # or: cat /dev/pts/7
+  ```
+
+  The PTY is put in raw mode (our ANSI stream has no newlines) and a full frame is
+  re-sent ~1/s so a terminal attached late (or a CYD that resets) re-syncs.
+
 Use a terminal at least **53x40**. Keys:
 
 | Key | Action |
