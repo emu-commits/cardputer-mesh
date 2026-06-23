@@ -1,0 +1,6 @@
+# upstream reference clone (not vendored)
+plai/
+
+# build artifacts
+emulator/*.o
+emulator/emu
