@@ -1,0 +1,147 @@
+// Editor — a nano-style text editor for notes/journal entries.
+// UX lessons (nano/vi-insert/micro): direct typing, visible cursor, status shows
+// position + dirty, ^S saves explicitly, and pausing the app checkpoints content
+// to storage (§6 "save at safe points; never per keystroke"). On device the
+// buffer is a gap buffer paged from SD; here a line vector stands in (portable).
+#include "apps/apps.h"
+#include <string>
+#include <vector>
+#include "core/ui_kit.h"
+
+using namespace app;
+using ui::Key; using ui::KeyEvent; using ui::TextCanvas;
+
+namespace apps {
+
+class Editor : public App {
+public:
+    void on_create(AppContext& ctx) override {
+        std::string doc = ctx.state ? ctx.state->get("editor.doc", "") : "";
+        split(doc);
+        if (ctx.state) { cy_ = ctx.state->get_int("editor.cy", 0); cx_ = ctx.state->get_int("editor.cx", 0); }
+        clamp_cursor();
+        dirty_ = false;
+    }
+    void on_pause(AppContext& ctx) override { checkpoint(ctx); } // pause = safe point
+
+    bool on_key(AppContext& ctx, const KeyEvent& k) override {
+        if (k.ctrl && (k.ch == 's' || k.ch == 'S')) { save(ctx); return true; }
+        switch (k.key) {
+            case Key::Up:    if (cy_ > 0) { cy_--; clamp_cx(); } return true;
+            case Key::Down:  if (cy_ + 1 < (int)lines_.size()) { cy_++; clamp_cx(); } return true;
+            case Key::Left:  if (cx_ > 0) cx_--; else if (cy_ > 0) { cy_--; cx_ = (int)lines_[cy_].size(); } return true;
+            case Key::Right: if (cx_ < (int)lines_[cy_].size()) cx_++; else if (cy_ + 1 < (int)lines_.size()) { cy_++; cx_ = 0; } return true;
+            case Key::Home:  cx_ = 0; return true;
+            case Key::End:   cx_ = (int)lines_[cy_].size(); return true;
+            case Key::PageUp:   cy_ = cy_ > 12 ? cy_ - 12 : 0; clamp_cx(); return true;
+            case Key::PageDown: cy_ = cy_ + 12 < (int)lines_.size() ? cy_ + 12 : (int)lines_.size() - 1; clamp_cx(); return true;
+            case Key::Enter:     split_line(); return true;
+            case Key::Backspace: backspace(); return true;
+            case Key::Delete:    del(); return true;
+            case Key::Char:
+                if (k.ch == '\t') { insert_str("  "); return true; }
+                if (k.ch >= 0x20 && k.ch < 0x7f) { insert_str(std::string(1, (char)k.ch)); return true; }
+                return false;
+            default: return false;
+        }
+    }
+
+    void render(AppContext&, TextCanvas& c) override {
+        c.clear(ui::White, ui::Black);
+        char pos[40]; std::snprintf(pos, sizeof pos, "Ln %d, Col %d", cy_ + 1, cx_ + 1);
+        std::string title = std::string("Editor  notes") + (dirty_ ? " *" : "");
+        int top = ui::header(c, title, ui::BrightGreen, pos);
+        int rows = ui::body_bottom(c) - top + 1;
+
+        if (cy_ < top_) top_ = cy_;
+        if (cy_ >= top_ + rows) top_ = cy_ - rows + 1;
+        int w = c.width();
+        if (cx_ < xoff_) xoff_ = cx_;
+        if (cx_ >= xoff_ + w) xoff_ = cx_ - w + 1;
+
+        for (int r = 0; r < rows; ++r) {
+            int li = top_ + r;
+            if (li >= (int)lines_.size()) break;
+            const std::string& ln = lines_[li];
+            std::string vis = (xoff_ < (int)ln.size()) ? ln.substr(xoff_, w) : "";
+            c.text(top + r, 0, vis, ui::White, ui::Black);
+        }
+        // draw the cursor block over its cell
+        int crow = top + (cy_ - top_), ccol = cx_ - xoff_;
+        if (crow >= top && crow <= ui::body_bottom(c) && ccol >= 0 && ccol < w) {
+            char32_t under = (cx_ < (int)lines_[cy_].size()) ? (char32_t)lines_[cy_][cx_] : U' ';
+            c.put(crow, ccol, under, ui::Black, ui::BrightGreen, ui::ATTR_INVERSE);
+        }
+        ui::footer(c, status_.empty() ? " ^S save  arrows move  enter newline  esc back "
+                                      : status_);
+    }
+
+private:
+    void split(const std::string& doc) {
+        lines_.clear();
+        size_t i = 0;
+        for (;;) {
+            size_t nl = doc.find('\n', i);
+            lines_.push_back(doc.substr(i, nl == std::string::npos ? std::string::npos : nl - i));
+            if (nl == std::string::npos) break;
+            i = nl + 1;
+        }
+        if (lines_.empty()) lines_.push_back("");
+    }
+    std::string join() const {
+        std::string s;
+        for (size_t i = 0; i < lines_.size(); ++i) { s += lines_[i]; if (i + 1 < lines_.size()) s += '\n'; }
+        return s;
+    }
+    void clamp_cursor() {
+        if (cy_ < 0) cy_ = 0;
+        if (cy_ >= (int)lines_.size()) cy_ = (int)lines_.size() - 1;
+        clamp_cx();
+    }
+    void clamp_cx() {
+        if (cx_ < 0) cx_ = 0;
+        if (cx_ > (int)lines_[cy_].size()) cx_ = (int)lines_[cy_].size();
+    }
+
+    void insert_str(const std::string& s) { lines_[cy_].insert(cx_, s); cx_ += (int)s.size(); dirty_ = true; status_.clear(); }
+    void split_line() {
+        std::string tail = lines_[cy_].substr(cx_);
+        lines_[cy_].erase(cx_);
+        lines_.insert(lines_.begin() + cy_ + 1, tail);
+        cy_++; cx_ = 0; dirty_ = true; status_.clear();
+    }
+    void backspace() {
+        if (cx_ > 0) { lines_[cy_].erase(cx_ - 1, 1); cx_--; }
+        else if (cy_ > 0) {
+            cx_ = (int)lines_[cy_ - 1].size();
+            lines_[cy_ - 1] += lines_[cy_];
+            lines_.erase(lines_.begin() + cy_); cy_--;
+        } else return;
+        dirty_ = true; status_.clear();
+    }
+    void del() {
+        if (cx_ < (int)lines_[cy_].size()) lines_[cy_].erase(cx_, 1);
+        else if (cy_ + 1 < (int)lines_.size()) { lines_[cy_] += lines_[cy_ + 1]; lines_.erase(lines_.begin() + cy_ + 1); }
+        else return;
+        dirty_ = true; status_.clear();
+    }
+    void save(AppContext& ctx) {
+        if (ctx.state) { ctx.state->set("editor.doc", join()); ctx.state->flush(); }
+        dirty_ = false; status_ = " saved ";
+    }
+    void checkpoint(AppContext& ctx) {
+        if (!ctx.state) return;
+        ctx.state->set("editor.doc", join());
+        ctx.state->set_int("editor.cy", cy_);
+        ctx.state->set_int("editor.cx", cx_);
+    }
+
+    std::vector<std::string> lines_{""};
+    int cy_ = 0, cx_ = 0, top_ = 0, xoff_ = 0;
+    bool dirty_ = false;
+    std::string status_;
+};
+
+std::unique_ptr<App> make_editor() { return std::make_unique<Editor>(); }
+
+} // namespace apps

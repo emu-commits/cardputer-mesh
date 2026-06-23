@@ -10,5 +10,9 @@ namespace apps {
 std::unique_ptr<app::App> make_launcher();
 std::unique_ptr<app::App> make_chat();
 std::unique_ptr<app::App> make_node_list();
+std::unique_ptr<app::App> make_calc();
+std::unique_ptr<app::App> make_editor();
+std::unique_ptr<app::App> make_timer();
+std::unique_ptr<app::App> make_calcurse();
 
 } // namespace apps

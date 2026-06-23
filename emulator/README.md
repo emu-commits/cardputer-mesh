@@ -10,7 +10,16 @@ A PC-native dev emulator for the Cardputer ADV mesh communicator firmware
   Port-A UART to the CYD.
 - **Mooncake-shaped app framework + arena** — one foreground app alive at a time;
   Esc → launcher; `Ctrl-P` command palette overlay.
-- **Apps** — Launcher, Mesh chat, Node list (text re-authoring of Plai's mesh apps).
+- **Apps** — Launcher, Mesh chat, Node list (text re-authoring of Plai's mesh
+  apps), **Calc** (expression + unit converter with a live preview & history tape),
+  **Calendar/Todo** (calcurse-style: Tab toggles todo↔calendar, month-grid picker,
+  GTD priorities; due appointments raise notifications), **Editor** (nano-style
+  notes, ^S to save), **Timer** (countdown presets that fire a notification on
+  expiry — even after you switch away).
+- **`ui_kit`** — the shared widget vocabulary (header/footer chrome, one
+  `ListState`+`list()` scrolling-list model, `modal_box` overlays, `input_line`).
+  Every app renders through it, enforcing §5.1: one scrolling list per view,
+  everything else a modal overlay.
 - **`MeshFacade` + `StubMesh`** — generates live traffic (DMs, @mentions, channel
   chatter) and auto-replies, so everything animates with no hardware. This is the
   swappable seam: next backend = Muzi R1 Neo over `/dev/ttyACM*` (real RF); on
@@ -109,7 +118,10 @@ diagnostics go to `mesh_bridge.log`, never to the protocol stdout.
 
 ## Next
 
-- Build out the app suite: calculator, calcurse (calendar/todo), nano editor/jrnl.
-- Calendar/timer events into the notification center.
+- File browser (breadcrumb list; i=info, v=view text, enter=open), Contacts
+  (favorites/aliases), command-palette actions beyond app-switching, clipboard.
+- FZF on-disk index + search (stretch).
 
-Done: R1-Neo real-mesh backend, `--pty` CYD sink, state persistence.
+Done: R1-Neo real-mesh backend, `--pty` CYD sink, state persistence, shared
+`ui_kit`, and the core app suite (Calc, Calendar/Todo, Editor, Timer) with
+calendar/timer events wired into the notification center.

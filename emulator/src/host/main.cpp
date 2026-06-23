@@ -63,6 +63,10 @@ int main(int argc, char** argv) {
     mgr.reg("launcher", "Home", apps::make_launcher);
     mgr.reg("chat", "Mesh chat", apps::make_chat);
     mgr.reg("nodes", "Nodes", apps::make_node_list);
+    mgr.reg("calc", "Calc", apps::make_calc);
+    mgr.reg("calcurse", "Calendar / Todo", apps::make_calcurse);
+    mgr.reg("editor", "Editor", apps::make_editor);
+    mgr.reg("timer", "Timer", apps::make_timer);
 
     host::FileStore state("emu_state.dat"); // return-to-last-position (ARCHITECTURE §6)
 
