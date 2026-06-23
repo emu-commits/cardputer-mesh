@@ -48,6 +48,35 @@ Watch the bottom pane: a DM banner appears within seconds, a `standup` reminder
 around 12 s, and the `unread:` badge increments as events arrive. Open **Mesh
 chat** to send a line and get an auto-reply.
 
+## Real mesh — Muzi R1 Neo over USB
+
+The `MeshFacade` seam swaps between the stub and a **real Meshtastic node**. The
+host backend (`BridgeMesh`) spawns `src/host/mesh_bridge.py` (canonical
+`meshtastic` lib) which talks to the node over serial and relays a tiny
+tab-separated protocol over stdio. On device this role is Plai's `MeshService`.
+
+One-time setup (Python venv with the meshtastic lib):
+
+```sh
+python3 -m venv .venv
+. .venv/bin/activate
+pip install meshtastic
+```
+
+Run against a connected node:
+
+```sh
+./emu --real                 # defaults to /dev/ttyACM0
+./emu --real --port /dev/ttyACM1
+```
+
+The node DB loads a few seconds after connect (the status bar's `nodes:` count
+jumps once the bridge finishes its initial config download). Library chatter and
+diagnostics go to `mesh_bridge.log`, never to the protocol stdout.
+
+> Mesh config (region/preset/channel) is left to the node itself — set it per
+> your network's guide (e.g. nyme.sh). The emulator does not change radio config.
+
 ## What's portable vs host-only
 
 - `src/core/` — portable C++17 (no platform deps). This is shared with the

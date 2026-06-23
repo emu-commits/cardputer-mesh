@@ -4,13 +4,18 @@
 // Mesh is a StubMesh generating live traffic; the same MeshFacade seam later
 // points at the Muzi R1 Neo (real RF) or, on device, Plai's MeshService.
 #include <csignal>
+#include <cstring>
+#include <memory>
+#include <string>
 #include <unistd.h>
 
 #include "apps/apps.h"
 #include "core/ansi.h"
 #include "core/app.h"
 #include "core/notification_center.h"
+#include "core/mesh.h"
 #include "core/stub_mesh.h"
+#include "host/bridge_mesh.h"
 #include "host/host_unix.h"
 
 using namespace ui;
@@ -21,15 +26,29 @@ static void on_sigint(int) { g_run = 0; }
 static constexpr int CYD_W = 53, CYD_H = 30;
 static constexpr int BAR_H = 8;
 
-int main() {
+int main(int argc, char** argv) {
     std::signal(SIGINT, on_sigint);
 
-    mesh::StubMesh mesh;
+    bool real = false;
+    std::string port = "/dev/ttyACM0";
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--real") == 0) real = true;
+        else if (std::strcmp(argv[i], "--port") == 0 && i + 1 < argc) port = argv[++i];
+    }
+
+    // Mesh backend: real R1 Neo over serial, or the stub. Same MeshFacade seam.
+    std::unique_ptr<mesh::MeshFacade> mesh_backend;
+    if (real)
+        mesh_backend = std::make_unique<host::BridgeMesh>(port, "./.venv/bin/python", "src/host/mesh_bridge.py");
+    else
+        mesh_backend = std::make_unique<mesh::StubMesh>();
+    mesh::MeshFacade& meshf = *mesh_backend;
+
     mesh::MessageStore store;
-    nc::NotificationCenter notify(&mesh);
+    nc::NotificationCenter notify(&meshf);
 
     // Single mesh callback fanned out (mirrors one setMessageCallback on device).
-    mesh.subscribe([&](const mesh::Message& m) {
+    meshf.subscribe([&](const mesh::Message& m) {
         store.append(m);
         notify.on_mesh(m);
     });
@@ -40,7 +59,7 @@ int main() {
     mgr.reg("nodes", "Nodes", apps::make_node_list);
 
     app::AppContext ctx;
-    ctx.apps = &mgr; ctx.mesh = &mesh; ctx.store = &store; ctx.notify = &notify;
+    ctx.apps = &mgr; ctx.mesh = &meshf; ctx.store = &store; ctx.notify = &notify;
     ctx.now_ms = host::now_ms();
     mgr.start("launcher", ctx);
 
@@ -62,7 +81,7 @@ int main() {
 
         for (auto& ke : input.poll()) mgr.handle_key(ctx, ke);
 
-        mesh.poll(now);
+        meshf.poll(now);
         if (!fired_reminder && now > 12000) {
             notify.add_event(nc::NotifType::Reminder, "calendar", "standup in 5 min", now);
             fired_reminder = true;

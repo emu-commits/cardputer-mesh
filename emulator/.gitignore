@@ -2,6 +2,10 @@
 *.o
 emu
 
+# python bridge venv + runtime logs
+.venv/
+mesh_bridge.log
+
 # editor / OS
 *.swp
 .DS_Store
