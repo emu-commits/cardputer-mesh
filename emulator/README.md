@@ -14,12 +14,18 @@ A PC-native dev emulator for the Cardputer ADV mesh communicator firmware
   apps), **Calc** (expression + unit converter with a live preview & history tape),
   **Calendar/Todo** (calcurse-style: Tab toggles todo↔calendar, month-grid picker,
   GTD priorities; due appointments raise notifications), **Editor** (nano-style
-  notes, ^S to save), **Timer** (countdown presets that fire a notification on
-  expiry — even after you switch away).
+  notes; ^S save, ^K cut line, ^U paste via the shared clipboard), **Timer**
+  (countdown presets that fire a notification on expiry — even after you switch
+  away), **Files** (mc-style browser over the `fs` seam; enter opens, `v` views
+  text with hard-wrapping, `i` info), **Contacts** (abook-style favorites +
+  aliases over the node DB).
 - **`ui_kit`** — the shared widget vocabulary (header/footer chrome, one
   `ListState`+`list()` scrolling-list model, `modal_box` overlays, `input_line`).
   Every app renders through it, enforcing §5.1: one scrolling list per view,
   everything else a modal overlay.
+- **`fs::FileSystem` + `clip::Clipboard`** — the storage and copy/paste seams.
+  Host backings: `UnixFs` (a sandboxed `emu_sd/` tree, auto-seeded) and an
+  in-RAM clipboard; on device = SD/LittleFS and the resident 8 KB buffer.
 - **`MeshFacade` + `StubMesh`** — generates live traffic (DMs, @mentions, channel
   chatter) and auto-replies, so everything animates with no hardware. This is the
   swappable seam: next backend = Muzi R1 Neo over `/dev/ttyACM*` (real RF); on
@@ -118,10 +124,11 @@ diagnostics go to `mesh_bridge.log`, never to the protocol stdout.
 
 ## Next
 
-- File browser (breadcrumb list; i=info, v=view text, enter=open), Contacts
-  (favorites/aliases), command-palette actions beyond app-switching, clipboard.
+- Command-palette actions beyond app-switching (per-app commands, clipboard ops).
+- Wire the clipboard into more apps (chat compose, calc input).
 - FZF on-disk index + search (stretch).
 
 Done: R1-Neo real-mesh backend, `--pty` CYD sink, state persistence, shared
-`ui_kit`, and the core app suite (Calc, Calendar/Todo, Editor, Timer) with
-calendar/timer events wired into the notification center.
+`ui_kit`, the `fs`/clipboard seams, and the app suite (Calc, Calendar/Todo,
+Editor, Timer, Files, Contacts) with calendar/timer events wired into the
+notification center.

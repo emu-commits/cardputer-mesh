@@ -1,6 +1,8 @@
 # build artifacts
 *.o
+*.d
 emu
+emu_sd/
 
 # python bridge venv + runtime logs
 .venv/

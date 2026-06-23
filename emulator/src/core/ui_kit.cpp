@@ -95,13 +95,15 @@ void modal_box(TextCanvas& c, int rows, int cols, const std::string& title,
 }
 
 void input_line(TextCanvas& c, int r, int col, const std::string& label,
-                const std::string& buf, uint8_t fg) {
+                const std::string& buf, uint8_t fg, int max_w) {
+    int avail = c.width() - col;
+    if (max_w > 0 && max_w < avail) avail = max_w;
+    if (avail < 1) return;
+    int field = avail - 1; // reserve a column for the caret block
     std::string s = label + buf;
-    int maxW = c.width() - col - 1;
-    if ((int)s.size() > maxW) s = s.substr(s.size() - maxW); // keep the tail visible
+    if ((int)s.size() > field) s = s.substr(s.size() - field); // keep the tail visible
     c.text(r, col, s, fg, Black);
-    int caret = col + (int)s.size();
-    if (caret < c.width()) c.put(r, caret, U'█', fg, Black, ATTR_BOLD);
+    c.put(r, col + (int)s.size(), U'█', fg, Black, ATTR_BOLD);
 }
 
 } // namespace ui

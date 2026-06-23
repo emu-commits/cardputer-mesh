@@ -168,7 +168,7 @@ private:
         const char* hint = (overlay_ == ADD_TODO) ? "type text  enter:ok  esc:cancel"
                                                    : "HH:MM text   enter:ok  esc:cancel";
         ui::modal_box(c, 5, 40, title, ui::BrightYellow, ir, ic, iw, ih, hint);
-        ui::input_line(c, ir + 1, ic, "> ", ibuf_);
+        ui::input_line(c, ir + 1, ic, "> ", ibuf_, ui::BrightWhite, iw);
     }
     void render_grid(TextCanvas& c) {
         int ir, ic, iw, ih;

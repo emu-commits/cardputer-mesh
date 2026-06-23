@@ -12,11 +12,13 @@
 #include "apps/apps.h"
 #include "core/ansi.h"
 #include "core/app.h"
+#include "core/clipboard.h"
 #include "core/notification_center.h"
 #include "core/mesh.h"
 #include "core/stub_mesh.h"
 #include "host/bridge_mesh.h"
 #include "host/file_store.h"
+#include "host/file_system_unix.h"
 #include "host/host_unix.h"
 
 using namespace ui;
@@ -67,12 +69,16 @@ int main(int argc, char** argv) {
     mgr.reg("calcurse", "Calendar / Todo", apps::make_calcurse);
     mgr.reg("editor", "Editor", apps::make_editor);
     mgr.reg("timer", "Timer", apps::make_timer);
+    mgr.reg("files", "Files", apps::make_files);
+    mgr.reg("contacts", "Contacts", apps::make_contacts);
 
     host::FileStore state("emu_state.dat"); // return-to-last-position (ARCHITECTURE §6)
+    host::UnixFs filesystem("emu_sd");      // SD-card sandbox for the file browser
+    clip::Clipboard clipboard;              // shared copy/paste buffer (§5)
 
     app::AppContext ctx;
     ctx.apps = &mgr; ctx.mesh = &meshf; ctx.store = &store; ctx.notify = &notify;
-    ctx.state = &state;
+    ctx.state = &state; ctx.fs = &filesystem; ctx.clip = &clipboard;
     ctx.now_ms = host::now_ms();
     mgr.restore_session(ctx); // resume last app, else launcher
 

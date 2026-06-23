@@ -60,9 +60,11 @@ void modal_box(TextCanvas& c, int rows, int cols, const std::string& title,
                const std::string& foot = "");
 
 // ---- text input ------------------------------------------------------------
-// "label buf_" with a caret block at the end. Clipped to the row.
+// "label buf_" with a caret block at the end. The text scrolls to keep the
+// caret (tail) visible. `max_w` bounds the field width in columns (e.g. a
+// modal's inner width); -1 means "to the right edge of the canvas".
 void input_line(TextCanvas& c, int r, int col, const std::string& label,
-                const std::string& buf, uint8_t fg = BrightWhite);
+                const std::string& buf, uint8_t fg = BrightWhite, int max_w = -1);
 
 // Truncate/pad a string to exactly w columns (ASCII).
 std::string fit(const std::string& s, int w, char pad = ' ');

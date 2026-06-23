@@ -14,5 +14,7 @@ std::unique_ptr<app::App> make_calc();
 std::unique_ptr<app::App> make_editor();
 std::unique_ptr<app::App> make_timer();
 std::unique_ptr<app::App> make_calcurse();
+std::unique_ptr<app::App> make_files();
+std::unique_ptr<app::App> make_contacts();
 
 } // namespace apps

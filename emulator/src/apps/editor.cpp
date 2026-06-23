@@ -6,6 +6,7 @@
 #include "apps/apps.h"
 #include <string>
 #include <vector>
+#include "core/clipboard.h"
 #include "core/ui_kit.h"
 
 using namespace app;
@@ -26,6 +27,8 @@ public:
 
     bool on_key(AppContext& ctx, const KeyEvent& k) override {
         if (k.ctrl && (k.ch == 's' || k.ch == 'S')) { save(ctx); return true; }
+        if (k.ctrl && (k.ch == 'k' || k.ch == 'K')) { cut_line(ctx); return true; }
+        if (k.ctrl && (k.ch == 'u' || k.ch == 'U')) { paste(ctx); return true; }
         switch (k.key) {
             case Key::Up:    if (cy_ > 0) { cy_--; clamp_cx(); } return true;
             case Key::Down:  if (cy_ + 1 < (int)lines_.size()) { cy_++; clamp_cx(); } return true;
@@ -72,7 +75,7 @@ public:
             char32_t under = (cx_ < (int)lines_[cy_].size()) ? (char32_t)lines_[cy_][cx_] : U' ';
             c.put(crow, ccol, under, ui::Black, ui::BrightGreen, ui::ATTR_INVERSE);
         }
-        ui::footer(c, status_.empty() ? " ^S save  arrows move  enter newline  esc back "
+        ui::footer(c, status_.empty() ? " ^S save  ^K cut  ^U paste  arrows  esc back "
                                       : status_);
     }
 
@@ -124,6 +127,23 @@ private:
         else if (cy_ + 1 < (int)lines_.size()) { lines_[cy_] += lines_[cy_ + 1]; lines_.erase(lines_.begin() + cy_ + 1); }
         else return;
         dirty_ = true; status_.clear();
+    }
+    void cut_line(AppContext& ctx) {
+        if (ctx.clip) ctx.clip->set(lines_[cy_]);
+        if (lines_.size() > 1) {
+            lines_.erase(lines_.begin() + cy_);
+            if (cy_ >= (int)lines_.size()) cy_ = (int)lines_.size() - 1;
+        } else lines_[0].clear();
+        cx_ = 0; dirty_ = true; status_ = " cut ";
+    }
+    void paste(AppContext& ctx) {
+        if (!ctx.clip || ctx.clip->empty()) return;
+        const std::string& s = ctx.clip->get();
+        for (char ch : s) {
+            if (ch == '\n') split_line();
+            else if (ch != '\r') { lines_[cy_].insert(cx_, 1, ch); cx_++; }
+        }
+        dirty_ = true; status_ = " pasted ";
     }
     void save(AppContext& ctx) {
         if (ctx.state) { ctx.state->set("editor.doc", join()); ctx.state->flush(); }
