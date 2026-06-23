@@ -15,6 +15,8 @@ public:
     bool is_dir(const std::string& path) override;
     bool exists(const std::string& path) override;
     bool read_text(const std::string& path, std::string& out, size_t max_bytes) override;
+    bool write_text(const std::string& path, const std::string& data) override;
+    bool append_text(const std::string& path, const std::string& data) override;
     std::string join(const std::string& base, const std::string& rel) override;
 
 private:

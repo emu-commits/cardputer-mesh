@@ -97,4 +97,24 @@ bool UnixFs::read_text(const std::string& path, std::string& out, size_t max_byt
     return true;
 }
 
+bool UnixFs::write_text(const std::string& path, const std::string& data) {
+    std::error_code ec;
+    stdfs::path p = real(path);
+    stdfs::create_directories(p.parent_path(), ec);
+    std::ofstream f(p, std::ios::binary | std::ios::trunc);
+    if (!f) return false;
+    f.write(data.data(), (std::streamsize)data.size());
+    return (bool)f;
+}
+
+bool UnixFs::append_text(const std::string& path, const std::string& data) {
+    std::error_code ec;
+    stdfs::path p = real(path);
+    stdfs::create_directories(p.parent_path(), ec);
+    std::ofstream f(p, std::ios::binary | std::ios::app);
+    if (!f) return false;
+    f.write(data.data(), (std::streamsize)data.size());
+    return (bool)f;
+}
+
 } // namespace host

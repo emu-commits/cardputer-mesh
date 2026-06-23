@@ -3,6 +3,7 @@
 // this role is filled by Plai's MeshService over SPI. Same MeshFacade seam.
 #pragma once
 #include <map>
+#include <set>
 #include <string>
 #include <sys/types.h>
 #include <vector>
@@ -26,6 +27,10 @@ public:
     void poll(uint32_t now_ms) override;
     // The connected node is the user's live node; never write config to it.
     bool config_writable() const override { return false; }
+    // Favorite is tracked locally only — we do NOT push set_favorite_node to the
+    // live R1 Neo (per the read-only-on-real-node decision).
+    void set_favorite(uint32_t id, bool fav) override { if (fav) favs_.insert(id); else favs_.erase(id); }
+    bool is_favorite(uint32_t id) const override { return favs_.count(id) > 0; }
 
 private:
     void handle_line(const std::string& line, uint32_t now_ms);
@@ -39,6 +44,7 @@ private:
     std::string our_short_ = "?";
     std::string our_long_ = "r1-neo";
     std::map<uint32_t, mesh::Node> nodes_;
+    std::set<uint32_t> favs_;
     std::vector<mesh::Subscriber> subs_;
     uint32_t next_pkt_ = 1;
 };

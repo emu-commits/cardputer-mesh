@@ -26,6 +26,11 @@ void footer(TextCanvas& c, const std::string& hint) {
     c.text(c.height() - 1, 0, fit(hint, c.width()), Black, Cyan, ATTR_INVERSE);
 }
 
+void footer2(TextCanvas& c, const std::string& l1, const std::string& l2) {
+    c.text(c.height() - 2, 0, fit(l1, c.width()), Black, Cyan, ATTR_INVERSE);
+    c.text(c.height() - 1, 0, fit(l2, c.width()), Black, Cyan, ATTR_INVERSE);
+}
+
 void ListState::clamp(int n, int rows) {
     if (n <= 0) { sel = 0; top = 0; return; }
     if (sel < 0) sel = 0;
@@ -39,10 +44,11 @@ void ListState::clamp(int n, int rows) {
 }
 
 bool ListState::move(const KeyEvent& k, int n, int rows) {
+    if (n <= 0) return k.key == Key::Up || k.key == Key::Down;
     bool handled = true;
     switch (k.key) {
-        case Key::Up:       sel--; break;
-        case Key::Down:     sel++; break;
+        case Key::Up:       sel = (sel > 0) ? sel - 1 : n - 1; break;     // wrap to bottom
+        case Key::Down:     sel = (sel + 1 < n) ? sel + 1 : 0; break;     // wrap to top
         case Key::PageUp:   sel -= rows; break;
         case Key::PageDown: sel += rows; break;
         case Key::Home:     sel = 0; break;
@@ -53,8 +59,9 @@ bool ListState::move(const KeyEvent& k, int n, int rows) {
     return handled;
 }
 
-void list(TextCanvas& c, int r0, int rows, const ListState& ls, int n,
+void list(TextCanvas& c, int r0, int rows, ListState& ls, int n,
           const std::function<std::string(int)>& item, uint8_t fg, uint8_t accent) {
+    ls.clamp(n, rows); // keep scroll window consistent with current row count
     int w = c.width();
     bool bar = n > rows; // need a scrollbar?
     int textW = w - (bar ? 1 : 0);

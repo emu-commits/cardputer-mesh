@@ -65,7 +65,7 @@ BridgeMesh::~BridgeMesh() {
 std::vector<mesh::Node> BridgeMesh::nodes() {
     std::vector<mesh::Node> v;
     v.reserve(nodes_.size());
-    for (auto& kv : nodes_) v.push_back(kv.second);
+    for (auto& kv : nodes_) { v.push_back(kv.second); v.back().is_favorite = favs_.count(kv.first) > 0; }
     return v;
 }
 

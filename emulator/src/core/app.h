@@ -7,6 +7,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 #include "core/input.h"
@@ -32,6 +33,10 @@ struct AppContext {
     fs::FileSystem* fs = nullptr;
     clip::Clipboard* clip = nullptr;
     cfg::Settings* settings = nullptr;
+    // Cross-app intent: the requester sets this before request_switch(); the
+    // target app reads + clears it in on_create/on_resume. e.g. "open:/notes/x",
+    // "dm:439041101", "contact:439041101".
+    std::string nav_arg;
     uint32_t now_ms = 0;
 };
 
@@ -62,8 +67,10 @@ using AppFactory = std::function<std::unique_ptr<App>()>;
 
 class AppManager {
 public:
-    void reg(const std::string& id, const std::string& title, AppFactory f);
-    // [(id,title)] excluding the launcher itself.
+    // hidden apps are reachable via request_switch but excluded from the
+    // launcher list and palette app-switches (e.g. the setup wizard, #18).
+    void reg(const std::string& id, const std::string& title, AppFactory f, bool hidden = false);
+    // [(id,title)] excluding the launcher itself and hidden apps.
     std::vector<std::pair<std::string, std::string>> list() const;
 
     void start(const std::string& id, AppContext& ctx);
@@ -88,6 +95,7 @@ private:
 
     std::map<std::string, AppFactory> fac_;
     std::vector<std::pair<std::string, std::string>> order_;
+    std::set<std::string> hidden_;
 
     std::unique_ptr<App> cur_;
     std::string cur_id_;

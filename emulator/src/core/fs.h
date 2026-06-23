@@ -26,6 +26,10 @@ public:
     virtual bool exists(const std::string& path) = 0;
     // Read up to max_bytes of a file as text. Returns false if not readable.
     virtual bool read_text(const std::string& path, std::string& out, size_t max_bytes) = 0;
+    // Write/overwrite a file (creating parent dirs). Returns false on failure.
+    virtual bool write_text(const std::string& path, const std::string& data) = 0;
+    // Append to a file (creating it + parent dirs).
+    virtual bool append_text(const std::string& path, const std::string& data) = 0;
     // Normalize/join: resolve `rel` against `base` (both rooted), clamping to root.
     virtual std::string join(const std::string& base, const std::string& rel) = 0;
 };

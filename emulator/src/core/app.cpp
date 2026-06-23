@@ -9,15 +9,16 @@ static std::string lower(std::string s) {
     return s;
 }
 
-void AppManager::reg(const std::string& id, const std::string& title, AppFactory f) {
+void AppManager::reg(const std::string& id, const std::string& title, AppFactory f, bool hidden) {
     fac_[id] = std::move(f);
     order_.push_back({id, title});
+    if (hidden) hidden_.insert(id);
 }
 
 std::vector<std::pair<std::string, std::string>> AppManager::list() const {
     std::vector<std::pair<std::string, std::string>> out;
     for (auto& p : order_)
-        if (p.first != "launcher") out.push_back(p);
+        if (p.first != "launcher" && !hidden_.count(p.first)) out.push_back(p);
     return out;
 }
 
@@ -66,11 +67,11 @@ void AppManager::handle_key(AppContext& ctx, const ui::KeyEvent& k) {
 
     if (pal_) { palette_key(ctx, k); return; }
 
-    if (k.key == ui::Key::Esc && cur_id_ != "launcher") {
-        request_switch("launcher");
-        return;
-    }
-    if (cur_) cur_->on_key(ctx, k);
+    // The active app gets first crack at every key (including Esc) so it can
+    // close an overlay or pop a sub-level. Only if it doesn't consume Esc do we
+    // fall back to "Esc = leave app -> launcher".
+    if (cur_ && cur_->on_key(ctx, k)) return;
+    if (k.key == ui::Key::Esc && cur_id_ != "launcher") request_switch("launcher");
 }
 
 void AppManager::tick(AppContext& ctx) {
@@ -94,7 +95,7 @@ std::vector<Command> AppManager::palette_items(AppContext& ctx) {
     if (cur_) for (auto& c : cur_->commands(ctx)) out.push_back(c);
     // 2) switch to any other app
     for (auto& p : order_) {
-        if (p.first == "launcher" || p.first == cur_id_) continue;
+        if (p.first == "launcher" || p.first == cur_id_ || hidden_.count(p.first)) continue;
         std::string id = p.first;
         out.push_back({"Go to " + p.second, [this, id](AppContext&) { request_switch(id); }});
     }

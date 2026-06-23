@@ -18,6 +18,7 @@ struct Node {
     std::string short_name;
     uint32_t last_heard_ms;
     int snr;
+    bool is_favorite = false; // Meshtastic node-DB favorite flag (pins + biases routing)
 };
 
 struct Message {
@@ -45,14 +46,34 @@ public:
     // Whether the device config may be edited. False for a connected real node
     // we must not reconfigure (e.g. the live R1 Neo) -> config screens read-only.
     virtual bool config_writable() const { return true; }
+
+    // Meshtastic node favorite (is_favorite in the node DB; pins + biases routing).
+    // On device this is an admin set_favorite_node to the local node. On the real
+    // backend here it is kept local-only (we never write to the live node).
+    virtual void set_favorite(uint32_t id, bool fav) { (void)id; (void)fav; }
+    virtual bool is_favorite(uint32_t id) const { (void)id; return false; }
 };
 
 // Shared rolling history both chat (reads) and the host (appends) use.
+// Bounded two ways so it can't grow without limit: a hard count cap and a
+// 30-day age window (mesh traffic older than 30 days is dropped). On device the
+// file-backed history is pruned the same way using real timestamps.
 class MessageStore {
 public:
+    static constexpr uint32_t MAX_AGE_MS = 30u * 24 * 3600 * 1000; // 30 days
+
     void append(const Message& m) {
         if (msgs_.size() >= cap_) msgs_.erase(msgs_.begin());
         msgs_.push_back(m);
+        prune(m.ts_ms);
+    }
+    // Drop messages older than 30 days relative to `now_ms` (the newest ts).
+    void prune(uint32_t now_ms) {
+        if (now_ms < MAX_AGE_MS) return; // not enough elapsed time to prune
+        uint32_t cutoff = now_ms - MAX_AGE_MS;
+        size_t i = 0;
+        while (i < msgs_.size() && msgs_[i].ts_ms < cutoff) ++i;
+        if (i) msgs_.erase(msgs_.begin(), msgs_.begin() + i);
     }
     const std::vector<Message>& all() const { return msgs_; }
 private:

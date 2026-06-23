@@ -29,6 +29,8 @@ int header(TextCanvas& c, const std::string& title, uint8_t accent,
            const std::string& right = "");
 // Full-width inverse hint bar on the last row.
 void footer(TextCanvas& c, const std::string& hint);
+// Two-row inverse hint bar on the last two rows (for hints too long for one row).
+void footer2(TextCanvas& c, const std::string& l1, const std::string& l2);
 // First body row / last body row given the standard chrome (header + footer).
 inline int body_top(const TextCanvas&) { return 2; }
 inline int body_bottom(const TextCanvas& c) { return c.height() - 2; }
@@ -47,7 +49,9 @@ struct ListState {
 // (already sized by the caller or auto-padded here). Selected row gets a "> "
 // gutter + inverse highlight in `accent`. Draws a 1-col scrollbar at the right
 // edge when n > rows.
-void list(TextCanvas& c, int r0, int rows, const ListState& ls, int n,
+// Clamps `ls` to (n, rows) first, so the scroll window is always consistent with
+// the current row count (fixes stale `top` after a selection was restored).
+void list(TextCanvas& c, int r0, int rows, ListState& ls, int n,
           const std::function<std::string(int)>& item,
           uint8_t fg = White, uint8_t accent = BrightWhite);
 
