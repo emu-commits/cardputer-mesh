@@ -33,6 +33,13 @@ struct AppContext {
     uint32_t now_ms = 0;
 };
 
+// A palette command: a titled action. Apps contribute context commands that the
+// command palette merges with global ones (§5).
+struct Command {
+    std::string title;
+    std::function<void(AppContext&)> run;
+};
+
 class App {
 public:
     virtual ~App() = default;
@@ -45,6 +52,8 @@ public:
     virtual void render(AppContext&, ui::TextCanvas&) {}
     virtual void on_pause(AppContext&) {}
     virtual void on_destroy(AppContext&) {}
+    // Context commands the palette should offer while this app is foreground.
+    virtual std::vector<Command> commands(AppContext&) { return {}; }
 };
 
 using AppFactory = std::function<std::unique_ptr<App>()>;
@@ -71,8 +80,9 @@ public:
 private:
     void open_palette();
     void palette_key(AppContext& ctx, const ui::KeyEvent& k);
-    void render_palette(ui::TextCanvas& canvas);
-    std::vector<std::pair<std::string, std::string>> palette_filtered() const;
+    void render_palette(AppContext& ctx, ui::TextCanvas& canvas);
+    std::vector<Command> palette_items(AppContext& ctx);    // active + app-switch + global
+    std::vector<Command> palette_filtered(AppContext& ctx); // items matching the filter
 
     std::map<std::string, AppFactory> fac_;
     std::vector<std::pair<std::string, std::string>> order_;

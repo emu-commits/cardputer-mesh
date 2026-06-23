@@ -4,6 +4,7 @@
 // the last result. One input line, no modes, no panes (§5.1).
 #include "apps/apps.h"
 #include <vector>
+#include "core/clipboard.h"
 #include "core/eval.h"
 #include "core/ui_kit.h"
 
@@ -39,15 +40,21 @@ public:
         ctx.state->set("calc.tape", h);
     }
 
-    bool on_key(AppContext&, const KeyEvent& k) override {
+    bool on_key(AppContext& ctx, const KeyEvent& k) override {
         if (ls_.move(k, (int)tape_.size(), rows_)) return true;
         if (k.key == Key::Enter) { commit(); return true; }
         if (k.key == Key::Backspace) { if (!input_.empty()) input_.pop_back(); return true; }
-        if (k.is_char()) {
-            if (k.ch == 'c' && input_.empty() && k.ctrl) { tape_.clear(); return true; }
-            if (k.ch >= 0x20 && k.ch < 0x7f) { input_ += (char)k.ch; return true; }
-        }
+        if (k.ctrl && (k.ch == 'u' || k.ch == 'U')) { if (ctx.clip) input_ += ctx.clip->get(); return true; }
+        if (k.is_char() && k.ch >= 0x20 && k.ch < 0x7f) { input_ += (char)k.ch; return true; }
         return false;
+    }
+
+    std::vector<Command> commands(AppContext&) override {
+        return {
+            {"Copy result", [this](AppContext& c) { if (c.clip) c.clip->set(calc::format(ans_)); }},
+            {"Paste", [this](AppContext& c) { if (c.clip) input_ += c.clip->get(); }},
+            {"Clear tape", [this](AppContext&) { tape_.clear(); ls_.sel = 0; }},
+        };
     }
 
     void render(AppContext&, TextCanvas& c) override {

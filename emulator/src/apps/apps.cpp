@@ -1,6 +1,7 @@
 #include "apps/apps.h"
 #include <cstdio>
 #include <ctime>
+#include "core/clipboard.h"
 #include "core/mesh.h"
 #include "core/notification_center.h"
 #include "core/ui_kit.h"
@@ -68,8 +69,16 @@ public:
         if (k.key == Key::Backspace) { if (!compose_.empty()) compose_.pop_back(); return true; }
         if (k.key == Key::Up) { scroll_++; return true; }
         if (k.key == Key::Down) { if (scroll_ > 0) scroll_--; return true; }
+        if (k.ctrl && (k.ch == 'u' || k.ch == 'U')) { if (ctx.clip) compose_ += ctx.clip->get(); return true; }
         if (k.is_char() && k.ch >= 0x20 && k.ch < 0x7f) { compose_ += (char)k.ch; return true; }
         return false;
+    }
+
+    std::vector<Command> commands(AppContext&) override {
+        return {
+            {"Paste into message", [this](AppContext& c) { if (c.clip) compose_ += c.clip->get(); }},
+            {"Clear message", [this](AppContext&) { compose_.clear(); }},
+        };
     }
     void render(AppContext& ctx, TextCanvas& c) override {
         c.clear(ui::White, ui::Black);

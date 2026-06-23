@@ -79,7 +79,7 @@ void AppManager::tick(AppContext& ctx) {
 
 void AppManager::render(AppContext& ctx, ui::TextCanvas& canvas) {
     if (cur_) cur_->render(ctx, canvas);
-    if (pal_) render_palette(canvas);
+    if (pal_) render_palette(ctx, canvas);
 }
 
 void AppManager::open_palette() {
@@ -88,19 +88,35 @@ void AppManager::open_palette() {
     pal_filter_.clear();
 }
 
-std::vector<std::pair<std::string, std::string>> AppManager::palette_filtered() const {
-    std::vector<std::pair<std::string, std::string>> items = list();
-    items.push_back({"__quit__", "Quit"});
+std::vector<Command> AppManager::palette_items(AppContext& ctx) {
+    std::vector<Command> out;
+    // 1) commands contributed by the active app (most contextual)
+    if (cur_) for (auto& c : cur_->commands(ctx)) out.push_back(c);
+    // 2) switch to any other app
+    for (auto& p : order_) {
+        if (p.first == "launcher" || p.first == cur_id_) continue;
+        std::string id = p.first;
+        out.push_back({"Go to " + p.second, [this, id](AppContext&) { request_switch(id); }});
+    }
+    if (cur_id_ != "launcher")
+        out.push_back({"Go to Home", [this](AppContext&) { request_switch("launcher"); }});
+    // 3) global
+    out.push_back({"Quit", [this](AppContext&) { quit_requested = true; }});
+    return out;
+}
+
+std::vector<Command> AppManager::palette_filtered(AppContext& ctx) {
+    auto items = palette_items(ctx);
     if (pal_filter_.empty()) return items;
     std::string f = lower(pal_filter_);
-    std::vector<std::pair<std::string, std::string>> out;
-    for (auto& p : items)
-        if (lower(p.second).find(f) != std::string::npos) out.push_back(p);
+    std::vector<Command> out;
+    for (auto& c : items)
+        if (lower(c.title).find(f) != std::string::npos) out.push_back(c);
     return out;
 }
 
 void AppManager::palette_key(AppContext& ctx, const ui::KeyEvent& k) {
-    auto items = palette_filtered();
+    auto items = palette_filtered(ctx);
     switch (k.key) {
         case ui::Key::Esc: pal_ = false; return;
         case ui::Key::Up: if (pal_sel_ > 0) pal_sel_--; return;
@@ -108,8 +124,8 @@ void AppManager::palette_key(AppContext& ctx, const ui::KeyEvent& k) {
         case ui::Key::Backspace: if (!pal_filter_.empty()) pal_filter_.pop_back(); pal_sel_ = 0; return;
         case ui::Key::Enter:
             if (!items.empty() && pal_sel_ < (int)items.size()) {
-                request_switch(items[pal_sel_].first);
                 pal_ = false;
+                items[pal_sel_].run(ctx); // may switch apps or mutate the active app
             }
             return;
         case ui::Key::Char:
@@ -117,26 +133,31 @@ void AppManager::palette_key(AppContext& ctx, const ui::KeyEvent& k) {
             return;
         default: return;
     }
-    (void)ctx;
 }
 
-void AppManager::render_palette(ui::TextCanvas& canvas) {
-    const int boxR = 4, boxC = 8, boxW = 36, boxH = 16;
+void AppManager::render_palette(AppContext& ctx, ui::TextCanvas& canvas) {
+    const int boxR = 2, boxC = 6, boxW = 41, boxH = 16;
     canvas.fill_rect(boxR, boxC, boxH, boxW, U' ', ui::White, ui::Black);
     canvas.draw_box(boxR, boxC, boxH, boxW, ui::BrightCyan, ui::Black, ui::ATTR_BOLD);
     canvas.text(boxR, boxC + 2, " Command Palette ", ui::BrightCyan, ui::Black, ui::ATTR_BOLD);
     canvas.text(boxR + 1, boxC + 2, "> " + pal_filter_, ui::BrightWhite, ui::Black);
+    canvas.put(boxR + 1, boxC + 4 + (int)pal_filter_.size(), U'█', ui::BrightWhite, ui::Black);
     canvas.hline(boxR + 2, boxC + 1, boxW - 2, U'-', ui::Gray, ui::Black);
 
-    auto items = palette_filtered();
-    int row = boxR + 3;
+    auto items = palette_filtered(ctx);
     int maxRows = boxH - 4;
-    for (int i = 0; i < (int)items.size() && i < maxRows; ++i) {
+    if (pal_sel_ >= (int)items.size()) pal_sel_ = items.empty() ? 0 : (int)items.size() - 1;
+    int top = 0;
+    if (pal_sel_ >= maxRows) top = pal_sel_ - maxRows + 1;
+    for (int r = 0; r < maxRows; ++r) {
+        int i = top + r;
+        if (i >= (int)items.size()) break;
         bool sel = (i == pal_sel_);
-        uint8_t attr = sel ? ui::ATTR_INVERSE : ui::ATTR_NONE;
-        std::string line = " " + items[i].second;
+        std::string line = " " + items[i].title;
         while ((int)line.size() < boxW - 3) line += ' ';
-        canvas.text(row + i, boxC + 2, line, ui::White, ui::Black, attr);
+        if ((int)line.size() > boxW - 3) line.resize(boxW - 3);
+        canvas.text(boxR + 3 + r, boxC + 2, line, ui::White, ui::Black,
+                    sel ? ui::ATTR_INVERSE : ui::ATTR_NONE);
     }
 }
 

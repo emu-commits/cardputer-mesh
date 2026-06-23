@@ -9,7 +9,9 @@ A PC-native dev emulator for the Cardputer ADV mesh communicator firmware
   `Terminal` sink. On the host that sink is your terminal; on device it's the
   Port-A UART to the CYD.
 - **Mooncake-shaped app framework + arena** — one foreground app alive at a time;
-  Esc → launcher; `Ctrl-P` command palette overlay.
+  Esc → launcher; `Ctrl-P` command palette overlay that merges the active app's
+  **context commands** (e.g. editor Save/Cut/Copy/Paste, calc Copy-result/Clear)
+  with app-switches and global actions, type-to-filter.
 - **Apps** — Launcher, Mesh chat, Node list (text re-authoring of Plai's mesh
   apps), **Calc** (expression + unit converter with a live preview & history tape),
   **Calendar/Todo** (calcurse-style: Tab toggles todo↔calendar, month-grid picker,
@@ -124,11 +126,10 @@ diagnostics go to `mesh_bridge.log`, never to the protocol stdout.
 
 ## Next
 
-- Command-palette actions beyond app-switching (per-app commands, clipboard ops).
-- Wire the clipboard into more apps (chat compose, calc input).
-- FZF on-disk index + search (stretch).
+- FZF on-disk index + search (stretch) — the only remaining planned subsystem.
 
 Done: R1-Neo real-mesh backend, `--pty` CYD sink, state persistence, shared
-`ui_kit`, the `fs`/clipboard seams, and the app suite (Calc, Calendar/Todo,
-Editor, Timer, Files, Contacts) with calendar/timer events wired into the
-notification center.
+`ui_kit`, the `fs`/clipboard seams, the app suite (Calc, Calendar/Todo, Editor,
+Timer, Files, Contacts) with calendar/timer events into the notification center,
+and the command palette with per-app context commands + clipboard ops (`^U`
+paste / `^K` cut wired through chat, calc, and the editor).

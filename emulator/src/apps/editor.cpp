@@ -79,6 +79,15 @@ public:
                                       : status_);
     }
 
+    std::vector<Command> commands(AppContext&) override {
+        return {
+            {"Save note", [this](AppContext& c) { save(c); }},
+            {"Cut line", [this](AppContext& c) { cut_line(c); }},
+            {"Copy line", [this](AppContext& c) { if (c.clip) c.clip->set(lines_[cy_]); status_ = " copied "; }},
+            {"Paste", [this](AppContext& c) { paste(c); }},
+        };
+    }
+
 private:
     void split(const std::string& doc) {
         lines_.clear();

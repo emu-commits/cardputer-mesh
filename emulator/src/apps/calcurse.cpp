@@ -75,6 +75,14 @@ public:
         else if (overlay_ == ADD_TODO || overlay_ == ADD_APPT) render_prompt(c);
     }
 
+    std::vector<Command> commands(AppContext&) override {
+        return {
+            {"New todo", [this](AppContext&) { mode_ = TODO; overlay_ = ADD_TODO; ibuf_.clear(); }},
+            {"New appointment", [this](AppContext&) { mode_ = CAL; overlay_ = ADD_APPT; ibuf_.clear(); }},
+            {"Pick date", [this](AppContext&) { mode_ = CAL; gy_ = sy_; gm_ = sm_; gd_ = sd_; overlay_ = GRID; }},
+        };
+    }
+
 private:
     // ---- TODO view ----
     bool todo_key(const KeyEvent& k) {
