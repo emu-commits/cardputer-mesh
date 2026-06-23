@@ -1,5 +1,5 @@
 // Phase-1 emulator entry. Composes two logical screens into the host terminal:
-//   top  = CYD (53x30)  — the primary work surface (launcher / chat / nodes)
+//   top  = CYD (53x20)  — the primary work surface (launcher / chat / nodes)
 //   bot  = built-in 1.14" screen (53x8) — status strip + notification center
 // Mesh is a StubMesh generating live traffic; the same MeshFacade seam later
 // points at the Muzi R1 Neo (real RF) or, on device, Plai's MeshService.
@@ -24,7 +24,10 @@ using namespace ui;
 static volatile std::sig_atomic_t g_run = 1;
 static void on_sigint(int) { g_run = 0; }
 
-static constexpr int CYD_W = 53, CYD_H = 30;
+// CYD grid: 53x20 from a 6x12 font on the 320x240 panel (4:3 landscape). 20 rows
+// (not 30 from a 6x8 font) keeps cols/rows ~= 8/3 so the emulator reads landscape
+// in a terminal too — terminal cells are ~2x taller than wide. See docs §presentation.
+static constexpr int CYD_W = 53, CYD_H = 20;
 static constexpr int BAR_H = 8;
 
 int main(int argc, char** argv) {

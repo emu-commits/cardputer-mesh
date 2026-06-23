@@ -26,7 +26,7 @@ A PC-native dev emulator for the Cardputer ADV mesh communicator firmware
 ## Layout
 
 ```
-top  pane  = CYD  (53x30)  primary work surface
+top  pane  = CYD  (53x20)  primary work surface  (320x240 landscape)
 =====================  built-in screen  =====================
 bottom pane = built-in 1.14" screen (53x8): status + notifications
 ```
@@ -40,7 +40,7 @@ make run      # or: ./emu
 
 ### Two-screen modes
 
-- **Combined (default):** CYD pane (53x30) on top, built-in screen (53x8) below a
+- **Combined (default):** CYD pane (53x20) on top, built-in screen (53x8) below a
   divider, in one terminal window.
 - **`--pty` (faithful):** the **CYD renders to its own pseudo-terminal** — the
   "CYD on a serial line" topology. The built-in screen + status stay in the

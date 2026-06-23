@@ -108,7 +108,12 @@ absent, the built-in screen falls back to a minimal local UI.
 CYD runs its own VT100/ANSI firmware (FabGL-class); it only *receives* bytes.
 
 **TextCanvas** (the API every app renders into):
-- Logical cell grid; at 6×8 font, 320×240 ≈ **53 cols × 30 rows**.
+- Logical cell grid. CYD is **320×240 (4:3 landscape)**. With a 6×12 font that is
+  **53 cols × 20 rows** (chosen: 12px is legible on a 2.8" panel, and cols/rows≈8/3
+  also reads landscape in a host terminal, where cells are ~2× taller than wide).
+  A denser 6×8 font would give 53×30 but renders cramped on hardware and looks
+  portrait in the emulator. Orientation is set device-side via the CYD's display
+  rotation (240×320 ST7789 scanned as 320×240); the brain only streams ANSI cells.
 - Cell = `{ codepoint, fg, bg, attr(bold/inverse/underline) }`.
 - `canvas.put/line/list/overlay(...)`. Apps never emit ANSI directly.
 - Cost: grid ≈ 6 KB; double-buffer for diffing ≈ 12 KB.
