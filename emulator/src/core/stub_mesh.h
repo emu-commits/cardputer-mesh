@@ -3,6 +3,7 @@
 // center animate with no hardware. Swap for an R1-Neo serial backend later.
 #pragma once
 #include <deque>
+#include <map>
 #include <set>
 #include "core/mesh.h"
 
@@ -25,6 +26,12 @@ public:
     void poll(uint32_t now_ms) override;
     void set_favorite(uint32_t id, bool fav) override { if (fav) favs_.insert(id); else favs_.erase(id); }
     bool is_favorite(uint32_t id) const override { return favs_.count(id) > 0; }
+    void request_traceroute(uint32_t dest) override;
+    bool get_traceroute(uint32_t dest, TraceRoute& out) override {
+        auto it = tr_.find(dest); if (it == tr_.end()) return false; out = it->second; return true;
+    }
+    void set_ignored(uint32_t id, bool ign) override { if (ign) ignored_.insert(id); else ignored_.erase(id); }
+    bool is_ignored(uint32_t id) const override { return ignored_.count(id) > 0; }
 
 private:
     void emit(const Message& m);
@@ -34,6 +41,10 @@ private:
     std::string our_long_ = "cardputer-cb";
     std::vector<Node> nodes_;
     std::set<uint32_t> favs_;
+    std::set<uint32_t> ignored_;
+    std::map<uint32_t, TraceRoute> tr_;
+    std::vector<std::pair<uint32_t, uint32_t>> tr_due_; // (dest, resolve_at_ms)
+    uint32_t last_now_ = 0;
     std::vector<Subscriber> subs_;
 
     struct Pending { uint32_t at_ms; Message msg; };

@@ -284,10 +284,10 @@ private:
 
 // ---- Node list -------------------------------------------------------------
 class NodeList : public App {
+    enum Overlay { NONE, INFO, TRACE };
 public:
     void on_create(AppContext& ctx) override {
         if (ctx.state) ls_.sel = ctx.state->get_int("nodes.sel", 0);
-        ls_.clamp((int)ctx.mesh->nodes().size(), 1);
     }
     void on_pause(AppContext& ctx) override {
         if (ctx.state) ctx.state->set_int("nodes.sel", ls_.sel);
@@ -301,15 +301,20 @@ public:
         return ns;
     }
     bool on_key(AppContext& ctx, const KeyEvent& k) override {
+        if (overlay_ != NONE) { if (k.key == Key::Esc || k.key == Key::Enter) overlay_ = NONE; return true; }
         auto ns = sorted(ctx);
         if (ls_.move(k, (int)ns.size(), rows_)) return true;
         if (ns.empty()) return false;
         const mesh::Node& sel = ns[ls_.sel];
         uint32_t id = sel.id;
+        sel_id_ = id; sel_long_ = sel.long_name; sel_short_ = sel.short_name; sel_snr_ = sel.snr; sel_heard_ = sel.last_heard_ms;
         if (k.key == Key::Enter) { ctx.nav_arg = "dm:" + std::to_string(id); ctx.apps->request_switch("chat"); return true; }
         if (k.is_char()) {
             if (k.ch == 'f') { ctx.mesh->set_favorite(id, !ctx.mesh->is_favorite(id)); return true; }
-            if (k.ch == 'c') { // save as contact, prefilling lora id + names
+            if (k.ch == 'x') { ctx.mesh->set_ignored(id, !ctx.mesh->is_ignored(id)); return true; }
+            if (k.ch == 'i') { overlay_ = INFO; return true; }
+            if (k.ch == 't') { ctx.mesh->request_traceroute(id); overlay_ = TRACE; return true; }
+            if (k.ch == 'c') {
                 ctx.nav_arg = "contact:" + std::to_string(id) + "\t" + sel.long_name + "\t" + sel.short_name;
                 ctx.apps->request_switch("contacts"); return true;
             }
@@ -323,17 +328,57 @@ public:
         int top = ui::header(c, "Nodes", ui::BrightMagenta, cnt);
         rows_ = ui::body_bottom(c) - top + 1;
         ui::list(c, top, rows_, ls_, (int)ns.size(), [&](int i) {
+            char mark = ns[i].is_favorite ? '*' : (ctx.mesh->is_ignored(ns[i].id) ? 'x' : ' ');
             char buf[96];
-            std::snprintf(buf, sizeof buf, "%s%-5s %-13s snr%+3d",
-                          ns[i].is_favorite ? "*" : " ",
-                          ns[i].short_name.c_str(), ns[i].long_name.c_str(), ns[i].snr);
+            std::snprintf(buf, sizeof buf, "%c%-5s %-13s snr%+3d",
+                          mark, ns[i].short_name.c_str(), ns[i].long_name.c_str(), ns[i].snr);
             return std::string(buf);
         }, ui::White, ui::BrightMagenta);
-        ui::footer(c, " enter:DM  f:favorite  c:save contact  esc:back ");
+        ui::footer2(c, " enter:DM  i:info  t:traceroute  f:fav  x:ignore ",
+                       " c:save contact   up/dn move   esc:back ");
+        if (overlay_ == INFO) render_info(ctx, c);
+        else if (overlay_ == TRACE) render_trace(ctx, c);
     }
 private:
+    std::string name_for(AppContext& ctx, uint32_t id) {
+        if (id == ctx.mesh->our_id()) return ctx.mesh->our_short() + "(me)";
+        for (auto& n : ctx.mesh->nodes()) if (n.id == id) return n.short_name.empty() ? n.long_name : n.short_name;
+        char b[12]; std::snprintf(b, sizeof b, "!%08x", id); return b;
+    }
+    void render_info(AppContext& ctx, TextCanvas& c) {
+        int ir, ic, iw, ih;
+        ui::modal_box(c, 8, 42, "Node info", ui::BrightMagenta, ir, ic, iw, ih, "esc:close");
+        char idb[16]; std::snprintf(idb, sizeof idb, "!%08x", sel_id_);
+        c.text(ir + 0, ic, ui::fit(sel_long_ + " (" + sel_short_ + ")", iw), ui::White, ui::Black);
+        c.text(ir + 1, ic, std::string("id:  ") + idb, ui::Gray, ui::Black);
+        char snr[24]; std::snprintf(snr, sizeof snr, "snr: %+d dB", sel_snr_);
+        c.text(ir + 2, ic, snr, ui::White, ui::Black);
+        std::string heard = sel_heard_ ? (std::to_string((ctx.now_ms - sel_heard_) / 1000) + "s ago") : "(not heard yet)";
+        c.text(ir + 3, ic, "heard: " + heard, ui::White, ui::Black);
+        c.text(ir + 4, ic, std::string("favorite: ") + (ctx.mesh->is_favorite(sel_id_) ? "yes" : "no") +
+                            "   ignored: " + (ctx.mesh->is_ignored(sel_id_) ? "yes" : "no"), ui::White, ui::Black);
+    }
+    void render_trace(AppContext& ctx, TextCanvas& c) {
+        int ir, ic, iw, ih;
+        ui::modal_box(c, 7, 46, "Traceroute", ui::BrightMagenta, ir, ic, iw, ih, "esc:close");
+        c.text(ir, ic, ui::fit("to " + sel_long_, iw), ui::White, ui::Black);
+        mesh::TraceRoute tr;
+        if (!ctx.mesh->get_traceroute(sel_id_, tr)) { c.text(ir + 2, ic, "(no traceroute)", ui::Gray, ui::Black); return; }
+        if (tr.pending) { c.text(ir + 2, ic, "requesting route...", ui::BrightYellow, ui::Black); return; }
+        std::string path;
+        for (size_t i = 0; i < tr.route.size(); ++i) { if (i) path += " > "; path += name_for(ctx, tr.route[i]); }
+        // wrap path across up to 3 inner rows
+        for (int r = 0; r < ih - 1 && !path.empty(); ++r) {
+            c.text(ir + 1 + r, ic, path.substr(0, iw), ui::BrightGreen, ui::Black);
+            path = path.size() > (size_t)iw ? path.substr(iw) : "";
+        }
+    }
     ui::ListState ls_;
     int rows_ = 1;
+    Overlay overlay_ = NONE;
+    uint32_t sel_id_ = 0, sel_heard_ = 0;
+    int sel_snr_ = 0;
+    std::string sel_long_, sel_short_;
 };
 
 std::unique_ptr<App> make_launcher() { return std::make_unique<Launcher>(); }

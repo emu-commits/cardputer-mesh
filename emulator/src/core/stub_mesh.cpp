@@ -34,7 +34,26 @@ uint32_t StubMesh::send_text(uint32_t dest, uint8_t channel, const std::string& 
     return next_pkt_id_++;
 }
 
+void StubMesh::request_traceroute(uint32_t dest) {
+    TraceRoute tr; tr.dest = dest; tr.pending = true; tr.ts_ms = last_now_;
+    tr_[dest] = tr;
+    tr_due_.push_back({dest, last_now_ + 1500}); // simulate a ~1.5s round trip
+}
+
 void StubMesh::poll(uint32_t now_ms) {
+    last_now_ = now_ms;
+    // Resolve due traceroutes with a plausible route (us -> a relay -> dest).
+    for (auto it = tr_due_.begin(); it != tr_due_.end();) {
+        if (now_ms >= it->second) {
+            TraceRoute& tr = tr_[it->first];
+            tr.pending = false; tr.ts_ms = now_ms; tr.route.clear();
+            tr.route.push_back(our_id_);
+            for (auto& n : nodes_) if (n.id != it->first) { tr.route.push_back(n.id); break; }
+            tr.route.push_back(it->first);
+            it = tr_due_.erase(it);
+        } else ++it;
+    }
+
     // Finalise any reply timers that were just queued (at_ms == 0 sentinel).
     for (auto& p : pending_)
         if (p.at_ms == 0) p.at_ms = now_ms + 2000;

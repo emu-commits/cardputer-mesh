@@ -31,6 +31,16 @@ struct Message {
     bool outgoing;      // true if we sent it
 };
 
+// Result of a traceroute request to a destination node: the discovered route of
+// node ids (us .. dest). pending until a reply arrives (or it times out).
+struct TraceRoute {
+    uint32_t dest = 0;
+    std::vector<uint32_t> route; // ordered hops, including us and dest
+    bool pending = true;
+    bool failed = false;
+    uint32_t ts_ms = 0;
+};
+
 using Subscriber = std::function<void(const Message&)>;
 
 class MeshFacade {
@@ -55,6 +65,16 @@ public:
     // mutate. The StubMesh tracks it in memory. (See [[project]] notes.)
     virtual void set_favorite(uint32_t id, bool fav) { (void)id; (void)fav; }
     virtual bool is_favorite(uint32_t id) const { (void)id; return false; }
+
+    // Traceroute: send a TRACEROUTE_APP request toward `dest`; the result is
+    // collected asynchronously and read back via get_traceroute(). (This DOES
+    // transmit on the mesh, like any normal packet — it is not config.)
+    virtual void request_traceroute(uint32_t dest) { (void)dest; }
+    virtual bool get_traceroute(uint32_t dest, TraceRoute& out) { (void)dest; (void)out; return false; }
+
+    // Ignore list: suppress a node (no display/notify). Local node-DB flag.
+    virtual void set_ignored(uint32_t id, bool ign) { (void)id; (void)ign; }
+    virtual bool is_ignored(uint32_t id) const { (void)id; return false; }
 };
 
 // Shared rolling history both chat (reads) and the host (appends) use.
