@@ -120,8 +120,8 @@ void AppManager::palette_key(AppContext& ctx, const ui::KeyEvent& k) {
     auto items = palette_filtered(ctx);
     switch (k.key) {
         case ui::Key::Esc: pal_ = false; return;
-        case ui::Key::Up: if (pal_sel_ > 0) pal_sel_--; return;
-        case ui::Key::Down: if (pal_sel_ + 1 < (int)items.size()) pal_sel_++; return;
+        case ui::Key::Up: if (!items.empty()) pal_sel_ = (pal_sel_ > 0) ? pal_sel_ - 1 : (int)items.size() - 1; return;
+        case ui::Key::Down: if (!items.empty()) pal_sel_ = (pal_sel_ + 1 < (int)items.size()) ? pal_sel_ + 1 : 0; return;
         case ui::Key::Backspace: if (!pal_filter_.empty()) pal_filter_.pop_back(); pal_sel_ = 0; return;
         case ui::Key::Enter:
             if (!items.empty() && pal_sel_ < (int)items.size()) {

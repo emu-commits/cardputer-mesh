@@ -17,12 +17,11 @@ bool NotificationCenter::icontains(const std::string& hay, const std::string& ne
 
 void NotificationCenter::push(NotifType t, const std::string& from,
                               const std::string& preview, const char* tag, uint32_t now_ms) {
+    (void)tag;
     ring_.push_back({t, from, preview, now_ms});
     if (ring_.size() > RING_MAX) ring_.pop_front();
     unread_++;
-    banner_ = std::string(tag) + " " + from + ": " + preview;
-    if (banner_.size() > 50) banner_.resize(50);
-    banner_until_ = now_ms + 4000;
+    last_activity_ = now_ms ? now_ms : 1; // wake the built-in screen
 }
 
 void NotificationCenter::on_mesh(const mesh::Message& m) {
@@ -42,14 +41,18 @@ void NotificationCenter::add_event(NotifType t, const std::string& from,
     push(t, from, preview, tag, now_ms);
 }
 
-void NotificationCenter::bg_tick(uint32_t now_ms) {
-    if (banner_until_ && now_ms >= banner_until_) { banner_until_ = 0; banner_.clear(); }
-}
+void NotificationCenter::bg_tick(uint32_t) {}
 
 void NotificationCenter::render_status(ui::TextCanvas& bar, uint32_t now_ms) {
     bar.clear(ui::White, ui::Black);
 
-    // Status strip (row 0) — inverse bar: clock, node count, unread badge.
+    // Screen sleeps (stays blank) when nothing has happened for OFF_MS. A new
+    // notification wakes it via last_activity_. No banner flashing — notifications
+    // just stack in the list while the screen is awake.
+    bool awake = last_activity_ != 0 && (now_ms - last_activity_) < OFF_MS;
+    if (!awake) return; // built-in screen off
+
+    // Status strip (row 0) — inverse bar: clock, battery, node count, unread.
     std::time_t t = std::time(nullptr);
     std::tm tm{};
     localtime_r(&t, &tm);
@@ -57,7 +60,6 @@ void NotificationCenter::render_status(ui::TextCanvas& bar, uint32_t now_ms) {
     std::snprintf(clock, sizeof clock, "%02d:%02d", tm.tm_hour, tm.tm_min);
 
     int nodes = (int)mesh_->nodes().size();
-    // battery_ is "USB" on the dev host; the device HAL sets a real "NN%".
     std::string left = std::string(" ") + clock + "  " + battery_ + "  nodes:" + std::to_string(nodes);
     std::string right = "unread:" + std::to_string(unread_) + " ";
     std::string strip(bar.width(), ' ');
@@ -68,20 +70,17 @@ void NotificationCenter::render_status(ui::TextCanvas& bar, uint32_t now_ms) {
     }
     bar.text(0, 0, strip, ui::BrightWhite, ui::Blue, ui::ATTR_INVERSE);
 
-    // Banner (fresh event) or recent list.
-    if (!banner_.empty() && now_ms < banner_until_) {
-        bar.text(2, 1, ">> " + banner_, ui::BrightYellow, ui::Black, ui::ATTR_BOLD);
-        bar.text(bar.height() - 1, 1, "(notification)", ui::Gray, ui::Black, ui::ATTR_DIM);
-    } else {
-        bar.text(2, 1, "Notifications", ui::BrightCyan, ui::Black, ui::ATTR_UNDERLINE);
-        int row = 3;
-        for (auto it = ring_.rbegin(); it != ring_.rend() && row < bar.height(); ++it, ++row) {
-            std::string line = it->from + ": " + it->preview;
-            if ((int)line.size() > bar.width() - 2) line.resize(bar.width() - 2);
-            bar.text(row, 1, line, ui::White, ui::Black);
-        }
-        if (ring_.empty()) bar.text(3, 1, "(none yet)", ui::Gray, ui::Black, ui::ATTR_DIM);
+    // Stacked notifications, newest first.
+    bar.text(2, 1, "Notifications", ui::BrightCyan, ui::Black, ui::ATTR_UNDERLINE);
+    int row = 3;
+    for (auto it = ring_.rbegin(); it != ring_.rend() && row < bar.height(); ++it, ++row) {
+        const char* tag = (it->type == NotifType::DM) ? "[DM] " : (it->type == NotifType::Mention) ? "[@] "
+                        : (it->type == NotifType::Reminder) ? "[!] " : (it->type == NotifType::Timer) ? "[T] " : "";
+        std::string line = std::string(tag) + it->from + ": " + it->preview;
+        if ((int)line.size() > bar.width() - 2) line.resize(bar.width() - 2);
+        bar.text(row, 1, line, ui::White, ui::Black);
     }
+    if (ring_.empty()) bar.text(3, 1, "(none yet)", ui::Gray, ui::Black, ui::ATTR_DIM);
 }
 
 } // namespace nc

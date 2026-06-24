@@ -8,7 +8,15 @@ SqliteWiki::SqliteWiki(const std::string& path) {
     // read-only; if the file is missing, db_ stays null and ok() is false.
     if (sqlite3_open_v2(path.c_str(), &db_, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
         if (db_) { sqlite3_close(db_); db_ = nullptr; }
+        return;
     }
+    // Device-friendly footprint (measured ~150KB open + ~50KB/query): small page
+    // cache, no mmap (SD has none), temp in RAM. On the 512KB no-PSRAM part the DB
+    // should be opened only while the Wiki app is the foreground arena app, and
+    // sqlite3_db_release_memory() called after queries.
+    sqlite3_exec(db_, "PRAGMA mmap_size=0;", nullptr, nullptr, nullptr);
+    sqlite3_exec(db_, "PRAGMA cache_size=-32;", nullptr, nullptr, nullptr); // 32 KiB
+    sqlite3_exec(db_, "PRAGMA temp_store=MEMORY;", nullptr, nullptr, nullptr);
 }
 SqliteWiki::~SqliteWiki() { if (db_) sqlite3_close(db_); }
 
@@ -54,6 +62,7 @@ std::vector<wiki::Hit> SqliteWiki::search(const std::string& query, int limit) {
         hits.push_back(std::move(h));
     }
     sqlite3_finalize(st);
+    sqlite3_db_release_memory(db_); // reclaim FTS5 working memory between queries
     return hits;
 }
 

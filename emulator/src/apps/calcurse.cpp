@@ -94,14 +94,21 @@ private:
         std::string t = cur_topic();
         for (int i = 0; i < (int)todos_.size(); ++i) if (todos_[i].topic == t) vis_.push_back(i);
     }
+    void next_topic(int dir) {
+        if (topics_.empty()) return;
+        cur_topic_ = (cur_topic_ + (dir > 0 ? 1 : (int)topics_.size() - 1)) % (int)topics_.size();
+        ls_.sel = 0; ls_.top = 0;
+    }
     bool todo_key(const KeyEvent& k) {
         rebuild_vis();
+        if (k.key == Key::Left) { next_topic(-1); return true; }   // switch topic
+        if (k.key == Key::Right) { next_topic(1); return true; }
         if (ls_.move(k, (int)vis_.size(), rows_)) return true;
         if (k.is_char()) {
             if (k.ch == 'a') { overlay_ = ADD_TODO; ibuf_.clear(); return true; }
             if (k.ch == 'n') { overlay_ = ADD_TOPIC; ibuf_.clear(); return true; }
-            if (k.ch == '>') { if (!topics_.empty()) { cur_topic_ = (cur_topic_ + 1) % topics_.size(); ls_.sel = 0; } return true; }
-            if (k.ch == '<') { if (!topics_.empty()) { cur_topic_ = (cur_topic_ + topics_.size() - 1) % topics_.size(); ls_.sel = 0; } return true; }
+            if (k.ch == '>') { next_topic(1); return true; }
+            if (k.ch == '<') { next_topic(-1); return true; }
             if (k.ch == 'X') { delete_topic(); return true; }
             if (vis_.empty()) return true;
             int idx = vis_[ls_.sel];
@@ -143,7 +150,7 @@ private:
             return box + pr + " " + t.text;
         }, ui::White, ui::BrightCyan);
         ui::footer2(c, " a:add  spc:done  p:prio  [ ]:reorder  d:del ",
-                       " < > topic  n:new topic  X:del topic  tab:cal ");
+                       " <-/-> topic  n:new  X:del topic  tab:cal ");
     }
 
     // ---- CAL view ----

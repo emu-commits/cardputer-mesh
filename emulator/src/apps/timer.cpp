@@ -23,7 +23,7 @@ public:
     void on_pause(AppContext& ctx) override { if (ctx.state) ctx.state->set_int("timer.sel", ls_.sel); }
 
     bool on_key(AppContext& ctx, const KeyEvent& k) override {
-        if (k.is_char() && k.ch == '\t') { mode_ = (mode_ == COUNTDOWN) ? STOPWATCH : COUNTDOWN; return true; }
+        if (k.key == Key::Tab) { mode_ = (mode_ == COUNTDOWN) ? STOPWATCH : COUNTDOWN; return true; }
         if (mode_ == COUNTDOWN) return countdown_key(ctx, k);
         return stopwatch_key(ctx, k);
     }

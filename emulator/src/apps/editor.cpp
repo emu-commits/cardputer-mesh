@@ -43,8 +43,8 @@ public:
             case Key::Enter:     split_line(); return true;
             case Key::Backspace: backspace(); return true;
             case Key::Delete:    del(); return true;
+            case Key::Tab:       insert_str("  "); return true;
             case Key::Char:
-                if (k.ch == '\t') { insert_str("  "); return true; }
                 if (k.ch >= 0x20 && k.ch < 0x7f) { insert_str(std::string(1, (char)k.ch)); return true; }
                 return false;
             default: return false;
@@ -81,6 +81,9 @@ public:
             const std::string& ln = lines_[li];
             std::string vis = (xoff_ < (int)ln.size()) ? ln.substr(xoff_, w) : "";
             c.text(top + r, 0, vis, ui::White, ui::Black);
+            // off-screen indicators: text continues left ('<') and/or right ('>')
+            if (xoff_ > 0) c.put(top + r, 0, U'<', ui::Black, ui::BrightYellow, ui::ATTR_INVERSE);
+            if ((int)ln.size() > xoff_ + w) c.put(top + r, w - 1, U'>', ui::Black, ui::BrightYellow, ui::ATTR_INVERSE);
         }
         int crow = top + (cy_ - top_), ccol = cx_ - xoff_;
         if (crow >= top && crow <= ui::body_bottom(c) && ccol >= 0 && ccol < w) {

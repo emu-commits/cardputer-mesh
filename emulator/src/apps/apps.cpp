@@ -54,7 +54,7 @@ public:
     }
     void render(AppContext& ctx, TextCanvas& c) override {
         c.clear(ui::White, ui::Black);
-        int top = ui::header(c, "Cardputer Mesh", ui::BrightGreen, hhmm(ctx.now_ms));
+        int top = ui::header(c, "Cardputer Deck", ui::BrightGreen, hhmm(ctx.now_ms));
         auto items = ctx.apps->list();
         int n = (int)items.size();
         rows_ = (c.height() - 2) - top; // leave two footer rows
@@ -74,26 +74,25 @@ public:
     }
 private:
     void draw_art(TextCanvas& c, int top) {
-        // ~16-wide non-offensive cyberpunk skyline w/ a signal antenna
+        // wordless cyberpunk motif: antennas + neon data-tower + grid floor
         static const char* art[] = {
-            "       .",
-            "      /|\\  (o)",
-            "     / | \\  )) ",
-            "   __|_|_|__ ))",
-            "  | _|___|_ |",
-            "  |#|# # #|#|",
-            "  |#|# # #|#|",
-            "  |#|#[]#  |#|",
-            " _|#|# # #|#|_",
-            "=================",
-            "  N E O M E S H",
-            "  > link up _",
+            "     .    .",
+            "  )  |  : |  (",
+            " (( -+- : +- ))",
+            "    _|__:__|_",
+            "   /========\\",
+            "   | ## ## # |",
+            "   | ## ## # |",
+            "   |_##_##_#_|",
+            "    | |  | |",
+            "  =:+=+==+=+:=",
+            "   /_/_/\\_\\_\\",
         };
         int rows = (int)(sizeof(art) / sizeof(art[0]));
         for (int i = 0; i < rows; ++i) {
             int r = top + i;
             if (r > c.height() - 3) break;
-            uint8_t col = (i < 9) ? ui::BrightCyan : ui::BrightMagenta;
+            uint8_t col = (i < 4) ? ui::BrightCyan : (i < 9) ? ui::BrightMagenta : ui::BrightBlue;
             c.text(r, LIST_W + 1, art[i], col, ui::Black, ui::ATTR_BOLD);
         }
     }
@@ -126,7 +125,7 @@ public:
     bool on_key(AppContext& ctx, const KeyEvent& k) override {
         if (help_) { help_ = false; return true; } // any key closes help
         if (win_open_) return win_key(ctx, k);
-        if (k.is_char() && k.ch == '\t') { win_open_ = true; return true; }
+        if (k.key == Key::Tab) { win_open_ = true; return true; }
         if (k.key == Key::Enter) {
             if (!compose_.empty()) {
                 if (compose_[0] == '/') handle_command(ctx, compose_);     // irssi-style command
@@ -183,7 +182,7 @@ public:
             ++row;
         }
         ui::input_line(c, c.height() - 2, 1, "> ", compose_);
-        ui::footer(c, " type+enter  /help  tab:windows  up/dn scroll  esc:back ");
+        ui::footer(c, " enter:send  tab:win  /help  esc:back ");
         if (win_open_) render_windows(ctx, c);
         if (help_) render_help(c);
     }
@@ -379,8 +378,21 @@ public:
         });
         return ns;
     }
+    void grab_sel(AppContext& ctx) {
+        auto ns = sorted(ctx);
+        if (ns.empty()) return;
+        const mesh::Node& s = ns[ls_.sel];
+        sel_id_ = s.id; sel_long_ = s.long_name; sel_short_ = s.short_name; sel_snr_ = s.snr; sel_heard_ = s.last_heard_ms;
+    }
     bool on_key(AppContext& ctx, const KeyEvent& k) override {
-        if (overlay_ != NONE) { if (k.key == Key::Esc || k.key == Key::Enter) overlay_ = NONE; return true; }
+        if (overlay_ != NONE) {
+            // info modal follows the highlighted row; traceroute stays put
+            if (overlay_ == INFO && (k.key == Key::Up || k.key == Key::Down)) {
+                ls_.move(k, (int)sorted(ctx).size(), rows_); grab_sel(ctx); return true;
+            }
+            if (k.key == Key::Esc || k.key == Key::Enter) overlay_ = NONE;
+            return true;
+        }
         auto ns = sorted(ctx);
         if (ls_.move(k, (int)ns.size(), rows_)) return true;
         if (ns.empty()) return false;

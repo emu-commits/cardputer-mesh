@@ -135,11 +135,45 @@ private:
             escroll_ = 1 << 20; // jump to bottom (clamped in render)
         }
     }
+    // word-wrap text to width w (breaking over-long words)
+    static std::vector<std::string> wrap_words(const std::string& text, int w) {
+        std::vector<std::string> lines; std::string cur;
+        size_t i = 0;
+        while (i < text.size()) {
+            size_t sp = text.find(' ', i);
+            std::string word = text.substr(i, sp == std::string::npos ? std::string::npos : sp - i);
+            while ((int)word.size() > w) { // hard-break a very long word
+                if (!cur.empty()) { lines.push_back(cur); cur.clear(); }
+                lines.push_back(word.substr(0, w)); word = word.substr(w);
+            }
+            if (cur.empty()) cur = word;
+            else if ((int)(cur.size() + 1 + word.size()) <= w) cur += " " + word;
+            else { lines.push_back(cur); cur = word; }
+            if (sp == std::string::npos) break;
+            i = sp + 1;
+        }
+        lines.push_back(cur);
+        return lines;
+    }
     void render_prompt(TextCanvas& c) {
         int ir, ic, iw, ih;
-        ui::modal_box(c, 5, 46, overlay_ == NEW_TOPIC ? "New topic" : ("Entry to " + topic_),
-                      ui::BrightGreen, ir, ic, iw, ih, "type  enter:ok  esc:cancel");
-        ui::input_line(c, ir + 1, ic, "> ", ibuf_, ui::BrightWhite, iw);
+        if (overlay_ == NEW_TOPIC) {
+            ui::modal_box(c, 5, 46, "New topic", ui::BrightGreen, ir, ic, iw, ih, "type  enter:ok  esc:cancel");
+            ui::input_line(c, ir + 1, ic, "> ", ibuf_, ui::BrightWhite, iw);
+            return;
+        }
+        // ADD_ENTRY: a word-wrapped multi-line compose area (#10)
+        ui::modal_box(c, 11, 50, "Entry to " + topic_, ui::BrightGreen, ir, ic, iw, ih, "enter:save  esc:cancel");
+        auto lines = wrap_words(ibuf_, iw);
+        int start = (int)lines.size() > ih ? (int)lines.size() - ih : 0; // show the tail
+        int r = ir;
+        for (int i = start; i < (int)lines.size() && r < ir + ih; ++i, ++r) {
+            c.text(r, ic, lines[i], ui::BrightWhite, ui::Black);
+            if (i + 1 == (int)lines.size()) { // caret after the last char
+                int cc = ic + (int)lines[i].size();
+                if (cc < ic + iw) c.put(r, cc, U'█', ui::BrightWhite, ui::Black, ui::ATTR_BOLD);
+            }
+        }
     }
 
     int level_ = 0;

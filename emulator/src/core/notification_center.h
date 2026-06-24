@@ -43,10 +43,10 @@ private:
     mesh::MeshFacade* mesh_;
     std::deque<Notification> ring_;
     int unread_ = 0;
-    std::string banner_;
     std::string battery_ = "USB";
-    uint32_t banner_until_ = 0;
+    uint32_t last_activity_ = 0;            // built-in screen sleeps after idle
     static constexpr size_t RING_MAX = 16;
+    static constexpr uint32_t OFF_MS = 10000; // blank the screen after 10s quiet
 };
 
 } // namespace nc

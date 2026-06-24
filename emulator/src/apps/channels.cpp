@@ -23,6 +23,19 @@ public:
 
     bool on_key(AppContext& ctx, const KeyEvent& k) override {
         bool ro = ctx.mesh && !ctx.mesh->config_writable();
+        if (picking_) { // standard Meshtastic preset names + Custom
+            int n = (int)NUM_PRESETS + 1;
+            if (k.key == Key::Esc) { picking_ = false; return true; }
+            if (pick_ls_.move(k, n, 10)) return true;
+            if (k.key == Key::Enter) {
+                if (pick_ls_.sel < (int)NUM_PRESETS) {
+                    if (chans_.size() < 8) chans_.push_back({PRESETS[pick_ls_.sel], "Default"});
+                    picking_ = false; persist(ctx);
+                } else { picking_ = false; adding_ = true; buf_.clear(); } // Custom...
+                return true;
+            }
+            return true;
+        }
         if (adding_ || renaming_) {
             if (k.key == Key::Esc) { adding_ = renaming_ = false; return true; }
             if (k.key == Key::Enter) {
@@ -38,7 +51,7 @@ public:
         if (ls_.move(k, (int)chans_.size(), rows_)) return true;
         if (ro) return true; // read-only: navigation only
         if (k.is_char()) {
-            if (k.ch == 'a' && chans_.size() < 8) { adding_ = true; buf_.clear(); return true; }
+            if (k.ch == 'a' && chans_.size() < 8) { picking_ = true; pick_ls_ = {}; return true; }
             if (chans_.empty()) return true;
             if (k.ch == 'r' || k.key == Key::Enter) { renaming_ = true; buf_ = chans_[ls_.sel].name; return true; }
             if (k.ch == 'k') { cycle_psk(chans_[ls_.sel].psk); persist(ctx); return true; }
@@ -59,15 +72,28 @@ public:
         }, ui::White, ui::BrightCyan);
         ui::footer(c, ro ? " read-only (live node)  esc:back "
                          : " a:add  r:rename  k:psk  d:del  esc:back ");
-        if (adding_ || renaming_) {
+        if (picking_) {
             int ir, ic, iw, ih;
-            ui::modal_box(c, 5, 40, adding_ ? "New channel" : "Rename channel", ui::BrightCyan,
+            int n = (int)NUM_PRESETS + 1;
+            ui::modal_box(c, n + 3 > 14 ? 14 : n + 3, 32, "Add channel", ui::BrightCyan, ir, ic, iw, ih, "enter:add  esc");
+            ui::list(c, ir, ih, pick_ls_, n, [&](int i) {
+                return i < (int)NUM_PRESETS ? std::string(PRESETS[i]) : std::string("Custom...");
+            }, ui::White, ui::BrightCyan);
+        } else if (adding_ || renaming_) {
+            int ir, ic, iw, ih;
+            ui::modal_box(c, 5, 40, adding_ ? "Custom channel" : "Rename channel", ui::BrightCyan,
                           ir, ic, iw, ih, "type  enter:ok  esc:cancel");
             ui::input_line(c, ir + 1, ic, "> ", buf_, ui::BrightWhite, iw);
         }
     }
 
 private:
+    // standard Meshtastic preset/public-channel names
+    static constexpr const char* PRESETS[] = {
+        "LongFast", "MediumSlow", "MediumFast", "ShortFast", "ShortSlow",
+        "LongSlow", "LongMod", "ShortTurbo", "LongTurbo", "VeryLongSlow",
+    };
+    static constexpr int NUM_PRESETS = 10;
     static void cycle_psk(std::string& p) {
         p = (p == "None") ? "Default" : (p == "Default") ? "Random" : "None";
     }
@@ -91,9 +117,9 @@ private:
     }
 
     std::vector<Ch> chans_;
-    ui::ListState ls_;
+    ui::ListState ls_, pick_ls_;
     int rows_ = 1;
-    bool adding_ = false, renaming_ = false;
+    bool adding_ = false, renaming_ = false, picking_ = false;
     std::string buf_;
 };
 
