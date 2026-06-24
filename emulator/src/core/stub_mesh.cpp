@@ -18,9 +18,12 @@ void StubMesh::emit(const Message& m) {
 }
 
 uint32_t StubMesh::send_text(uint32_t dest, uint8_t channel, const std::string& text) {
-    uint32_t now = next_emit_ms_ > 4000 ? next_emit_ms_ - 4000 : 0; // approximate; host passes time via poll
-    Message m{our_id_, our_short_, dest, channel, text, now, true};
+    uint32_t now = last_now_; // host pumps poll() each frame
+    uint32_t pid = next_pkt_id_;
+    Message m{our_id_, our_short_, dest, channel, text, now, true, pid,
+              dest == BROADCAST ? ACK_NONE : ACK_PENDING};
     emit(m);
+    if (dest != BROADCAST) ack_due_.push_back({pid, now + 1500}); // simulate a routing ACK
 
     // Schedule a fake reply ~2s later.
     const Node& replier = nodes_[(next_pkt_id_) % nodes_.size()];
@@ -42,6 +45,11 @@ void StubMesh::request_traceroute(uint32_t dest) {
 
 void StubMesh::poll(uint32_t now_ms) {
     last_now_ = now_ms;
+    // Deliver due delivery-acks.
+    for (auto it = ack_due_.begin(); it != ack_due_.end();) {
+        if (now_ms >= it->second) { if (ack_cb_) ack_cb_(it->first, true); it = ack_due_.erase(it); }
+        else ++it;
+    }
     // Resolve due traceroutes with a plausible route (us -> a relay -> dest).
     for (auto it = tr_due_.begin(); it != tr_due_.end();) {
         if (now_ms >= it->second) {

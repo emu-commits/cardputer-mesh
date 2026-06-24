@@ -61,6 +61,7 @@ int main(int argc, char** argv) {
         store.append(m);
         notify.on_mesh(m);
     });
+    meshf.on_ack([&](uint32_t id, bool ok) { store.mark_ack(id, ok); });
 
     app::AppManager mgr;
     mgr.reg("launcher", "Home", apps::make_launcher);

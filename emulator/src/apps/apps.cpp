@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <map>
 #include "core/clipboard.h"
 #include "core/mesh.h"
 #include "core/notification_center.h"
@@ -123,11 +124,13 @@ public:
     }
 
     bool on_key(AppContext& ctx, const KeyEvent& k) override {
+        if (help_) { help_ = false; return true; } // any key closes help
         if (win_open_) return win_key(ctx, k);
         if (k.is_char() && k.ch == '\t') { win_open_ = true; return true; }
         if (k.key == Key::Enter) {
             if (!compose_.empty()) {
-                if (dm_) ctx.mesh->send_text(target_dm_, 0, compose_);
+                if (compose_[0] == '/') handle_command(ctx, compose_);     // irssi-style command
+                else if (dm_) ctx.mesh->send_text(target_dm_, 0, compose_);
                 else ctx.mesh->send_text(mesh::BROADCAST, (uint8_t)target_ch_, compose_);
                 compose_.clear();
             }
@@ -146,6 +149,7 @@ public:
         return {
             {"Switch window", [this](AppContext&) { win_open_ = true; }},
             {"Close this DM", [this](AppContext&) { if (dm_) close_dm(target_dm_); }},
+            {"Commands help", [this](AppContext&) { help_ = true; }},
             {"Paste into message", [this](AppContext& c) { if (c.clip) compose_ += c.clip->get(); }},
             {"Clear message", [this](AppContext&) { compose_.clear(); }},
         };
@@ -153,9 +157,12 @@ public:
 
     void render(AppContext& ctx, TextCanvas& c) override {
         c.clear(ui::White, ui::Black);
-        auto_open_dms(ctx);
+        process_new(ctx);
+        unread_[win_key()] = 0; // the window you're looking at is read
         std::string title = dm_ ? ("DM " + name_for(ctx, target_dm_)) : ("#" + chan_name(ctx, target_ch_));
-        int top = ui::header(c, title, ui::BrightCyan, "tab:windows");
+        int other = total_unread();
+        std::string right = other > 0 ? ("tab:windows (" + std::to_string(other) + ")") : "tab:windows";
+        int top = ui::header(c, title, ui::BrightCyan, right);
 
         std::vector<const mesh::Message*> rel;
         for (auto& m : ctx.store->all()) if (in_window(ctx, m)) rel.push_back(&m);
@@ -169,13 +176,17 @@ public:
         for (int i = start; i < total && row <= bottom; ++i, ++row) {
             const mesh::Message& m = *rel[i];
             std::string who = m.outgoing ? ctx.mesh->our_short() : m.from_name;
-            std::string line = "[" + hhmm(m.ts_ms) + "] " + who + ": " + m.text;
+            std::string st = " ";
+            if (m.outgoing) st = (m.ack == mesh::ACK_PENDING) ? "·" : (m.ack == mesh::ACK_OK) ? "✓"
+                                : (m.ack == mesh::ACK_FAIL) ? "x" : " ";
+            std::string line = "[" + hhmm(m.ts_ms) + "]" + st + who + ": " + m.text;
             uint8_t fg = m.outgoing ? ui::BrightGreen : ui::White;
             c.text(row, 1, ui::fit(line, c.width() - 2), fg, ui::Black);
         }
         ui::input_line(c, c.height() - 2, 1, "> ", compose_);
-        ui::footer(c, " type+enter send  tab:windows  up/dn scroll  esc:back ");
+        ui::footer(c, " type+enter  /help  tab:windows  up/dn scroll  esc:back ");
         if (win_open_) render_windows(ctx, c);
+        if (help_) render_help(c);
     }
 
 private:
@@ -191,11 +202,75 @@ private:
                         (m.outgoing && m.dest == target_dm_);
         return m.dest == mesh::BROADCAST && m.channel == (uint8_t)target_ch_;
     }
-    void auto_open_dms(AppContext& ctx) {
+    std::string win_key() { return dm_ ? ("d" + std::to_string(target_dm_)) : ("c" + std::to_string(target_ch_)); }
+    int total_unread() { int n = 0; for (auto& kv : unread_) n += kv.second; return n; }
+    // Scan messages arrived since last time: auto-open DM windows and tally
+    // per-window unread for anything not in the window currently on screen.
+    void process_new(AppContext& ctx) {
         auto& all = ctx.store->all();
-        for (size_t i = seen_; i < all.size(); ++i)
-            if (!all[i].outgoing && all[i].dest == ctx.mesh->our_id()) open_dm(all[i].from_id);
+        std::string cur = win_key();
+        for (size_t i = seen_; i < all.size(); ++i) {
+            const mesh::Message& m = all[i];
+            if (m.outgoing) continue;
+            std::string key;
+            if (m.dest == ctx.mesh->our_id()) { open_dm(m.from_id); key = "d" + std::to_string(m.from_id); }
+            else if (m.dest == mesh::BROADCAST) key = "c" + std::to_string((int)m.channel);
+            else continue;
+            if (key != cur) unread_[key]++;
+        }
         seen_ = all.size();
+    }
+    void handle_command(AppContext& ctx, const std::string& line) {
+        std::vector<std::string> tok; size_t i = 0;
+        while (i < line.size()) {
+            size_t sp = line.find(' ', i);
+            std::string t = line.substr(i, sp == std::string::npos ? std::string::npos : sp - i);
+            if (!t.empty()) tok.push_back(t);
+            if (sp == std::string::npos) break;
+            i = sp + 1;
+        }
+        if (tok.empty()) return;
+        std::string cmd = tok[0];
+        for (auto& ch : cmd) ch = (char)std::tolower((int)ch);
+        if (cmd == "/help" || cmd == "/?") { help_ = true; }
+        else if (cmd == "/close" || cmd == "/wc") { if (dm_) close_dm(target_dm_); }
+        else if (cmd == "/win" && tok.size() >= 2) {
+            build_wins(ctx); int idx = std::atoi(tok[1].c_str()) - 1;
+            if (idx >= 0 && idx < (int)wins_.size()) {
+                const Win& w = wins_[idx];
+                if (w.dm) { dm_ = true; target_dm_ = w.id; } else { dm_ = false; target_ch_ = (int)w.id; }
+                scroll_ = 0;
+            }
+        }
+        else if ((cmd == "/msg" || cmd == "/query" || cmd == "/q") && tok.size() >= 2) {
+            std::string want = tok[1]; for (auto& ch : want) ch = (char)std::tolower((int)ch);
+            uint32_t id = 0;
+            for (auto& n : ctx.mesh->nodes()) {
+                std::string s = n.short_name, l = n.long_name;
+                for (auto& ch : s) ch = (char)std::tolower((int)ch);
+                for (auto& ch : l) ch = (char)std::tolower((int)ch);
+                if (s == want || l == want) { id = n.id; break; }
+            }
+            if (id) {
+                open_dm(id); dm_ = true; target_dm_ = id; scroll_ = 0;
+                if (tok.size() >= 3) { // remaining words = message
+                    std::string msg = line.substr(line.find(tok[1]) + tok[1].size());
+                    size_t a = msg.find_first_not_of(' '); if (a != std::string::npos) ctx.mesh->send_text(id, 0, msg.substr(a));
+                }
+            }
+        }
+    }
+    void render_help(TextCanvas& c) {
+        int ir, ic, iw, ih;
+        ui::modal_box(c, 9, 44, "Chat commands", ui::BrightCyan, ir, ic, iw, ih, "any key closes");
+        const char* lines[] = {
+            "/win N      switch to window N",
+            "/msg name [text]  open/send a DM",
+            "/close      close the current DM",
+            "/help       this list",
+            "tab or ^W   window switcher",
+        };
+        for (int i = 0; i < 5; ++i) c.text(ir + i, ic, ui::fit(lines[i], iw), ui::White, ui::Black);
     }
     void open_dm(uint32_t id) { if (id && std::find(open_dms_.begin(), open_dms_.end(), id) == open_dms_.end()) open_dms_.push_back(id); }
     void close_dm(uint32_t id) {
@@ -227,11 +302,17 @@ private:
     }
 
     struct Win { std::string label; bool dm; uint32_t id; };
+    std::string badge(const std::string& key) {
+        auto it = unread_.find(key);
+        return (it != unread_.end() && it->second > 0) ? ("  (" + std::to_string(it->second) + ")") : "";
+    }
     void build_wins(AppContext& ctx) {
         wins_.clear();
         auto cs = chans(ctx);
-        for (int i = 0; i < (int)cs.size(); ++i) wins_.push_back({"#" + cs[i], false, (uint32_t)i});
-        for (uint32_t id : open_dms_) wins_.push_back({"@" + name_for(ctx, id), true, id});
+        for (int i = 0; i < (int)cs.size(); ++i)
+            wins_.push_back({"#" + cs[i] + badge("c" + std::to_string(i)), false, (uint32_t)i});
+        for (uint32_t id : open_dms_)
+            wins_.push_back({"@" + name_for(ctx, id) + badge("d" + std::to_string(id)), true, id});
     }
     void render_windows(AppContext& ctx, TextCanvas& c) {
         build_wins(ctx);
@@ -278,6 +359,8 @@ private:
     std::vector<uint32_t> open_dms_;
     size_t seen_ = 0;
     bool win_open_ = false;
+    bool help_ = false;
+    std::map<std::string, int> unread_;
     ui::ListState win_ls_;
     std::vector<Win> wins_;
 };

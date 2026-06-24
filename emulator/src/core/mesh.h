@@ -21,6 +21,8 @@ struct Node {
     bool is_favorite = false; // Meshtastic node-DB favorite flag (pins + biases routing)
 };
 
+enum AckState : uint8_t { ACK_NONE = 0, ACK_PENDING = 1, ACK_OK = 2, ACK_FAIL = 3 };
+
 struct Message {
     uint32_t from_id;
     std::string from_name;
@@ -29,6 +31,8 @@ struct Message {
     std::string text;
     uint32_t ts_ms;
     bool outgoing;      // true if we sent it
+    uint32_t id = 0;    // packet id (for matching delivery acks)
+    uint8_t ack = ACK_NONE; // delivery state for outgoing DMs
 };
 
 // Result of a traceroute request to a destination node: the discovered route of
@@ -42,6 +46,8 @@ struct TraceRoute {
 };
 
 using Subscriber = std::function<void(const Message&)>;
+// Delivery-ack notification: packet `id` was acked (ok) or failed/timed out.
+using AckCallback = std::function<void(uint32_t id, bool ok)>;
 
 class MeshFacade {
 public:
@@ -52,6 +58,7 @@ public:
     virtual std::vector<Node> nodes() = 0;
     virtual uint32_t send_text(uint32_t dest, uint8_t channel, const std::string& text) = 0;
     virtual void subscribe(Subscriber cb) = 0;
+    virtual void on_ack(AckCallback) {} // register delivery-ack notifications
     virtual void poll(uint32_t now_ms) = 0; // pump (mirrors MeshService::update())
     // Whether the device config may be edited. False for a connected real node
     // we must not reconfigure (e.g. the live R1 Neo) -> config screens read-only.
@@ -89,6 +96,11 @@ public:
         if (msgs_.size() >= cap_) msgs_.erase(msgs_.begin());
         msgs_.push_back(m);
         prune(m.ts_ms);
+    }
+    // Mark a previously-sent outgoing message (matched by packet id) delivered.
+    void mark_ack(uint32_t id, bool ok) {
+        for (auto it = msgs_.rbegin(); it != msgs_.rend(); ++it)
+            if (it->outgoing && it->id == id) { it->ack = ok ? ACK_OK : ACK_FAIL; return; }
     }
     // Drop messages older than 30 days relative to `now_ms` (the newest ts).
     void prune(uint32_t now_ms) {

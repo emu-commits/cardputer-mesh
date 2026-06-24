@@ -23,6 +23,7 @@ public:
     }
     uint32_t send_text(uint32_t dest, uint8_t channel, const std::string& text) override;
     void subscribe(Subscriber cb) override { subs_.push_back(std::move(cb)); }
+    void on_ack(AckCallback cb) override { ack_cb_ = std::move(cb); }
     void poll(uint32_t now_ms) override;
     void set_favorite(uint32_t id, bool fav) override { if (fav) favs_.insert(id); else favs_.erase(id); }
     bool is_favorite(uint32_t id) const override { return favs_.count(id) > 0; }
@@ -44,8 +45,10 @@ private:
     std::set<uint32_t> ignored_;
     std::map<uint32_t, TraceRoute> tr_;
     std::vector<std::pair<uint32_t, uint32_t>> tr_due_; // (dest, resolve_at_ms)
+    std::vector<std::pair<uint32_t, uint32_t>> ack_due_; // (packet_id, ack_at_ms)
     uint32_t last_now_ = 0;
     std::vector<Subscriber> subs_;
+    AckCallback ack_cb_;
 
     struct Pending { uint32_t at_ms; Message msg; };
     std::deque<Pending> pending_;
