@@ -18,6 +18,8 @@ public:
     bool write_text(const std::string& path, const std::string& data) override;
     bool append_text(const std::string& path, const std::string& data) override;
     bool remove(const std::string& path) override;
+    uint64_t free_bytes() override;
+    uint64_t total_bytes() override;
     std::string join(const std::string& base, const std::string& rel) override;
 
 private:

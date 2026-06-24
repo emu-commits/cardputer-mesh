@@ -57,7 +57,8 @@ void NotificationCenter::render_status(ui::TextCanvas& bar, uint32_t now_ms) {
     std::snprintf(clock, sizeof clock, "%02d:%02d", tm.tm_hour, tm.tm_min);
 
     int nodes = (int)mesh_->nodes().size();
-    std::string left = std::string(" ") + clock + "  nodes:" + std::to_string(nodes);
+    // battery_ is "USB" on the dev host; the device HAL sets a real "NN%".
+    std::string left = std::string(" ") + clock + "  " + battery_ + "  nodes:" + std::to_string(nodes);
     std::string right = "unread:" + std::to_string(unread_) + " ";
     std::string strip(bar.width(), ' ');
     for (int i = 0; i < (int)left.size() && i < bar.width(); ++i) strip[i] = left[i];

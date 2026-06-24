@@ -59,6 +59,12 @@ bool UnixFs::remove(const std::string& path) {
     std::error_code ec;
     return stdfs::remove(real(path), ec) && !ec;
 }
+uint64_t UnixFs::free_bytes() {
+    std::error_code ec; auto s = stdfs::space(root_, ec); return ec ? 0 : (uint64_t)s.available;
+}
+uint64_t UnixFs::total_bytes() {
+    std::error_code ec; auto s = stdfs::space(root_, ec); return ec ? 0 : (uint64_t)s.capacity;
+}
 
 std::string UnixFs::join(const std::string& base, const std::string& rel) {
     std::string start = (!rel.empty() && rel[0] == '/') ? rel : (base + "/" + rel);

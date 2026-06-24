@@ -30,6 +30,8 @@ public:
     void bg_tick(uint32_t now_ms);                                 // expire banner
     void mark_read() { unread_ = 0; }
     int unread() const { return unread_; }
+    void set_battery(const std::string& b) { battery_ = b; } // device HAL pushes "NN%"
+    const std::string& battery() const { return battery_; }
 
     void render_status(ui::TextCanvas& bar, uint32_t now_ms);      // built-in screen
 
@@ -42,6 +44,7 @@ private:
     std::deque<Notification> ring_;
     int unread_ = 0;
     std::string banner_;
+    std::string battery_ = "USB";
     uint32_t banner_until_ = 0;
     static constexpr size_t RING_MAX = 16;
 };
