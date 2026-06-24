@@ -1,6 +1,12 @@
 # upstream reference clone (not vendored)
 plai/
 
+# vendored SQLite amalgamation (fetched via tools/fetch_sqlite.sh)
+third_party/sqlite/
+
+# wiki database (shipped as a GitHub Release asset, copied to SD)
+*.db
+
 # build artifacts
 emulator/*.o
 emulator/emu

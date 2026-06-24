@@ -24,5 +24,6 @@ std::unique_ptr<app::App> make_journal();
 std::unique_ptr<app::App> make_presets();
 std::unique_ptr<app::App> make_clock();
 std::unique_ptr<app::App> make_system();
+std::unique_ptr<app::App> make_wiki();
 
 } // namespace apps

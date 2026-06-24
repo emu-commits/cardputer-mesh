@@ -21,6 +21,7 @@
 #include "host/file_store.h"
 #include "host/file_system_unix.h"
 #include "host/host_unix.h"
+#include "host/sqlite_wiki.h"
 
 using namespace ui;
 
@@ -71,6 +72,7 @@ int main(int argc, char** argv) {
     mgr.reg("calcurse", "Calendar / Todo", apps::make_calcurse);
     mgr.reg("editor", "Editor", apps::make_editor);
     mgr.reg("journal", "Journal", apps::make_journal);
+    mgr.reg("wiki", "Wiki", apps::make_wiki);
     mgr.reg("clock", "Clock", apps::make_clock);
     mgr.reg("timer", "Timer", apps::make_timer);
     mgr.reg("files", "Files", apps::make_files);
@@ -88,10 +90,12 @@ int main(int argc, char** argv) {
     cfg::Settings settings;                 // Meshtastic device config (§ config screens)
     settings.build_default();
     settings.load(state);
+    host::SqliteWiki wiki("emu_sd/wiki.db"); // offline wiki on the SD sandbox (if present)
 
     app::AppContext ctx;
     ctx.apps = &mgr; ctx.mesh = &meshf; ctx.log = &store; ctx.notify = &notify;
     ctx.state = &state; ctx.fs = &filesystem; ctx.clip = &clipboard; ctx.settings = &settings;
+    ctx.wiki = &wiki;
     ctx.now_ms = host::now_ms();
     // First-run provisioning: a brand-new install (no saved session, not yet
     // provisioned) opens the config wizard; otherwise resume the last app.

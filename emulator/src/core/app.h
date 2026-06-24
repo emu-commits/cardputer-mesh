@@ -19,6 +19,7 @@ namespace nc { class NotificationCenter; }
 namespace fs { class FileSystem; }
 namespace clip { class Clipboard; }
 namespace cfg { class Settings; }
+namespace wiki { class WikiSource; }
 
 namespace app {
 
@@ -33,6 +34,7 @@ struct AppContext {
     fs::FileSystem* fs = nullptr;
     clip::Clipboard* clip = nullptr;
     cfg::Settings* settings = nullptr;
+    wiki::WikiSource* wiki = nullptr;
     // Cross-app intent: the requester sets this before request_switch(); the
     // target app reads + clears it in on_create/on_resume. e.g. "open:/notes/x",
     // "dm:439041101", "contact:439041101".
