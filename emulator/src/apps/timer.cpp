@@ -83,9 +83,13 @@ private:
         char big[40]; std::snprintf(big, sizeof big, "%02u:%02u.%u", e / 60000, (e / 1000) % 60, (e % 1000) / 100);
         c.text(top + 1, 4, std::string("  ") + big, ui::BrightWhite, ui::Black, ui::ATTR_BOLD);
         rows_ = ui::body_bottom(c) - (top + 3) + 1;
+        if (!laps_.empty()) c.text(top + 2, 1, "  #     total      split", ui::Gray, ui::Black, ui::ATTR_DIM);
         ui::list(c, top + 3, rows_, ls_, (int)laps_.size(), [&](int i) {
-            uint32_t l = laps_[i];
-            char b[48]; std::snprintf(b, sizeof b, "lap %d   %02u:%02u.%u", i + 1, l / 60000, (l / 1000) % 60, (l % 1000) / 100);
+            uint32_t l = laps_[i];                          // cumulative at this lap
+            uint32_t d = l - (i > 0 ? laps_[i - 1] : 0);    // duration since the previous lap (#7)
+            char b[64]; std::snprintf(b, sizeof b, "lap %-2d  %02u:%02u.%u   +%02u:%02u.%u",
+                                      i + 1, l / 60000, (l / 1000) % 60, (l % 1000) / 100,
+                                      d / 60000, (d / 1000) % 60, (d % 1000) / 100);
             return std::string(b);
         }, ui::Gray, ui::BrightBlue);
         ui::footer(c, " enter:start/stop  l:lap  r:reset  tab:countdown ");

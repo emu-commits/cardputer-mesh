@@ -71,7 +71,10 @@ void AppManager::handle_key(AppContext& ctx, const ui::KeyEvent& k) {
     // close an overlay or pop a sub-level. Only if it doesn't consume Esc do we
     // fall back to "Esc = leave app -> launcher".
     if (cur_ && cur_->on_key(ctx, k)) return;
-    if (k.key == ui::Key::Esc && cur_id_ != "launcher") request_switch("launcher");
+    if (k.key == ui::Key::Esc && cur_id_ != "launcher") {
+        if (!back_to_.empty()) { std::string b = back_to_; back_to_.clear(); request_switch(b); }
+        else request_switch("launcher");
+    }
 }
 
 void AppManager::tick(AppContext& ctx) {

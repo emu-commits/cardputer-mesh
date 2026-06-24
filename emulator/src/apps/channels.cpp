@@ -55,6 +55,12 @@ public:
             if (chans_.empty()) return true;
             if (k.ch == 'r' || k.key == Key::Enter) { renaming_ = true; buf_ = chans_[ls_.sel].name; return true; }
             if (k.ch == 'k') { cycle_psk(chans_[ls_.sel].psk); persist(ctx); return true; }
+            if (k.ch == 'p' && ls_.sel > 0) { // make selected the primary (channel 0) (#8)
+                Ch ch = chans_[ls_.sel];
+                chans_.erase(chans_.begin() + ls_.sel);
+                chans_.insert(chans_.begin(), ch);
+                ls_.sel = 0; persist(ctx); return true;
+            }
             if (k.ch == 'd' && ls_.sel > 0) { chans_.erase(chans_.begin() + ls_.sel); ls_.clamp((int)chans_.size(), rows_); persist(ctx); return true; }
         }
         return false;
@@ -71,7 +77,7 @@ public:
             return tag + ui::fit(nm, 22) + "psk:" + chans_[i].psk;
         }, ui::White, ui::BrightCyan);
         ui::footer(c, ro ? " read-only (live node)  esc:back "
-                         : " a:add  r:rename  k:psk  d:del  esc:back ");
+                         : " a:add r:rename k:psk p:primary d:del esc ");
         if (picking_) {
             int ir, ic, iw, ih;
             int n = (int)NUM_PRESETS + 1;

@@ -26,6 +26,7 @@ void NotificationCenter::push(NotifType t, const std::string& from,
 
 void NotificationCenter::on_mesh(const mesh::Message& m) {
     if (m.outgoing) return;
+    if (mesh_->is_ignored(m.from_id)) return; // ignored node: no notification (#2)
     if (m.dest == mesh_->our_id()) {
         push(NotifType::DM, m.from_name, m.text, "[DM]", m.ts_ms);
     } else if (m.dest == mesh::BROADCAST &&

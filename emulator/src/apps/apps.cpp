@@ -172,6 +172,7 @@ public:
         int row = top;
         for (auto& m : msgs) {
             if (row > bottom) break;
+            if (!m.outgoing && ctx.mesh->is_ignored(m.from_id)) continue; // hide ignored senders (#2)
             std::string who = m.outgoing ? ctx.mesh->our_short() : m.from_name;
             std::string st = " ";
             if (m.outgoing) st = (m.ack == mesh::ACK_PENDING) ? "·" : (m.ack == mesh::ACK_OK) ? "✓"
@@ -208,6 +209,7 @@ private:
         std::string cur = win_key();
         seen_ = ctx.log->scan_from(seen_, [&](const mesh::Message& m) {
             if (m.outgoing) return;
+            if (ctx.mesh->is_ignored(m.from_id)) return; // ignored node: no auto-open / no unread (#2)
             std::string key;
             if (m.dest == ctx.mesh->our_id()) { open_dm(m.from_id); key = "d" + std::to_string(m.from_id); }
             else if (m.dest == mesh::BROADCAST) key = "c" + std::to_string((int)m.channel);
@@ -401,8 +403,8 @@ public:
         sel_id_ = id; sel_long_ = sel.long_name; sel_short_ = sel.short_name; sel_snr_ = sel.snr; sel_heard_ = sel.last_heard_ms;
         if (k.key == Key::Enter) { ctx.nav_arg = "dm:" + std::to_string(id); ctx.apps->request_switch("chat"); return true; }
         if (k.is_char()) {
-            if (k.ch == 'f') { ctx.mesh->set_favorite(id, !ctx.mesh->is_favorite(id)); return true; }
-            if (k.ch == 'x') { ctx.mesh->set_ignored(id, !ctx.mesh->is_ignored(id)); return true; }
+            if (k.ch == 'f') { ctx.mesh->set_favorite(id, !ctx.mesh->is_favorite(id)); persist_flags(ctx); return true; }
+            if (k.ch == 'x') { ctx.mesh->set_ignored(id, !ctx.mesh->is_ignored(id)); persist_flags(ctx); return true; }
             if (k.ch == 'i') { overlay_ = INFO; return true; }
             if (k.ch == 't') { ctx.mesh->request_traceroute(id); overlay_ = TRACE; return true; }
             if (k.ch == 'c') {
@@ -431,6 +433,20 @@ public:
         else if (overlay_ == TRACE) render_trace(ctx, c);
     }
 private:
+    // Persist the favorite/ignore node-id sets so they survive quit/reload (#1).
+    // On a real Meshtastic node these live in the node DB; the emulator's stub
+    // keeps them in RAM, so we mirror them to the state store and re-apply at
+    // boot (see main.cpp). CSV of node ids.
+    void persist_flags(AppContext& ctx) {
+        if (!ctx.state) return;
+        std::string favs, ign;
+        for (auto& n : ctx.mesh->nodes()) {
+            if (ctx.mesh->is_favorite(n.id)) { if (!favs.empty()) favs += ','; favs += std::to_string(n.id); }
+            if (ctx.mesh->is_ignored(n.id))  { if (!ign.empty())  ign  += ','; ign  += std::to_string(n.id); }
+        }
+        ctx.state->set("nodes.favs", favs);
+        ctx.state->set("nodes.ignored", ign);
+    }
     std::string name_for(AppContext& ctx, uint32_t id) {
         if (id == ctx.mesh->our_id()) return ctx.mesh->our_short() + "(me)";
         for (auto& n : ctx.mesh->nodes()) if (n.id == id) return n.short_name.empty() ? n.long_name : n.short_name;

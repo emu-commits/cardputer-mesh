@@ -80,24 +80,18 @@ private:
         if (k.key == Key::PageDown) { escroll_ += 8; return true; }
         return true;
     }
-    std::vector<std::string> wrap(int w) const {
-        std::vector<std::string> out; size_t i = 0;
-        while (i <= raw_.size()) {
-            size_t nl = raw_.find('\n', i);
-            std::string ln = raw_.substr(i, nl == std::string::npos ? std::string::npos : nl - i);
-            if (!ln.empty() && ln.back() == '\r') ln.pop_back();
-            if (ln.empty()) out.push_back("");
-            else for (size_t j = 0; j < ln.size(); j += w) out.push_back(ln.substr(j, w));
-            if (nl == std::string::npos) break;
-            i = nl + 1;
-        }
-        if (out.size() > 1 && out.back().empty()) out.pop_back(); // drop trailing newline's empty line
-        return out;
-    }
     void render_entries(TextCanvas& c) {
         int top = ui::header(c, "Journal  " + topic_, ui::BrightGreen, "");
         int rows = ui::body_bottom(c) - top + 1;
-        auto dl = wrap(c.width());
+        // word-wrap on spaces/hyphens (never mid-word) for the saved/displayed text (#4)
+        auto dl = ui::wrap_text(raw_, c.width());
+        if (dl.size() > 1 && dl.back().empty()) dl.pop_back(); // drop trailing newline's empty line
+        if (scroll_to_new_) { // land on the FIRST line of the just-added entry (#5)
+            scroll_to_new_ = false;
+            escroll_ = 0;
+            for (int i = (int)dl.size() - 1; i >= 0; --i)
+                if (!dl[i].empty() && dl[i][0] == '[') { escroll_ = i; break; } // last entry's timestamp header
+        }
         if (escroll_ > (int)dl.size() - 1) escroll_ = (int)dl.size() > 0 ? (int)dl.size() - 1 : 0;
         if (escroll_ < 0) escroll_ = 0;
         if (dl.empty()) c.text(top + 1, 2, "(empty — press a to add an entry)", ui::Gray, ui::Black, ui::ATTR_DIM);
@@ -132,7 +126,7 @@ private:
             if (ctx.fs) ctx.fs->append_text(path_of(topic_), std::string(ts) + s + "\n");
             raw_.clear();
             if (ctx.fs) ctx.fs->read_text(path_of(topic_), raw_, 32 * 1024);
-            escroll_ = 1 << 20; // jump to bottom (clamped in render)
+            scroll_to_new_ = true; // jump to the top of the new entry (resolved in render)
         }
     }
     // word-wrap text to width w (breaking over-long words)
@@ -182,6 +176,7 @@ private:
     int rows_ = 1;
     std::string topic_, raw_;
     int escroll_ = 0;
+    bool scroll_to_new_ = false;
     Overlay overlay_ = NONE;
     std::string ibuf_;
 };

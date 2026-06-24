@@ -53,8 +53,9 @@ private:
             if (ls_.sel == 0) { ctx.apps->request_switch("wizard"); return true; }
             if (ls_.sel == 1) { ctx.apps->request_switch("presets"); return true; }
             gi_ = ls_.sel - N_ACTIONS; ls2_ = {}; rebuild_vis(ctx);
+            return true;
         }
-        return true;
+        return false; // Esc (and anything else) bubbles -> launcher (#9)
     }
     void render_groups(AppContext& ctx, TextCanvas& c) {
         int top = ui::header(c, "Settings", ui::BrightGreen, ro_ ? "read-only" : "");
@@ -80,7 +81,8 @@ private:
         rebuild_vis(ctx);
         auto& g = grp(ctx);
         int top = ui::header(c, g.name, ui::BrightGreen, ro_ ? "read-only" : g.ns);
-        rows_ = ui::body_bottom(c) - top + 1;
+        // Reserve TWO footer rows so a long item explanation can wrap (#10).
+        rows_ = ui::body_bottom(c) - top; // one less than usual -> leaves 2 rows for footer2
         ui::list(c, top, rows_, ls2_, (int)vis_.size(), [&](int i) {
             const cfg::Item& it = g.items[vis_[i]];
             std::string v = (it.type == cfg::BOOL) ? (it.value == "1" ? "On" : "Off") : it.value;
@@ -88,12 +90,16 @@ private:
             if (pad < 1) pad = 1;
             return it.label + std::string(pad, ' ') + v;
         }, ui::White, ui::BrightGreen);
-        // hint line for the selected item
-        if (!vis_.empty()) {
-            const cfg::Item& it = g.items[vis_[ls2_.sel]];
-            ui::footer(c, ro_ ? " read-only (live node) — esc:groups "
-                              : std::string(" ") + (it.hint.empty() ? "enter:edit  esc:groups" : it.hint));
-        } else ui::footer(c, " esc:groups ");
+        // Two-row hint/help for the selected item: explanation wraps across both
+        // rows; if it fits one row, the second row shows the key hints.
+        if (ro_) { ui::footer2(c, " read-only (live node) ", " esc:groups "); return; }
+        if (vis_.empty()) { ui::footer2(c, " (no items) ", " esc:groups "); return; }
+        const cfg::Item& it = g.items[vis_[ls2_.sel]];
+        std::string h = it.hint.empty() ? "Press enter to edit." : it.hint;
+        auto wl = ui::wrap_text(h, c.width() - 2);
+        std::string l1 = wl.empty() ? "" : wl[0];
+        std::string l2 = wl.size() > 1 ? wl[1] : "enter:edit   esc:groups";
+        ui::footer2(c, " " + l1, " " + l2);
     }
 
     // ---- editor ----

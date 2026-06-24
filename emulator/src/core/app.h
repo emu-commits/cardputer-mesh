@@ -80,6 +80,10 @@ public:
     void shutdown(AppContext& ctx);        // persist current app + flush on exit
     void request_switch(const std::string& id);
     void apply_pending(AppContext& ctx);
+    // One-shot "Esc goes back here" target. Set by an app before handing off
+    // (e.g. Search opening a result) so the next unhandled Esc returns to it
+    // instead of the launcher. Consumed on first use.
+    void set_back_target(const std::string& id) { back_to_ = id; }
 
     void handle_key(AppContext& ctx, const ui::KeyEvent& k);
     void tick(AppContext& ctx);
@@ -103,6 +107,7 @@ private:
     std::string cur_id_;
     std::string pending_;
     bool has_pending_ = false;
+    std::string back_to_; // one-shot Esc-back target (see set_back_target)
 
     bool pal_ = false;
     int pal_sel_ = 0;

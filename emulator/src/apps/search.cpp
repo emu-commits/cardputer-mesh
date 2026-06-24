@@ -34,9 +34,20 @@ class Search : public App {
         std::string arg;    // nav_arg intent for the target
     };
 public:
-    void on_create(AppContext& ctx) override { build(ctx); refilter(ctx); }
-    void on_resume(AppContext& ctx) override { build(ctx); refilter(ctx); }
-    void on_pause(AppContext&) override { corpus_.clear(); corpus_.shrink_to_fit(); shown_.clear(); }
+    void on_create(AppContext& ctx) override {
+        if (ctx.state) input_ = ctx.state->get("search.query", ""); // restore last query (Esc-back to results)
+        build(ctx); refilter(ctx);
+    }
+    void on_pause(AppContext& ctx) override {
+        if (ctx.state) ctx.state->set("search.query", input_);
+        corpus_.clear(); corpus_.shrink_to_fit(); shown_.clear();
+    }
+    // The corpus is harvested on entry, but inbound mesh messages can arrive while
+    // Search is foreground. Re-harvest only when the message log grows (cheap
+    // count() check) so live messages show up without re-walking the filesystem.
+    void tick(AppContext& ctx) override {
+        if (ctx.log && ctx.log->count() != last_log_count_) { build(ctx); refilter(ctx, /*reset_sel=*/false); }
+    }
 
     bool on_key(AppContext& ctx, const KeyEvent& k) override {
         if (k.key == Key::Up || k.key == Key::Down || k.key == Key::PageUp || k.key == Key::PageDown) {
@@ -96,6 +107,7 @@ private:
         harvest_messages(ctx);
         harvest_journal(ctx);
         harvest_files(ctx);
+        last_log_count_ = ctx.log ? ctx.log->count() : 0;
     }
 
     void harvest_contacts(AppContext& ctx) {
@@ -107,9 +119,9 @@ private:
             std::string label = name;
             if (!loc.empty()) label += " @" + loc;
             if (!notes.empty()) label += " - " + notes;
-            uint32_t id = (uint32_t)std::strtoul(f[0].c_str(), nullptr, 10);
-            add('C', label, "contacts", "contact:" + f[0]);
-            (void)id;
+            // pass id + name so Contacts can open the EXISTING record for edit (#13),
+            // even when the contact has no LoRa id (id 0 -> match by name).
+            add('C', label, "contacts", "contact:" + f[0] + "\t" + name);
         }
     }
     void harvest_todos(AppContext& ctx) {
@@ -222,7 +234,7 @@ private:
         return true;
     }
 
-    void refilter(AppContext& ctx) {
+    void refilter(AppContext& ctx, bool reset_sel = true) {
         shown_.clear();
         std::string q = lower(input_);
         std::vector<std::pair<int, int>> scored; // (score, index)
@@ -235,7 +247,8 @@ private:
         int cap = (int)scored.size() < MAX_SHOWN ? (int)scored.size() : MAX_SHOWN;
         for (int i = 0; i < cap; ++i) shown_.push_back(scored[i].second);
         wiki_row_ = !input_.empty() && ctx.wiki && ctx.wiki->ok();
-        ls_.sel = 0; ls_.top = 0;
+        if (reset_sel) { ls_.sel = 0; ls_.top = 0; }
+        else ls_.clamp(total_rows(), rows_); // keep selection on a live re-harvest
     }
 
     // displayed rows = optional wiki-handoff row + filtered corpus
@@ -253,12 +266,13 @@ private:
     void activate(AppContext& ctx) {
         int sel = ls_.sel;
         if (wiki_row_) {
-            if (sel == 0) { ctx.nav_arg = "wiki:" + input_; ctx.apps->request_switch("wiki"); return; }
+            if (sel == 0) { ctx.apps->set_back_target("search"); ctx.nav_arg = "wiki:" + input_; ctx.apps->request_switch("wiki"); return; }
             sel -= 1;
         }
         if (sel < 0 || sel >= (int)shown_.size()) return;
         const Item& it = corpus_[shown_[sel]];
         if (it.target.empty()) return;
+        ctx.apps->set_back_target("search"); // Esc in the target returns to these results (#14)
         ctx.nav_arg = it.arg;
         ctx.apps->request_switch(it.target);
     }
@@ -274,6 +288,7 @@ private:
     std::string input_;
     ui::ListState ls_;
     int rows_ = 1;
+    size_t last_log_count_ = 0;
 };
 
 std::unique_ptr<App> make_search() { return std::make_unique<Search>(); }

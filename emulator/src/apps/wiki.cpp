@@ -97,21 +97,10 @@ private:
     }
     std::vector<std::string> wrapped(int w) const {
         std::vector<std::string> out;
-        auto push_text = [&](const std::string& s, bool header) {
-            size_t i = 0;
-            while (i <= s.size()) {
-                size_t nl = s.find('\n', i);
-                std::string ln = s.substr(i, nl == std::string::npos ? std::string::npos : nl - i);
-                if (!ln.empty() && ln.back() == '\r') ln.pop_back();
-                if (ln.empty()) out.push_back("");
-                else for (size_t j = 0; j < ln.size(); j += w) out.push_back((header ? "" : "") + ln.substr(j, w));
-                if (nl == std::string::npos) break;
-                i = nl + 1;
-            }
-        };
         for (auto& s : secs_) {
-            if (!s.title.empty()) { out.push_back("== " + s.title + " =="); }
-            push_text(s.content, false);
+            if (!s.title.empty()) out.push_back("== " + s.title + " ==");
+            // word-wrap on spaces/hyphens, never mid-word (#12)
+            for (auto& ln : ui::wrap_text(s.content, w)) out.push_back(ln);
             out.push_back("");
         }
         if (out.size() > 1 && out.back().empty()) out.pop_back();

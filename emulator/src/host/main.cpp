@@ -93,6 +93,27 @@ int main(int argc, char** argv) {
     settings.load(state);
     host::SqliteWiki wiki("emu_sd/wiki.db"); // offline wiki on the SD sandbox (if present)
 
+    // Re-apply persisted node favorite/ignore flags (#1). On a real Meshtastic
+    // node these are stored in the node DB; the emulator persists the id sets in
+    // the state store (NodeList writes them) and restores them here at boot.
+    {
+        auto apply_ids = [&](const std::string& csv, bool fav) {
+            size_t i = 0;
+            while (i < csv.size()) {
+                size_t c = csv.find(',', i);
+                std::string tok = csv.substr(i, c == std::string::npos ? std::string::npos : c - i);
+                if (!tok.empty()) {
+                    uint32_t id = (uint32_t)std::strtoul(tok.c_str(), nullptr, 10);
+                    if (fav) meshf.set_favorite(id, true); else meshf.set_ignored(id, true);
+                }
+                if (c == std::string::npos) break;
+                i = c + 1;
+            }
+        };
+        apply_ids(state.get("nodes.favs", ""), true);
+        apply_ids(state.get("nodes.ignored", ""), false);
+    }
+
     app::AppContext ctx;
     ctx.apps = &mgr; ctx.mesh = &meshf; ctx.log = &store; ctx.notify = &notify;
     ctx.state = &state; ctx.fs = &filesystem; ctx.clip = &clipboard; ctx.settings = &settings;

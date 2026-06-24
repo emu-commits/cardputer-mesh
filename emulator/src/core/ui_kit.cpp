@@ -113,4 +113,46 @@ void input_line(TextCanvas& c, int r, int col, const std::string& label,
     c.put(r, col + (int)s.size(), U'█', fg, Black, ATTR_BOLD);
 }
 
+std::vector<std::string> wrap_text(const std::string& text, int w) {
+    std::vector<std::string> out;
+    if (w < 1) w = 1;
+    size_t i = 0;
+    for (;;) {
+        size_t nl = text.find('\n', i);
+        std::string para = text.substr(i, nl == std::string::npos ? std::string::npos : nl - i);
+        if (!para.empty() && para.back() == '\r') para.pop_back();
+
+        std::string cur;
+        size_t p = 0;
+        while (p < para.size()) {
+            // next token, up to and including a break char (space or '-')
+            size_t q = p;
+            while (q < para.size() && para[q] != ' ' && para[q] != '-') ++q;
+            if (q < para.size()) ++q; // include the trailing space or hyphen
+            std::string tok = para.substr(p, q - p);
+            p = q;
+            // hard-break a token longer than the line
+            while ((int)tok.size() > w) {
+                while (!cur.empty() && cur.back() == ' ') cur.pop_back();
+                if (!cur.empty()) { out.push_back(cur); cur.clear(); }
+                out.push_back(tok.substr(0, w));
+                tok = tok.substr(w);
+            }
+            if ((int)(cur.size() + tok.size()) <= w) {
+                cur += tok;
+            } else {
+                while (!cur.empty() && cur.back() == ' ') cur.pop_back();
+                out.push_back(cur);
+                cur = tok;
+            }
+        }
+        while (!cur.empty() && cur.back() == ' ') cur.pop_back();
+        out.push_back(cur); // keep blank lines (preserves paragraph spacing)
+
+        if (nl == std::string::npos) break;
+        i = nl + 1;
+    }
+    return out;
+}
+
 } // namespace ui

@@ -79,9 +79,17 @@ private:
     void consume_intent(AppContext& ctx) {
         if (ctx.nav_arg.rfind("contact:", 0) != 0) return;
         std::string s = ctx.nav_arg.substr(8); ctx.nav_arg.clear();
-        std::vector<std::string> f = splitTab(s); // "<id>\t<long>\t<short>"
-        open_form(-1);
-        if (f.size() >= 1) edit_.id = (uint32_t)std::strtoul(f[0].c_str(), nullptr, 10);
+        std::vector<std::string> f = splitTab(s); // "<id>" or "<id>\t<long>\t<short>"
+        uint32_t id = f.size() >= 1 ? (uint32_t)std::strtoul(f[0].c_str(), nullptr, 10) : 0;
+        std::string nm = f.size() >= 2 ? f[1] : "";
+        // If this contact already exists, open it for EDIT, not New (#13). Match by
+        // LoRa id when present, else by name (id-less contacts). Sort first so the
+        // index matches what render() will display.
+        sort_recs();
+        for (int i = 0; i < (int)recs_.size(); ++i)
+            if ((id && recs_[i].id == id) || (!id && !nm.empty() && recs_[i].name == nm)) { open_form(i); return; }
+        open_form(-1); // unknown -> New contact, prefilled from the intent
+        edit_.id = id;
         if (f.size() >= 2) edit_.name = f[1].substr(0, cap(F_NAME));
         if (f.size() >= 3) edit_.shortn = f[2].substr(0, cap(F_SHORT));
         char idb[12]; std::snprintf(idb, sizeof idb, "%08x", edit_.id); idbuf_str_ = (edit_.id ? idb : "");

@@ -169,9 +169,11 @@ private:
         rows_ = ui::body_bottom(c) - top + 1;
         if (appts_.empty())
             c.text(top + 1, 2, "(no appointments — a:add  g:pick date)", ui::Gray, ui::Black, ui::ATTR_DIM);
+        static const char* DOW[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
         ui::list(c, top, rows_, ls_, (int)appts_.size(), [&](int i) {
             const Appt& a = appts_[i];
-            return two(a.m) + "/" + two(a.d) + " " + two(a.hh) + ":" + two(a.mm) + "  " + a.text;
+            return std::string(DOW[weekday(a.y, a.m, a.d)]) + " " + two(a.m) + "/" + two(a.d) +
+                   " " + two(a.hh) + ":" + two(a.mm) + "  " + a.text;
         }, ui::White, ui::BrightMagenta);
         ui::footer(c, " a:add  g:pick date  d:del  tab:todo  esc:back ");
     }

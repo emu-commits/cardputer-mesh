@@ -14,6 +14,7 @@
 #pragma once
 #include <functional>
 #include <string>
+#include <vector>
 #include "core/input.h"
 #include "core/text_canvas.h"
 
@@ -72,5 +73,11 @@ void input_line(TextCanvas& c, int r, int col, const std::string& label,
 
 // Truncate/pad a string to exactly w columns (ASCII).
 std::string fit(const std::string& s, int w, char pad = ' ');
+
+// Word-wrap `text` to width `w`. Breaks on spaces AND after hyphens (so a
+// hyphenated word can split at the hyphen but never mid-word); over-long tokens
+// are hard-broken as a last resort. Honors embedded '\n' (and '\r\n') as hard
+// line breaks, preserving blank lines. Used by the journal/wiki readers.
+std::vector<std::string> wrap_text(const std::string& text, int w);
 
 } // namespace ui

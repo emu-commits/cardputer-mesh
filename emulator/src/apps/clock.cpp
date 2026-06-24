@@ -15,16 +15,26 @@ namespace apps {
 
 class Clock : public App {
     struct Zone { std::string label; int off_min; }; // fixed UTC offset (minutes)
-    enum Overlay { NONE, ADD };
+    enum Overlay { NONE, ADD, SET_TIME, SET_TZ };
 public:
     void on_create(AppContext& ctx) override {
-        if (ctx.state) load(ctx.state->get("clock.zones", ""));
+        if (ctx.state) {
+            load(ctx.state->get("clock.zones", ""));
+            offset_s_ = ctx.state->get_int("clock.offset_s", 0);
+            home_ = ctx.state->get("clock.home", "");
+        }
         if (zones_.empty()) zones_ = {{"London", 0}, {"New York", -300}, {"Tokyo", 540}};
     }
-    void on_pause(AppContext& ctx) override { if (ctx.state) ctx.state->set("clock.zones", dump()); }
+    void on_pause(AppContext& ctx) override {
+        if (ctx.state) {
+            ctx.state->set("clock.zones", dump());
+            ctx.state->set_int("clock.offset_s", offset_s_);
+            ctx.state->set("clock.home", home_);
+        }
+    }
 
     bool on_key(AppContext&, const KeyEvent& k) override {
-        if (overlay_ == ADD) {
+        if (overlay_ != NONE) {
             if (k.key == Key::Esc) { overlay_ = NONE; return true; }
             if (k.key == Key::Enter) { commit(); overlay_ = NONE; return true; }
             if (k.key == Key::Backspace) { if (!ibuf_.empty()) ibuf_.pop_back(); return true; }
@@ -33,6 +43,8 @@ public:
         }
         if (ls_.move(k, (int)zones_.size(), rows_)) return true;
         if (k.is_char() && k.ch == 'a') { overlay_ = ADD; ibuf_.clear(); return true; }
+        if (k.is_char() && k.ch == 's') { overlay_ = SET_TIME; ibuf_.clear(); return true; }   // set the clock (#6)
+        if (k.is_char() && k.ch == 'z') { overlay_ = SET_TZ; ibuf_ = home_; return true; }      // tag local timezone (#6)
         if (k.is_char() && k.ch == 'd' && !zones_.empty()) {
             zones_.erase(zones_.begin() + ls_.sel); ls_.clamp((int)zones_.size(), rows_); return true;
         }
@@ -41,12 +53,13 @@ public:
 
     void render(AppContext&, TextCanvas& c) override {
         c.clear(ui::White, ui::Black);
-        std::time_t now = std::time(nullptr);
+        std::time_t now = std::time(nullptr) + offset_s_; // honor a manually-set clock (#6)
         std::tm lt{}; localtime_r(&now, &lt);
         char date[32]; std::snprintf(date, sizeof date, "%04d-%02d-%02d", lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday);
         int top = ui::header(c, "Clock", ui::BrightGreen, date);
         char big[16]; std::snprintf(big, sizeof big, "%02d:%02d:%02d", lt.tm_hour, lt.tm_min, lt.tm_sec);
-        c.text(top, 3, std::string("  ") + big + "  local", ui::BrightWhite, ui::Black, ui::ATTR_BOLD);
+        std::string tag = home_.empty() ? "local" : ("local (" + home_ + ")");
+        c.text(top, 3, std::string("  ") + big + "  " + tag, ui::BrightWhite, ui::Black, ui::ATTR_BOLD);
         c.hline(top + 1, 1, c.width() - 2, U'-', ui::Gray, ui::Black);
 
         rows_ = ui::body_bottom(c) - (top + 2) + 1;
@@ -58,19 +71,49 @@ public:
             char off[16]; std::snprintf(off, sizeof off, "%+03d:%02d", oh, om);
             return std::string(hm) + "  " + ui::fit(zones_[i].label, 16) + " UTC" + off;
         }, ui::White, ui::BrightGreen);
-        ui::footer(c, " a:add zone   d:delete   up/dn   esc:back ");
+        ui::footer(c, " s:set time  z:set tz  a:add zone  d:del  esc ");
         if (overlay_ == ADD) {
             int ir, ic, iw, ih;
             ui::modal_box(c, 6, 44, "Add zone", ui::BrightGreen, ir, ic, iw, ih, "format:  +HH:MM Label");
             c.text(ir, ic, "e.g.  -08:00 Los Angeles", ui::Gray, ui::Black, ui::ATTR_DIM);
+            ui::input_line(c, ir + 2, ic, "> ", ibuf_, ui::BrightWhite, iw);
+        } else if (overlay_ == SET_TIME) {
+            int ir, ic, iw, ih;
+            ui::modal_box(c, 6, 40, "Set time", ui::BrightGreen, ir, ic, iw, ih, "HH:MM or HH:MM:SS  enter:set");
+            c.text(ir, ic, "24-hour, e.g.  14:30", ui::Gray, ui::Black, ui::ATTR_DIM);
+            ui::input_line(c, ir + 2, ic, "> ", ibuf_, ui::BrightWhite, iw);
+        } else if (overlay_ == SET_TZ) {
+            int ir, ic, iw, ih;
+            ui::modal_box(c, 6, 44, "Tag local timezone", ui::BrightGreen, ir, ic, iw, ih, "label  enter:set");
+            c.text(ir, ic, "e.g.  EST  or  America/New_York", ui::Gray, ui::Black, ui::ATTR_DIM);
             ui::input_line(c, ir + 2, ic, "> ", ibuf_, ui::BrightWhite, iw);
         }
     }
 
 private:
     void commit() {
-        size_t a = ibuf_.find_first_not_of(' '); if (a == std::string::npos) return;
-        std::string s = ibuf_.substr(a);
+        if (overlay_ == SET_TIME) { commit_time(); return; }
+        if (overlay_ == SET_TZ)   { home_ = trim(ibuf_); return; }
+        commit_zone(); // ADD
+    }
+    static std::string trim(const std::string& s) {
+        size_t a = s.find_first_not_of(' '); if (a == std::string::npos) return "";
+        size_t b = s.find_last_not_of(' '); return s.substr(a, b - a + 1);
+    }
+    // Set the displayed clock by storing an offset from the real system time, so
+    // it persists. On the device this is where the RTC would be set.
+    void commit_time() {
+        int hh = 0, mm = 0, ss = 0;
+        if (std::sscanf(ibuf_.c_str(), "%d:%d:%d", &hh, &mm, &ss) < 2) return;
+        if (hh < 0 || hh > 23 || mm < 0 || mm > 59 || ss < 0 || ss > 59) return;
+        std::time_t real = std::time(nullptr);
+        std::tm lt{}; localtime_r(&real, &lt);
+        int cur = lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec;
+        int tgt = hh * 3600 + mm * 60 + ss;
+        offset_s_ = tgt - cur;
+    }
+    void commit_zone() {
+        std::string s = trim(ibuf_); if (s.empty()) return;
         // parse leading "+HH:MM" or "+HH" then label
         int sign = 1; size_t i = 0;
         if (s[0] == '+' || s[0] == '-') { sign = s[0] == '-' ? -1 : 1; i = 1; }
@@ -103,6 +146,8 @@ private:
     int rows_ = 1;
     Overlay overlay_ = NONE;
     std::string ibuf_;
+    int offset_s_ = 0;     // manual clock offset from system time (#6)
+    std::string home_;     // local timezone tag/label (#6)
 };
 
 std::unique_ptr<App> make_clock() { return std::make_unique<Clock>(); }

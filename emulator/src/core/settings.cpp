@@ -86,8 +86,10 @@ void Settings::build_default() {
 
     Group sec; sec.name = "Security"; sec.ns = "security";
     sec.items = {
-        bl("has_key", "PKC key present", true, "X25519 keypair generated"),
-        bl("admin_local", "Local admin only", true, "Restrict admin to this device"),
+        bl("has_key", "PKC encryption", true,
+           "Public-key crypto: end-to-end encrypts your direct messages with other 2.5+ nodes (X25519 keypair)."),
+        bl("admin_local", "Local admin only", true,
+           "Only this device can change its settings; admin command packets received over the mesh are refused."),
     };
     groups_.push_back(sec);
 
@@ -112,9 +114,12 @@ void Settings::build_default() {
 
     Group sys; sys.name = "System"; sys.ns = "system";
     sys.items = {
-        en("tz", "Timezone", "UTC;GMT-5;GMT-4;GMT+0;GMT+1;GMT+2;GMT+8", "GMT-5", "Local timezone"),
-        bl("sound", "Notification sound", true, "Play sound on new notifications"),
-        num("brightness", "CYD brightness", 10, 100, "80", "Backlight percent"),
+        en("tz", "Timezone", "UTC;GMT-5;GMT-4;GMT+0;GMT+1;GMT+2;GMT+8", "GMT-5", "Local timezone for the clock"),
+        en("volume", "Notification volume", "Off;Low;Medium;High", "High",
+           "Loudness of the notification beep (Off = silent)"),
+        num("brightness", "CYD brightness", 10, 100, "80", "External CYD screen backlight percent"),
+        num("brightness_builtin", "Built-in brightness", 10, 100, "80",
+            "Cardputer built-in screen backlight percent"),
     };
     groups_.push_back(sys);
 }
