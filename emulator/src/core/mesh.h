@@ -84,36 +84,86 @@ public:
     virtual bool is_ignored(uint32_t id) const { (void)id; return false; }
 };
 
-// Shared rolling history both chat (reads) and the host (appends) use.
-// Bounded two ways so it can't grow without limit: a hard count cap and a
-// 30-day age window (mesh traffic older than 30 days is dropped). On device the
-// file-backed history is pruned the same way using real timestamps.
-class MessageStore {
+// Selects one chat "window": a channel, or a DM with a peer. Lets the log be
+// queried without pulling the whole history into RAM.
+struct LogQuery {
+    bool dm = false;
+    uint32_t peer = 0;     // DM peer node id (when dm)
+    uint8_t channel = 0;   // channel index (when !dm)
+    uint32_t our_id = 0;   // to classify DM direction
+    bool matches(const Message& m) const {
+        if (dm) return (!m.outgoing && m.dest == our_id && m.from_id == peer) ||
+                       (m.outgoing && m.dest == peer);
+        return m.dest == BROADCAST && m.channel == channel;
+    }
+};
+
+// MessageLog — append-only chat history behind a pageable seam (same idea as the
+// fs / settings / persist seams). Consumers use window()/scan_from() rather than
+// walking the whole log, so the DEVICE backing can page from an SD file and keep
+// only the queried window resident (500+ messages never sit in 512 KB SRAM).
+class MessageLog {
+public:
+    virtual ~MessageLog() = default;
+    virtual void append(const Message& m) = 0;
+    virtual void mark_ack(uint32_t id, bool ok) = 0;
+    // Monotonic count of all messages ever appended (a stable cursor base for
+    // scan_from, unaffected by front-trimming).
+    virtual size_t count() const = 0;
+    // Up to `limit` messages matching q, chronological, ending `from_end` matches
+    // before the newest (for scrollback). Only this window is materialized.
+    virtual std::vector<Message> window(const LogQuery& q, int limit, int from_end) = 0;
+    virtual int match_count(const LogQuery& q) = 0;
+    // Deliver messages at absolute indices [cursor, count()) to fn; return count().
+    virtual size_t scan_from(size_t cursor, const std::function<void(const Message&)>& fn) = 0;
+};
+
+// RamMessageLog — dev/host backing: a bounded in-RAM ring. Bounded two ways so it
+// can't grow without limit: a resident-window cap and a 30-day age window. On
+// device this is replaced by an SD-file-backed log (same interface), pruned the
+// same way using real timestamps.
+class RamMessageLog : public MessageLog {
 public:
     static constexpr uint32_t MAX_AGE_MS = 30u * 24 * 3600 * 1000; // 30 days
 
-    void append(const Message& m) {
-        if (msgs_.size() >= cap_) msgs_.erase(msgs_.begin());
+    void append(const Message& m) override {
         msgs_.push_back(m);
+        while (msgs_.size() > cap_) { msgs_.erase(msgs_.begin()); ++base_; }
         prune(m.ts_ms);
     }
-    // Mark a previously-sent outgoing message (matched by packet id) delivered.
-    void mark_ack(uint32_t id, bool ok) {
+    void mark_ack(uint32_t id, bool ok) override {
         for (auto it = msgs_.rbegin(); it != msgs_.rend(); ++it)
             if (it->outgoing && it->id == id) { it->ack = ok ? ACK_OK : ACK_FAIL; return; }
     }
-    // Drop messages older than 30 days relative to `now_ms` (the newest ts).
+    size_t count() const override { return base_ + msgs_.size(); }
+    std::vector<Message> window(const LogQuery& q, int limit, int from_end) override {
+        std::vector<Message> hit;
+        for (auto& m : msgs_) if (q.matches(m)) hit.push_back(m);
+        int n = (int)hit.size();
+        int end = n - from_end; if (end < 0) end = 0;
+        int start = end - limit; if (start < 0) start = 0;
+        return std::vector<Message>(hit.begin() + start, hit.begin() + end);
+    }
+    int match_count(const LogQuery& q) override {
+        int n = 0; for (auto& m : msgs_) if (q.matches(m)) ++n; return n;
+    }
+    size_t scan_from(size_t cursor, const std::function<void(const Message&)>& fn) override {
+        size_t start = cursor > base_ ? cursor - base_ : 0; // missed-if-pruned is acceptable
+        for (size_t i = start; i < msgs_.size(); ++i) fn(msgs_[i]);
+        return count();
+    }
+
+private:
     void prune(uint32_t now_ms) {
-        if (now_ms < MAX_AGE_MS) return; // not enough elapsed time to prune
+        if (now_ms < MAX_AGE_MS) return;
         uint32_t cutoff = now_ms - MAX_AGE_MS;
         size_t i = 0;
         while (i < msgs_.size() && msgs_[i].ts_ms < cutoff) ++i;
-        if (i) msgs_.erase(msgs_.begin(), msgs_.begin() + i);
+        if (i) { msgs_.erase(msgs_.begin(), msgs_.begin() + i); base_ += i; }
     }
-    const std::vector<Message>& all() const { return msgs_; }
-private:
     std::vector<Message> msgs_;
-    size_t cap_ = 500;
+    size_t cap_ = 200;   // resident window cap; deeper history pages from SD on device
+    size_t base_ = 0;    // count trimmed off the front (keeps absolute cursors stable)
 };
 
 } // namespace mesh

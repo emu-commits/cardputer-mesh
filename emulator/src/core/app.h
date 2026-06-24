@@ -14,7 +14,7 @@
 #include "core/persist.h"
 #include "core/text_canvas.h"
 
-namespace mesh { class MeshFacade; class MessageStore; }
+namespace mesh { class MeshFacade; class MessageLog; }
 namespace nc { class NotificationCenter; }
 namespace fs { class FileSystem; }
 namespace clip { class Clipboard; }
@@ -27,7 +27,7 @@ class AppManager;
 struct AppContext {
     AppManager* apps = nullptr;
     mesh::MeshFacade* mesh = nullptr;
-    mesh::MessageStore* store = nullptr;
+    mesh::MessageLog* log = nullptr;
     nc::NotificationCenter* notify = nullptr;
     persist::Store* state = nullptr;
     fs::FileSystem* fs = nullptr;

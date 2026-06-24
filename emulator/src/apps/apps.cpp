@@ -137,7 +137,7 @@ public:
             return true;
         }
         if (k.key == Key::Backspace) { if (!compose_.empty()) compose_.pop_back(); return true; }
-        if (k.key == Key::Up) { scroll_++; return true; }
+        if (k.key == Key::Up) { if (scroll_ < scroll_max_) scroll_++; return true; } // scroll into history
         if (k.key == Key::Down) { if (scroll_ > 0) scroll_--; return true; }
         if (k.ctrl && (k.ch == 'u' || k.ch == 'U')) { if (ctx.clip) compose_ += ctx.clip->get(); return true; }
         if (k.ctrl && (k.ch == 'w' || k.ch == 'W')) { win_open_ = true; return true; }
@@ -164,17 +164,15 @@ public:
         std::string right = other > 0 ? ("tab:windows (" + std::to_string(other) + ")") : "tab:windows";
         int top = ui::header(c, title, ui::BrightCyan, right);
 
-        std::vector<const mesh::Message*> rel;
-        for (auto& m : ctx.store->all()) if (in_window(ctx, m)) rel.push_back(&m);
-
         int bottom = c.height() - 3;
         int rows = bottom - top + 1;
-        int total = (int)rel.size();
-        int start = total - rows - scroll_;
-        if (start < 0) start = 0;
+        mesh::LogQuery q = cur_query(ctx);
+        scroll_max_ = ctx.log->match_count(q) - rows; if (scroll_max_ < 0) scroll_max_ = 0;
+        if (scroll_ > scroll_max_) scroll_ = scroll_max_;
+        auto msgs = ctx.log->window(q, rows, scroll_); // only this window is materialized
         int row = top;
-        for (int i = start; i < total && row <= bottom; ++i, ++row) {
-            const mesh::Message& m = *rel[i];
+        for (auto& m : msgs) {
+            if (row > bottom) break;
             std::string who = m.outgoing ? ctx.mesh->our_short() : m.from_name;
             std::string st = " ";
             if (m.outgoing) st = (m.ack == mesh::ACK_PENDING) ? "·" : (m.ack == mesh::ACK_OK) ? "✓"
@@ -182,6 +180,7 @@ public:
             std::string line = "[" + hhmm(m.ts_ms) + "]" + st + who + ": " + m.text;
             uint8_t fg = m.outgoing ? ui::BrightGreen : ui::White;
             c.text(row, 1, ui::fit(line, c.width() - 2), fg, ui::Black);
+            ++row;
         }
         ui::input_line(c, c.height() - 2, 1, "> ", compose_);
         ui::footer(c, " type+enter  /help  tab:windows  up/dn scroll  esc:back ");
@@ -197,28 +196,25 @@ private:
             ctx.nav_arg.clear();
         }
     }
-    bool in_window(AppContext& ctx, const mesh::Message& m) {
-        if (dm_) return (!m.outgoing && m.dest == ctx.mesh->our_id() && m.from_id == target_dm_) ||
-                        (m.outgoing && m.dest == target_dm_);
-        return m.dest == mesh::BROADCAST && m.channel == (uint8_t)target_ch_;
+    mesh::LogQuery cur_query(AppContext& ctx) {
+        mesh::LogQuery q; q.our_id = ctx.mesh->our_id();
+        if (dm_) { q.dm = true; q.peer = target_dm_; } else { q.dm = false; q.channel = (uint8_t)target_ch_; }
+        return q;
     }
     std::string win_key() { return dm_ ? ("d" + std::to_string(target_dm_)) : ("c" + std::to_string(target_ch_)); }
     int total_unread() { int n = 0; for (auto& kv : unread_) n += kv.second; return n; }
     // Scan messages arrived since last time: auto-open DM windows and tally
     // per-window unread for anything not in the window currently on screen.
     void process_new(AppContext& ctx) {
-        auto& all = ctx.store->all();
         std::string cur = win_key();
-        for (size_t i = seen_; i < all.size(); ++i) {
-            const mesh::Message& m = all[i];
-            if (m.outgoing) continue;
+        seen_ = ctx.log->scan_from(seen_, [&](const mesh::Message& m) {
+            if (m.outgoing) return;
             std::string key;
             if (m.dest == ctx.mesh->our_id()) { open_dm(m.from_id); key = "d" + std::to_string(m.from_id); }
             else if (m.dest == mesh::BROADCAST) key = "c" + std::to_string((int)m.channel);
-            else continue;
+            else return;
             if (key != cur) unread_[key]++;
-        }
-        seen_ = all.size();
+        });
     }
     void handle_command(AppContext& ctx, const std::string& line) {
         std::vector<std::string> tok; size_t i = 0;
@@ -352,7 +348,7 @@ private:
     }
 
     std::string compose_;
-    int scroll_ = 0;
+    int scroll_ = 0, scroll_max_ = 0;
     bool dm_ = false;
     int target_ch_ = 0;
     uint32_t target_dm_ = 0;

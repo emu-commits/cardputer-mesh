@@ -53,7 +53,7 @@ int main(int argc, char** argv) {
         mesh_backend = std::make_unique<mesh::StubMesh>();
     mesh::MeshFacade& meshf = *mesh_backend;
 
-    mesh::MessageStore store;
+    mesh::RamMessageLog store; // dev backing; device build swaps in an SD-paged log
     nc::NotificationCenter notify(&meshf);
 
     // Single mesh callback fanned out (mirrors one setMessageCallback on device).
@@ -88,7 +88,7 @@ int main(int argc, char** argv) {
     settings.load(state);
 
     app::AppContext ctx;
-    ctx.apps = &mgr; ctx.mesh = &meshf; ctx.store = &store; ctx.notify = &notify;
+    ctx.apps = &mgr; ctx.mesh = &meshf; ctx.log = &store; ctx.notify = &notify;
     ctx.state = &state; ctx.fs = &filesystem; ctx.clip = &clipboard; ctx.settings = &settings;
     ctx.now_ms = host::now_ms();
     // First-run provisioning: a brand-new install (no saved session, not yet

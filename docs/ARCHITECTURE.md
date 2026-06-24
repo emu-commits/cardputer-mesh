@@ -223,7 +223,11 @@ No mesh modification. Apps use a thin `MeshFacade` over `hal->mesh()`:
   that fans out to subscribers (chat app + NotificationCenter).
 - `nodes()/node(id)/status()` → `node_db` / `MeshService::getNode/getState`.
 - History/NodeDB are **streamed from SD** (Plai already stores them) — apps page
-  the visible window, never the whole log.
+  the visible window, never the whole log. Chat history is behind a
+  `mesh::MessageLog` interface (`window()`/`scan_from()`/`match_count()`); the
+  dev backing `RamMessageLog` keeps a bounded ring (cap 200 + 30-day trim, stable
+  absolute cursors across front-trim), and the device backing pages from an SD
+  file so 500+ messages never sit resident in 512 KB SRAM.
 - The mesh is advanced by `MeshService::update()` inside the one main loop; RX
   callbacks therefore run in UI context (no cross-task marshaling needed).
 
