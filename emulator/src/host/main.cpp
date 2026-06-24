@@ -77,6 +77,7 @@ int main(int argc, char** argv) {
     mgr.reg("channels", "Channels", apps::make_channels);
     mgr.reg("settings", "Settings", apps::make_settings);
     mgr.reg("wizard", "Mesh setup wizard", apps::make_wizard, /*hidden=*/true); // reached from Settings (#18)
+    mgr.reg("presets", "Config presets", apps::make_presets, /*hidden=*/true);  // reached from Settings
 
     host::FileStore state("emu_state.dat"); // return-to-last-position (ARCHITECTURE §6)
     host::UnixFs filesystem("emu_sd");      // SD-card sandbox for the file browser

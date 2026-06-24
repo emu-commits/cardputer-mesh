@@ -54,17 +54,19 @@ void Settings::build_default() {
 
     Group lora; lora.name = "LoRa"; lora.ns = "lora";
     lora.items = {
+        // Meshtastic-spec defaults (region UNSET, LongFast, slot 0, 3 hops); the
+        // nyme.sh NYC config is shipped as a *preset* (see the Presets screen).
         en("region", "Region",
            "UNSET;US;EU_433;EU_868;CN;JP;ANZ;KR;TW;RU;IN;NZ_865;TH;LORA_24;UA_433;UA_868;MY_919;SG_923;BR_902",
-           "US", "LoRa region code (regulatory)"),
+           "UNSET", "LoRa region code (regulatory)"),
         en("modem_preset", "Modem preset",
            "LongFast;LongSlow;VeryLongSlow;MediumSlow;MediumFast;ShortFast;ShortSlow;LongModerate;ShortTurbo;LongTurbo;Custom",
-           "MediumSlow", "Modem preset (Custom = manual BW/CR/SF)"),
+           "LongFast", "Modem preset (Custom = manual BW/CR/SF)"),
         num("bandwidth", "Bandwidth kHz", 0, 1600, "250", "Only used when preset=Custom", "modem_preset", "Custom"),
         num("coding_rate", "Coding rate 4/N", 5, 8, "5", "Only used when preset=Custom", "modem_preset", "Custom"),
-        num("spread_factor", "Spreading factor", 7, 12, "10", "Only used when preset=Custom", "modem_preset", "Custom"),
-        num("freq_slot", "Frequency slot", 0, 255, "48", "Channel slot (0 = auto)"),
-        num("hop_limit", "Number of hops", 1, 7, "7", "Max mesh routing hops (1-7)"),
+        num("spread_factor", "Spreading factor", 7, 12, "11", "Only used when preset=Custom", "modem_preset", "Custom"),
+        num("freq_slot", "Frequency slot", 0, 255, "0", "Channel slot (0 = auto)"),
+        num("hop_limit", "Number of hops", 1, 7, "3", "Max mesh routing hops (1-7)"),
         num("tx_power", "TX power dBm", -9, 22, "22", "Transmit power (-9 to 22)"),
         bl("rx_boost", "RX boost", false, "Enable SX126x RX boosted gain"),
         bl("duty_ovr", "Duty cycle override", false, "Override regional duty cycle limit"),
@@ -141,6 +143,30 @@ long Settings::get_num(const std::string& ns, const std::string& key) const {
 }
 bool Settings::get_bool(const std::string& ns, const std::string& key) const {
     return get(ns, key) == "1";
+}
+void Settings::set_value(const std::string& ns, const std::string& key, const std::string& val) {
+    for (auto& g : groups_) if (g.ns == ns) { Item* i = g.find(key); if (i) i->value = val; }
+}
+
+std::string Settings::serialize() const {
+    std::string s;
+    for (auto& g : groups_)
+        for (auto& it : g.items)
+            s += g.ns + "." + it.key + "=" + it.value + "\n";
+    return s;
+}
+void Settings::apply_serialized(const std::string& blob) {
+    size_t i = 0;
+    while (i < blob.size()) {
+        size_t nl = blob.find('\n', i);
+        std::string ln = blob.substr(i, nl == std::string::npos ? std::string::npos : nl - i);
+        size_t eq = ln.find('=');
+        size_t dot = ln.find('.');
+        if (eq != std::string::npos && dot != std::string::npos && dot < eq)
+            set_value(ln.substr(0, dot), ln.substr(dot + 1, eq - dot - 1), ln.substr(eq + 1));
+        if (nl == std::string::npos) break;
+        i = nl + 1;
+    }
 }
 
 } // namespace cfg

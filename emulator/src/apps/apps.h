@@ -21,5 +21,6 @@ std::unique_ptr<app::App> make_wizard();
 std::unique_ptr<app::App> make_mesh_status();
 std::unique_ptr<app::App> make_channels();
 std::unique_ptr<app::App> make_journal();
+std::unique_ptr<app::App> make_presets();
 
 } // namespace apps

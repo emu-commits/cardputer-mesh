@@ -47,6 +47,14 @@ public:
     std::string get(const std::string& ns, const std::string& key) const;
     long get_num(const std::string& ns, const std::string& key) const;
     bool get_bool(const std::string& ns, const std::string& key) const;
+    void set_value(const std::string& ns, const std::string& key, const std::string& val);
+
+    // Config presets (save/recall/restore). serialize() -> "ns.key=value\n" lines
+    // suitable for an SD file; apply_serialized() parses + applies them.
+    // restore_defaults() resets everything to the Meshtastic-spec defaults.
+    std::string serialize() const;
+    void apply_serialized(const std::string& blob);
+    void restore_defaults() { build_default(); }
 
     static std::vector<std::string> split(const std::string& csv, char sep = ';');
 

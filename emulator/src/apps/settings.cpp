@@ -44,13 +44,15 @@ private:
     }
 
     // ---- group level ----
-    // Row 0 is a launcher for the Mesh setup wizard (#18); rows 1.. are config groups.
+    // Rows 0,1 are action launchers (wizard, presets, #18); rows 2.. are config groups.
+    static constexpr int N_ACTIONS = 2;
     bool groups_key(AppContext& ctx, const KeyEvent& k) {
-        int n = (int)ctx.settings->groups().size() + 1; // +1 for the wizard row
+        int n = (int)ctx.settings->groups().size() + N_ACTIONS;
         if (ls_.move(k, n, rows_)) return true;
         if (k.key == Key::Enter) {
             if (ls_.sel == 0) { ctx.apps->request_switch("wizard"); return true; }
-            gi_ = ls_.sel - 1; ls2_ = {}; rebuild_vis(ctx);
+            if (ls_.sel == 1) { ctx.apps->request_switch("presets"); return true; }
+            gi_ = ls_.sel - N_ACTIONS; ls2_ = {}; rebuild_vis(ctx);
         }
         return true;
     }
@@ -58,8 +60,10 @@ private:
         int top = ui::header(c, "Settings", ui::BrightGreen, ro_ ? "read-only" : "");
         auto& gs = ctx.settings->groups();
         rows_ = ui::body_bottom(c) - top + 1;
-        ui::list(c, top, rows_, ls_, (int)gs.size() + 1, [&](int i) {
-            return i == 0 ? std::string("Run Mesh setup wizard...") : gs[i - 1].name;
+        ui::list(c, top, rows_, ls_, (int)gs.size() + N_ACTIONS, [&](int i) {
+            if (i == 0) return std::string("Run Mesh setup wizard...");
+            if (i == 1) return std::string("Config presets (save/recall)...");
+            return gs[i - N_ACTIONS].name;
         }, ui::White, ui::BrightGreen);
         ui::footer(c, " enter:open  esc:back ");
     }
