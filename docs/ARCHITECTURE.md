@@ -283,17 +283,31 @@ loop from display-sleep (`setNotifyTask`).
 | Calcurse | list (cal\|todo) | calendar/ | ~16 KB | month-grid = modal selector; GTD |
 | File browser | file list | filesystem | ~16 KB | breadcrumb; i=info, v=view(text); enter=open |
 | Editor / jrnl | text buffer | notes/, journal/ | ~64–96 KB | gap buffer; <64 KB load else page from SD |
-| FZF *(stretch)* | results list | fzf/ index | ~32–64 KB | on-disk index + RAM hot-cache |
+| Search (fzf-style) | query + results | other apps' stores | ~tens of KB | bounded in-RAM corpus, freed on pause; wiki via FTS5 handoff |
 | **NotificationCenter** | banner + center overlay | logs/ | ~12 KB | **resident bg app** (built-in screen) |
 
 Resident (outside arena): mesh working set, status strip + notify ring,
 TextCanvas (~12 KB), clipboard (8 KB), UART ring.
 
-### 10.1 FZF (the one stretch subsystem)
-Background `onRunningBG` indexer builds an **on-disk inverted index** under `fzf/`
-(incremental/resumable). Sources: wiki, chat history, calendar/todo, journal,
-filenames; file-*contents* fuzzy is the last tier. Interactive match **streams
-candidates from disk** with an in-RAM hot-cache of recent segments.
+### 10.1 Search (fzf-style global finder) — *built*
+**As-built, this replaces the originally-planned on-disk inverted index.** On the
+512 KB no-PSRAM part a background indexer over the wiki (267K articles) is
+infeasible, so Search is split in two:
+
+- **Personal content** is harvested *synchronously* on app resume into a small,
+  hard-bounded in-RAM corpus (`MAX_ITEMS`, truncated labels) from the other apps'
+  existing stores — contacts, todos, appointments, channels, recent messages
+  (`MessageLog` window), journal lines, and file paths. Typing fuzzy-filters it
+  (subsequence scoring: consecutive-run, word-boundary, and prefix bonuses). The
+  corpus is freed on `on_pause`, so it only lives while Search is foreground.
+  No on-disk index, no background indexer.
+- **The wiki is NOT fuzzy-indexed.** A synthetic top result hands the raw query
+  to the Wiki app (`nav_arg "wiki:<q>"`), which runs its own SQLite **FTS5**
+  search. File *contents* are likewise not indexed (paths/filenames only;
+  journal is indexed per-line).
+
+Selecting any hit hands off to the owning app via the same `request_switch` +
+`nav_arg` intent the other apps already use (`contact:`, `dm:`, `open:`).
 
 ---
 
@@ -340,5 +354,6 @@ control at 921600.
    bg app on the built-in screen (DMs + mentions first).
 2. **Core apps:** calc, calcurse (+reminder/timer events into NotifyCenter), file
    browser, editor/jrnl, contacts, command palette, clipboard, state persistence.
-3. **Stretch:** FZF on-disk index + search.
+3. **Search + reference:** offline Wiki (SQLite/FTS5) + fzf-style global Search
+   over personal content with a wiki handoff (in-RAM corpus, not an on-disk index).
 ```

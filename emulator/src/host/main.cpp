@@ -73,6 +73,7 @@ int main(int argc, char** argv) {
     mgr.reg("editor", "Editor", apps::make_editor);
     mgr.reg("journal", "Journal", apps::make_journal);
     mgr.reg("wiki", "Wiki", apps::make_wiki);
+    mgr.reg("search", "Search", apps::make_search);
     mgr.reg("clock", "Clock", apps::make_clock);
     mgr.reg("timer", "Timer", apps::make_timer);
     mgr.reg("files", "Files", apps::make_files);
