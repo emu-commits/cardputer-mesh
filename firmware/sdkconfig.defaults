@@ -12,6 +12,18 @@ CONFIG_COMPILER_CXX_EXCEPTIONS=y
 CONFIG_COMPILER_CXX_RTTI=y
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 
-# app_main runs the whole UI loop; give it headroom for std::string temporaries.
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+# app_main runs the whole UI loop; give it headroom for std::string temporaries
+# and SQLite/FTS5 query call depth.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=20480
 CONFIG_FREERTOS_HZ=1000
+
+# FATFS long filenames (our paths like /journal/2026-06-23.txt exceed 8.3); LFN
+# buffer on the heap so we don't grow every task's stack.
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255
+
+# SQLite compiles with NDEBUG (see main/sqlite3_esp32.c). IDF's default assert.h
+# still *evaluates* assert() expressions under NDEBUG, which trips on SQLite's
+# SQLITE_DEBUG-only member references; make NDEBUG a true no-op instead. Only
+# affects TUs that define NDEBUG (i.e. the SQLite amalgamation).
+CONFIG_COMPILER_ASSERT_NDEBUG_EVALUATE=n
