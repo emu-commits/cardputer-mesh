@@ -1,3 +1,4 @@
+#include <vector>
 #include "core/notification_center.h"
 #include <algorithm>
 #include <cctype>
@@ -44,9 +45,74 @@ void NotificationCenter::add_event(NotifType t, const std::string& from,
 
 void NotificationCenter::bg_tick(uint32_t) {}
 
+// Word-wrap a string to `width` columns, breaking at the last space (consumed)
+// or just after a hyphen (kept) within the window; hard-breaks only if a single
+// token is longer than the line.
+static std::vector<std::string> wrap_words(const std::string& s, int width) {
+    std::vector<std::string> out;
+    size_t i = 0, n = s.size();
+    while (i < n) {
+        while (i < n && s[i] == ' ') ++i;               // drop leading spaces
+        if (i >= n) break;
+        if (n - i <= (size_t)width) { out.push_back(s.substr(i)); break; }
+        size_t hard = i + (size_t)width;                // exclusive max end
+        size_t brk = std::string::npos;
+        bool drop = false;
+        for (size_t j = i + 1; j <= hard && j <= n; ++j) {
+            if (j < n && s[j] == ' ') { brk = j; drop = true; }      // break at a space
+            else if (s[j - 1] == '-') { brk = j; drop = false; }     // break after a hyphen
+        }
+        if (brk == std::string::npos) { brk = hard; drop = false; }  // no break point -> hard wrap
+        out.push_back(s.substr(i, brk - i));
+        i = drop ? brk + 1 : brk;
+    }
+    return out;
+}
+
+// Build "HH:MM" from wall-clock (00:00 until time is synced on device).
+static std::string clock_hhmm() {
+    std::time_t t = std::time(nullptr);
+    std::tm tm{};
+    localtime_r(&t, &tm);
+    char b[8];
+    std::snprintf(b, sizeof b, "%02d:%02d", tm.tm_hour, tm.tm_min);
+    return b;
+}
+
 void NotificationCenter::render_status(ui::TextCanvas& bar, uint32_t now_ms) {
     bar.clear(ui::White, ui::Black);
     (void)now_ms;
+
+    // Compact layout for the small built-in screen (the device's 1.14" panel is
+    // only ~20 cols of big text): row 0 = status (time | nodes/battery), then the
+    // latest notifications stacked newest-first, one per row, no title row.
+    if (bar.width() <= 28) {
+        std::string left = clock_hhmm();
+        std::string right = "n" + std::to_string((int)mesh_->nodes().size()) + " " + battery_;
+        std::string strip(bar.width(), ' ');
+        for (int i = 0; i < (int)left.size() && i < bar.width(); ++i) strip[i] = left[i];
+        for (int i = 0; i < (int)right.size(); ++i) {
+            int pos = bar.width() - (int)right.size() + i;
+            if (pos >= 0 && pos < bar.width()) strip[pos] = right[i];
+        }
+        bar.text(0, 0, strip, ui::BrightWhite, ui::Blue, ui::ATTR_INVERSE);
+        int row = 1;
+        for (auto it = ring_.rbegin(); it != ring_.rend() && row < bar.height(); ++it) {
+            const char* tag = (it->type == NotifType::DM) ? "@" : (it->type == NotifType::Mention) ? "*"
+                            : (it->type == NotifType::Reminder) ? "!" : (it->type == NotifType::Timer) ? "T" : "";
+            uint8_t fg = (it->type == NotifType::DM || it->type == NotifType::Mention) ? ui::BrightYellow : ui::White;
+            std::string line = std::string(tag);
+            if (!line.empty()) line += " ";          // space after the tag glyph (e.g. "T timer", not "Ttimer")
+            line += it->from + " " + it->preview;
+            // Word-wrap across rows at the screen edge (break on spaces/hyphens).
+            for (auto& seg : wrap_words(line, bar.width())) {
+                if (row >= bar.height()) break;
+                bar.text(row++, 0, seg, fg, ui::Black);
+            }
+        }
+        if (ring_.empty()) bar.text(2, 0, "no alerts", ui::Gray, ui::Black, ui::ATTR_DIM);
+        return;
+    }
 
     // The built-in screen is an ALWAYS-ON ambient strip (clock/battery/nodes) on
     // a USB-powered clamshell — it does not blank when idle (that read as "dead"

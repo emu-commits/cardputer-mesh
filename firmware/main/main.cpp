@@ -130,7 +130,8 @@ extern "C" void app_main(void) {
     // Built-in 1.14" ST7789 (status strip + notification center) on its own SPI3.
     static device::BuiltinDisplay panel;
     panel.begin();
-    panel.self_test();                        // banner + colour bars: prove the glass
+    panel.self_test();                        // big-font boot banner: prove the glass
+    vTaskDelay(pdMS_TO_TICKS(1200));          // brief banner, then the screen sleeps until a notification
 
     // Step 4 (increment 1): SX1262 radio presence check on the shared SPI2 bus
     // (SCK40/MOSI14/MISO39, CS5/RST3/BUSY6/DIO1=4 — rear LoRa header, shared w/ SD).
@@ -154,6 +155,9 @@ extern "C" void app_main(void) {
     ui::TextCanvas bar(device::BuiltinDisplay::COLS, device::BuiltinDisplay::ROWS);
     ui::AnsiRenderer rend;
     uint32_t last_full = 0;
+    bool screen_was_on = false;
+
+    notify.add_event(nc::NotifType::Generic, "deck", "ready", now_ms());  // light up once at boot
 
     for (;;) {
         uint32_t now = now_ms();
@@ -171,10 +175,19 @@ extern "C" void app_main(void) {
         if (now - last_full >= 1000) { rend.reset(); last_full = now; } // CYD resync heartbeat
         rend.render(cyd, term);
 
-        // Built-in screen: NotificationCenter status strip + stacked notifications
-        // (blanks itself after idle; wakes on new traffic — by design).
-        notify.render_status(bar, now);
-        panel.render(bar);
+        // Built-in screen sleeps (backlight off) between notifications; a new
+        // notification lights it up for OFF_MS, then it goes dark again. Render
+        // the fresh frame BEFORE turning the backlight on so the wake is clean.
+        bool screen_on = notify.screen_on(now);
+        if (screen_on) {
+            if (!screen_was_on) panel.clear();        // wipe stale content before waking
+            notify.render_status(bar, now);
+            panel.render(bar);
+            if (!screen_was_on) panel.backlight(1);
+        } else if (screen_was_on) {
+            panel.backlight(0);
+        }
+        screen_was_on = screen_on;
 
         vTaskDelay(pdMS_TO_TICKS(33));
     }

@@ -30,6 +30,12 @@ public:
     void bg_tick(uint32_t now_ms);                                 // expire banner
     void mark_read() { unread_ = 0; }
     int unread() const { return unread_; }
+    // Built-in screen power state: lit for OFF_MS after the last notification,
+    // dark otherwise. The device cuts the backlight when this is false so the
+    // light-up is the attention signal and idle is distraction-free.
+    bool screen_on(uint32_t now_ms) const {
+        return last_activity_ != 0 && (now_ms - last_activity_) < OFF_MS;
+    }
     void set_battery(const std::string& b) { battery_ = b; } // device HAL pushes "NN%"
     const std::string& battery() const { return battery_; }
 
