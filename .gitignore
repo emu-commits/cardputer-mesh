@@ -10,3 +10,7 @@ third_party/sqlite/
 # build artifacts
 emulator/*.o
 emulator/emu
+emulator/cyd_pty.path
+
+# CYD terminal PlatformIO build output
+cyd-terminal/.pio/
