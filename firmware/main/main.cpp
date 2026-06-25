@@ -9,6 +9,7 @@
 #include "freertos/task.h"
 #include "esp_timer.h"
 #include "esp_log.h"
+#include "driver/gpio.h"
 
 #include "apps/apps.h"
 #include "core/ansi.h"
@@ -66,6 +67,17 @@ extern "C" void app_main(void) {
     // Real storage backends (step 3): NVS for scalars/session, SD for files +
     // the offline wiki. SD mount may fail (no card) — the fs/wiki then degrade
     // gracefully (ops return false / wiki.ok()==false), exactly like the stubs did.
+    // The microSD and the LoRa radio share SPI2. Park the radio's chip-select
+    // (GPIO5) HIGH before touching the card so the not-yet-configured SX1262
+    // can't drive MISO and corrupt the card's SPI replies (which showed up as
+    // sdmmc_card_init ESP_ERR_INVALID_RESPONSE 0x108).
+    {
+        gpio_config_t cs = {};
+        cs.pin_bit_mask = 1ULL << 5;          // LoRa CS = GPIO5 (Plai board.h)
+        cs.mode = GPIO_MODE_OUTPUT;
+        gpio_config(&cs);
+        gpio_set_level(GPIO_NUM_5, 1);
+    }
     static device::SdCard sd;
     sd.mount();
     static device::NvsStore state;

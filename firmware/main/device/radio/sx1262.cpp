@@ -693,6 +693,14 @@ namespace HAL
     // [cardputer-deck addition] see header.
     bool SX1262::probe(uint8_t* out_version)
     {
+        // The SPI mutex is normally created in init(); probe() bypasses init(),
+        // so create it here first — spiTransfer() takes it (a NULL take asserts).
+        if (_spi_mutex == nullptr)
+        {
+            _spi_mutex = xSemaphoreCreateMutex();
+            if (_spi_mutex == nullptr)
+                return false;
+        }
         if (_spi_handle == nullptr && !spiInit())
             return false;
         reset();
