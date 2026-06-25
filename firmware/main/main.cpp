@@ -2,9 +2,8 @@
 //
 // Mirrors the emulator's AppContext wiring, but renders the 53x20 CYD canvas to
 // UART1 (Port-A G1 -> CYD) instead of a host terminal. Mesh is the portable
-// StubMesh; persist/fs/wiki are stubs for now. No keyboard yet — this milestone
-// proves: (1) the portable C++ cross-compiles + fits, (2) the UART sink works,
-// (3) the physical Cardputer->CYD link renders the real UI.
+// StubMesh; persist/fs/wiki are stubs for now. Keyboard = the ADV's TCA8418 via
+// device::Keyboard. Still stubbed: SD storage, real mesh/radio, built-in screen.
 #include <cstdint>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -20,6 +19,7 @@
 #include "core/stub_mesh.h"
 #include "core/text_canvas.h"
 
+#include "device/cardputer_keyboard.h"
 #include "device/uart_terminal.h"
 #include "stubs/stub_seams.h"
 
@@ -76,6 +76,9 @@ extern "C" void app_main(void) {
     static device::UartTerminal term(UART_NUM_1);
     term.begin(PORTA_TX_GPIO, CYD_BAUD);
 
+    static device::Keyboard kbd;
+    kbd.begin();                              // TCA8418 on I2C1 (SDA8/SCL9)
+
     ui::TextCanvas cyd(CYD_W, CYD_H);
     ui::AnsiRenderer rend;
     uint32_t last_full = 0;
@@ -84,6 +87,7 @@ extern "C" void app_main(void) {
         uint32_t now = now_ms();
         ctx.now_ms = now;
 
+        for (auto& ke : kbd.poll()) mgr.handle_key(ctx, ke);
         meshf.poll(now);
         mgr.apply_pending(ctx);
         mgr.tick(ctx);

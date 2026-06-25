@@ -5,7 +5,7 @@
 // of ANSI/VT100 (see emulator/src/core/ansi.cpp). This sketch is the receiving
 // end: it parses that stream and paints a 53x20 grid of 6x12 cells onto the
 // 320x240 ILI9341, landscape. It NEVER sends anything back — keyboard input
-// stays on the Cardputer. Three wires: 5V, GND, GPIO35<-Cardputer TX @ 921600.
+// stays on the Cardputer. Three wires: 5V, GND, RXD/GPIO3<-Cardputer TX @ 921600.
 //
 // Recognised sequences (exactly what the emitter produces):
 //   ESC [ 2 J            clear screen
@@ -29,7 +29,10 @@ static const uint32_t BAUD = 921600;
   #define INPORT Serial
 #else
   #define INPORT Serial1
-  static const int RX_PIN = 35;            // input-only pin, Port-A from Cardputer
+  // CYD "RXD" pin = GPIO3 (U0RXD), grouped with 5V on the serial header so one
+  // connector carries 5V + GND + data. Read it via UART1 (GPIO matrix) to leave
+  // the UART0 USB console free. Cardputer Port-A G1 (TX) -> this pin.
+  static const int RX_PIN = 3;
 #endif
 
 TFT_eSPI tft = TFT_eSPI();
@@ -200,7 +203,7 @@ void setup() {
     initPalette();
 #ifndef TERM_FROM_USB
     Serial1.setRxBufferSize(16384);                // hold a whole frame (see above)
-    Serial1.begin(BAUD, SERIAL_8N1, RX_PIN, -1);   // RX-only on GPIO35
+    Serial1.begin(BAUD, SERIAL_8N1, RX_PIN, -1);   // RX-only on RXD/GPIO3
 #endif
     selfTest();
 }
