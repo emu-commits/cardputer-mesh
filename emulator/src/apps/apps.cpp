@@ -454,7 +454,7 @@ private:
     }
     void render_info(AppContext& ctx, TextCanvas& c) {
         int ir, ic, iw, ih;
-        ui::modal_box(c, 8, 42, "Node info", ui::BrightMagenta, ir, ic, iw, ih, "esc:close");
+        ui::modal_box(c, 10, 42, "Node info", ui::BrightMagenta, ir, ic, iw, ih, "esc:close");
         char idb[16]; std::snprintf(idb, sizeof idb, "!%08x", sel_id_);
         c.text(ir + 0, ic, ui::fit(sel_long_ + " (" + sel_short_ + ")", iw), ui::White, ui::Black);
         c.text(ir + 1, ic, std::string("id:  ") + idb, ui::Gray, ui::Black);
@@ -464,6 +464,12 @@ private:
         c.text(ir + 3, ic, "heard: " + heard, ui::White, ui::Black);
         c.text(ir + 4, ic, std::string("favorite: ") + (ctx.mesh->is_favorite(sel_id_) ? "yes" : "no") +
                             "   ignored: " + (ctx.mesh->is_ignored(sel_id_) ? "yes" : "no"), ui::White, ui::Black);
+        // Battery + position (populated by the real mesh backend; absent on stub).
+        for (auto& n : ctx.mesh->nodes()) if (n.id == sel_id_) {
+            if (n.battery >= 0) { char b[24]; std::snprintf(b, sizeof b, "batt: %d%%", n.battery); c.text(ir + 5, ic, b, ui::White, ui::Black); }
+            if (n.has_pos) { char b[40]; std::snprintf(b, sizeof b, "pos: %.4f, %.4f", n.lat, n.lon); c.text(ir + 6, ic, b, ui::White, ui::Black); }
+            break;
+        }
     }
     void render_trace(AppContext& ctx, TextCanvas& c) {
         int ir, ic, iw, ih;

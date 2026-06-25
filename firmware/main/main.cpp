@@ -5,6 +5,8 @@
 // StubMesh; persist/fs/wiki are stubs for now. Keyboard = the ADV's TCA8418 via
 // device::Keyboard. Still stubbed: SD storage, real mesh/radio, built-in screen.
 #include <cstdint>
+#include <cstdio>
+#include <string>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
@@ -15,11 +17,13 @@
 #include "core/ansi.h"
 #include "core/app.h"
 #include "core/clipboard.h"
+#include "core/lora_phy.h"
 #include "core/mesh.h"
 #include "core/notification_center.h"
 #include "core/settings.h"
-#include "core/stub_mesh.h"
 #include "core/text_canvas.h"
+#include "core/wallclock.h"
+#include "esp_mac.h"
 
 #include "device/builtin_display.h"
 #include "device/cardputer_keyboard.h"
@@ -27,7 +31,7 @@
 #include "device/sd_fs.h"
 #include "device/sdcard.h"
 #include "device/uart_terminal.h"
-#include "device/radio/sx1262.h"
+#include "device/radio_mesh.h"
 #include "host/sqlite_wiki.h"   // portable: sqlite3 C API only, shared with the emulator
 
 static constexpr int CYD_W = 53, CYD_H = 20;
@@ -36,8 +40,19 @@ static constexpr int CYD_BAUD = 921600;
 
 static inline uint32_t now_ms() { return (uint32_t)(esp_timer_get_time() / 1000); }
 
+// Map a 1-10 brightness level to an 8-bit backlight duty along a perceptual
+// curve. The eye is roughly logarithmic, so equal duty steps bunch up near full
+// (87% looks the same as 100% — the slider feels dead). This spreads the visible
+// change evenly and keeps level 1 dim-but-on. Same curve for both panels.
+static int bl_level_to_duty(int level) {
+    static const uint8_t lut[10] = { 8, 16, 28, 44, 64, 90, 122, 160, 205, 255 };
+    if (level < 1) level = 1;
+    if (level > 10) level = 10;
+    return lut[level - 1];
+}
+
 extern "C" void app_main(void) {
-    static mesh::StubMesh meshf;
+    static device::RadioMesh meshf;
     static mesh::RamMessageLog store;
     static nc::NotificationCenter notify(&meshf);
     meshf.subscribe([](const mesh::Message& m) { store.append(m); notify.on_mesh(m); });
@@ -82,6 +97,7 @@ extern "C" void app_main(void) {
     sd.mount();
     static device::NvsStore state;
     state.begin("deck");
+    wallclock::init(state.get_int("clock.offset_s", 0));  // restore a manually-set clock
     static device::SdFs filesystem;            // rooted at /sdcard
     static clip::Clipboard clipboard;
     static cfg::Settings settings;
@@ -133,29 +149,40 @@ extern "C" void app_main(void) {
     panel.self_test();                        // big-font boot banner: prove the glass
     vTaskDelay(pdMS_TO_TICKS(1200));          // brief banner, then the screen sleeps until a notification
 
-    // Step 4 (increment 1): SX1262 radio presence check on the shared SPI2 bus
-    // (SCK40/MOSI14/MISO39, CS5/RST3/BUSY6/DIO1=4 — rear LoRa header, shared w/ SD).
-    // This only DETECTS the chip; the Meshtastic protocol stack (replacing
-    // StubMesh) is the next step. Bounded probe — won't stall boot if no hat.
-    {
-        HAL::SX1262Pins pins = {};
-        pins.spi_host = SPI2_HOST;
-        pins.sck = 40; pins.mosi = 14; pins.miso = 39;
-        pins.cs = 5; pins.rst = 3; pins.busy = 6; pins.dio1 = 4;
-        pins.rxen = -1; pins.txen = -1;       // antenna switch via DIO2 (default)
-        static HAL::SX1262 radio(pins);
-        uint8_t ver = 0xFF;
-        if (radio.probe(&ver))
-            ESP_LOGI("deck", "SX1262 detected (version 0x%02x) on SPI2", ver);
-        else
-            ESP_LOGW("deck", "SX1262 not detected (no LoRa hat? version 0x%02x)", ver);
-    }
+    // Step 4 (increment 2): bring up the SX1262 for real — init + setConfig +
+    // raw LoRa TX/RX on a DIO1-IRQ task (RadioLink). Shared SPI2 bus with the SD
+    // (SCK40/MOSI14/MISO39, CS5/RST3/BUSY6/DIO1=4 — rear LoRa header). The PHY is
+    // derived from the LoRa settings (region + modem preset + channel slot), the
+    // Meshtastic way, so RX lands on the mesh and logs the R1 Neo's raw frames.
+    // Not Meshtastic-framed yet; the protocol stack replacing StubMesh is next.
+    HAL::SX1262Pins radio_pins = {};
+    radio_pins.spi_host = SPI2_HOST;
+    radio_pins.sck = 40; radio_pins.mosi = 14; radio_pins.miso = 39;
+    radio_pins.cs = 5; radio_pins.rst = 3; radio_pins.busy = 6; radio_pins.dio1 = 4;
+    radio_pins.rxen = -1; radio_pins.txen = -1;   // antenna switch via DIO2 (default)
+    lora::Phy applied_phy = lora::phy_from_settings(settings);
+    ESP_LOGI("deck", "LoRa cfg: region=%s preset=%s -> %.3f MHz SF%d (valid=%d)",
+             settings.get("lora", "region").c_str(), settings.get("lora", "modem_preset").c_str(),
+             applied_phy.freq_hz / 1e6, applied_phy.sf, applied_phy.valid);
+    // Node identity: node num = low 4 bytes of the MAC (Meshtastic convention),
+    // owner names from NVS (or a default). The primary channel hash uses the
+    // modem-preset name (Meshtastic hashes the preset name for an empty channel).
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    uint32_t node_id = ((uint32_t)mac[2] << 24) | ((uint32_t)mac[3] << 16) | ((uint32_t)mac[4] << 8) | mac[5];
+    std::string own_short = state.get("owner.short", "DECK");
+    std::string own_long  = state.get("owner.long",  "Cardputer Deck");
+    meshf.configure(node_id, own_short.c_str(), own_long.c_str());
+    ESP_LOGI("deck", "node !%08lx \"%s\" (%s)", (unsigned long)node_id, own_long.c_str(), own_short.c_str());
+    bool radio_ok = meshf.begin(radio_pins, applied_phy, settings.get("lora", "modem_preset").c_str());
+    if (!radio_ok) ESP_LOGW("deck", "no LoRa hat — radio disabled");
 
     ui::TextCanvas cyd(CYD_W, CYD_H);
     ui::TextCanvas bar(device::BuiltinDisplay::COLS, device::BuiltinDisplay::ROWS);
     ui::AnsiRenderer rend;
     uint32_t last_full = 0;
     bool screen_was_on = false;
+    int applied_cyd_bl = -1, applied_builtin_bl = -1;   // -1 = not yet applied
 
     notify.add_event(nc::NotifType::Generic, "deck", "ready", now_ms());  // light up once at boot
 
@@ -172,7 +199,27 @@ extern "C" void app_main(void) {
         cyd.clear(ui::White, ui::Black);
         mgr.render(ctx, cyd);
 
-        if (now - last_full >= 1000) { rend.reset(); last_full = now; } // CYD resync heartbeat
+        if (now - last_full >= 1000) {                  // CYD resync heartbeat (~1 Hz)
+            rend.reset();
+            last_full = now;
+            // Apply the two backlight settings (1-10) when they change, mapped to
+            // an 8-bit duty on a perceptual curve. The built-in panel dims via
+            // LEDC; the CYD is dumb, so we send it a private CSI (ESC [ <duty> p)
+            // it parses into a PWM duty (ignored by old firmware).
+            int bb = (int)settings.get_num("system", "brightness_builtin");
+            if (bb != applied_builtin_bl) { applied_builtin_bl = bb; panel.set_brightness(bl_level_to_duty(bb)); }
+            int cb = (int)settings.get_num("system", "brightness");
+            if (cb != applied_cyd_bl) {
+                applied_cyd_bl = cb;
+                char esc[16]; int n = std::snprintf(esc, sizeof esc, "\x1b[%dp", bl_level_to_duty(cb));
+                term.write(std::string(esc, n));
+            }
+            // Retune the radio live if the LoRa settings changed (no reboot).
+            if (radio_ok) {
+                lora::Phy np = lora::phy_from_settings(settings);
+                if (!lora::phy_same(np, applied_phy)) { applied_phy = np; meshf.request_retune(np); }
+            }
+        }
         rend.render(cyd, term);
 
         // Built-in screen sleeps (backlight off) between notifications; a new

@@ -20,7 +20,7 @@ idf_component_register(
     INCLUDE_DIRS "." "device/radio"
                  "${CMAKE_CURRENT_LIST_DIR}/../../emulator/src"
                  "${CMAKE_CURRENT_LIST_DIR}/../../third_party/sqlite"
-    REQUIRES driver esp_timer nvs_flash fatfs sdmmc esp_driver_sdspi vfs esp_lcd
+    REQUIRES driver esp_timer nvs_flash fatfs sdmmc esp_driver_sdspi vfs esp_lcd mbedtls
 )
 
 # The shared core/apps printf-format node IDs with %x; uint32_t is `unsigned` on

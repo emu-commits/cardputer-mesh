@@ -19,6 +19,9 @@ struct Node {
     uint32_t last_heard_ms;
     int snr;
     bool is_favorite = false; // Meshtastic node-DB favorite flag (pins + biases routing)
+    int battery = -1;         // last telemetry battery % (-1 = unknown)
+    double lat = 0, lon = 0;  // last position (degrees)
+    bool has_pos = false;
 };
 
 enum AckState : uint8_t { ACK_NONE = 0, ACK_PENDING = 1, ACK_OK = 2, ACK_FAIL = 3 };
