@@ -8,6 +8,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
+#include "esp_log.h"
 
 #include "apps/apps.h"
 #include "core/ansi.h"
@@ -25,6 +26,7 @@
 #include "device/sd_fs.h"
 #include "device/sdcard.h"
 #include "device/uart_terminal.h"
+#include "device/radio/sx1262.h"
 #include "host/sqlite_wiki.h"   // portable: sqlite3 C API only, shared with the emulator
 
 static constexpr int CYD_W = 53, CYD_H = 20;
@@ -117,6 +119,24 @@ extern "C" void app_main(void) {
     static device::BuiltinDisplay panel;
     panel.begin();
     panel.self_test();                        // banner + colour bars: prove the glass
+
+    // Step 4 (increment 1): SX1262 radio presence check on the shared SPI2 bus
+    // (SCK40/MOSI14/MISO39, CS5/RST3/BUSY6/DIO1=4 — rear LoRa header, shared w/ SD).
+    // This only DETECTS the chip; the Meshtastic protocol stack (replacing
+    // StubMesh) is the next step. Bounded probe — won't stall boot if no hat.
+    {
+        HAL::SX1262Pins pins = {};
+        pins.spi_host = SPI2_HOST;
+        pins.sck = 40; pins.mosi = 14; pins.miso = 39;
+        pins.cs = 5; pins.rst = 3; pins.busy = 6; pins.dio1 = 4;
+        pins.rxen = -1; pins.txen = -1;       // antenna switch via DIO2 (default)
+        static HAL::SX1262 radio(pins);
+        uint8_t ver = 0xFF;
+        if (radio.probe(&ver))
+            ESP_LOGI("deck", "SX1262 detected (version 0x%02x) on SPI2", ver);
+        else
+            ESP_LOGW("deck", "SX1262 not detected (no LoRa hat? version 0x%02x)", ver);
+    }
 
     ui::TextCanvas cyd(CYD_W, CYD_H);
     ui::TextCanvas bar(device::BuiltinDisplay::COLS, device::BuiltinDisplay::ROWS);

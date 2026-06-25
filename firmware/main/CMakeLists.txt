@@ -16,7 +16,9 @@ set(WIKI_SRCS
 
 idf_component_register(
     SRCS "main.cpp" ${CORE_SRCS} ${APP_SRCS} ${WIKI_SRCS}
-    INCLUDE_DIRS "." "${CMAKE_CURRENT_LIST_DIR}/../../emulator/src"
+         "device/radio/sx1262.cpp"
+    INCLUDE_DIRS "." "device/radio"
+                 "${CMAKE_CURRENT_LIST_DIR}/../../emulator/src"
                  "${CMAKE_CURRENT_LIST_DIR}/../../third_party/sqlite"
     REQUIRES driver esp_timer nvs_flash fatfs sdmmc esp_driver_sdspi vfs esp_lcd
 )
