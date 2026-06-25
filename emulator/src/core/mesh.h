@@ -22,6 +22,8 @@ struct Node {
     int battery = -1;         // last telemetry battery % (-1 = unknown)
     double lat = 0, lon = 0;  // last position (degrees)
     bool has_pos = false;
+    uint8_t pubkey[32] = {0}; // X25519 public key (from NodeInfo) for PKC DMs
+    bool has_key = false;
 };
 
 enum AckState : uint8_t { ACK_NONE = 0, ACK_PENDING = 1, ACK_OK = 2, ACK_FAIL = 3 };

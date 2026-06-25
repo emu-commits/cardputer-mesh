@@ -111,6 +111,7 @@ bool parse_data(const uint8_t* buf, size_t len, Data& d) {
             uint64_t v;
             if (!read_varint(p, end, v)) return false;
             if (field == 1) { d.portnum = (uint32_t)v; got_port = true; }
+            else if (field == 6) d.request_id = (uint32_t)v;   // ack correlation
         } else if (wt == 2) {                        // length-delimited
             uint64_t l;
             if (!read_varint(p, end, l)) return false;
@@ -161,12 +162,13 @@ bool decode_nodeinfo(const uint8_t* buf, size_t len, NodeInfo& n) {
     while (p < end) {
         uint64_t tag; if (!read_varint(p, end, tag)) return false;
         uint32_t field = (uint32_t)(tag >> 3), wt = (uint32_t)(tag & 7);
-        if (wt == 2 && (field == 1 || field == 2 || field == 3)) {
+        if (wt == 2 && (field == 1 || field == 2 || field == 3 || field == 8)) {
             uint64_t l; if (!read_varint(p, end, l)) return false;
             if ((size_t)(end - p) < l) return false;
             if (field == 1) copy_str(p, (size_t)l, n.id, sizeof n.id);
             else if (field == 2) copy_str(p, (size_t)l, n.long_name, sizeof n.long_name);
-            else copy_str(p, (size_t)l, n.short_name, sizeof n.short_name);
+            else if (field == 3) copy_str(p, (size_t)l, n.short_name, sizeof n.short_name);
+            else if (field == 8 && l == 32) { std::memcpy(n.public_key, p, 32); n.has_key = true; }
             p += l; any = true;
         } else if (!skip_field(p, end, wt)) return false;
     }
@@ -211,6 +213,43 @@ bool decode_telemetry(const uint8_t* buf, size_t len, DeviceMetrics& dm) {
     }
     dm.has = true;
     return true;
+}
+
+int routing_error(const uint8_t* buf, size_t len) {
+    const uint8_t* p = buf; const uint8_t* end = buf + len;
+    int err = -1;
+    while (p < end) {
+        uint64_t tag; if (!read_varint(p, end, tag)) return err;
+        uint32_t field = (uint32_t)(tag >> 3), wt = (uint32_t)(tag & 7);
+        if (field == 3 && wt == 0) { uint64_t v; if (!read_varint(p, end, v)) return err; err = (int)v; }
+        else if (!skip_field(p, end, wt)) return err;
+    }
+    return err;
+}
+
+size_t encode_nodeinfo(uint8_t* out, size_t cap, const char* id, const char* long_name,
+                       const char* short_name, const uint8_t* pubkey32) {
+    // Build the User submessage (fields 1=id, 2=long_name, 3=short_name, 8=public_key).
+    uint8_t user[160]; size_t u = 0;
+    auto put_str = [&](uint8_t field, const char* s) {
+        size_t n = std::strlen(s);
+        if (u + n + 2 > sizeof user) return;
+        user[u++] = (uint8_t)((field << 3) | 2); user[u++] = (uint8_t)n;
+        std::memcpy(user + u, s, n); u += n;
+    };
+    put_str(1, id); put_str(2, long_name); put_str(3, short_name);
+    if (pubkey32 && u + 34 <= sizeof user) {
+        user[u++] = (uint8_t)((8 << 3) | 2); user[u++] = 32;
+        std::memcpy(user + u, pubkey32, 32); u += 32;
+    }
+    // Wrap in Data { portnum=4 (NODEINFO); payload=User }.
+    if (cap < u + 8) return 0;
+    size_t i = 0;
+    out[i++] = 0x08; out[i++] = 0x04;            // field1 portnum = 4
+    out[i++] = 0x12;                              // field2 payload (User)
+    size_t l = u; do { uint8_t b = l & 0x7f; l >>= 7; if (l) b |= 0x80; out[i++] = b; } while (l);
+    std::memcpy(out + i, user, u); i += u;
+    return i;
 }
 
 const char* portnum_name(uint32_t pn) {

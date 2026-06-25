@@ -172,7 +172,7 @@ extern "C" void app_main(void) {
     uint32_t node_id = ((uint32_t)mac[2] << 24) | ((uint32_t)mac[3] << 16) | ((uint32_t)mac[4] << 8) | mac[5];
     std::string own_short = state.get("owner.short", "DECK");
     std::string own_long  = state.get("owner.long",  "Cardputer Deck");
-    meshf.configure(node_id, own_short.c_str(), own_long.c_str());
+    meshf.configure(node_id, own_short.c_str(), own_long.c_str(), &state);
     ESP_LOGI("deck", "node !%08lx \"%s\" (%s)", (unsigned long)node_id, own_long.c_str(), own_short.c_str());
     bool radio_ok = meshf.begin(radio_pins, applied_phy, settings.get("lora", "modem_preset").c_str());
     if (!radio_ok) ESP_LOGW("deck", "no LoRa hat — radio disabled");

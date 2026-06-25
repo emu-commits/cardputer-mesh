@@ -422,9 +422,18 @@ public:
         rows_ = ui::body_bottom(c) - top + 1;
         ui::list(c, top, rows_, ls_, (int)ns.size(), [&](int i) {
             char mark = ns[i].is_favorite ? '*' : (ctx.mesh->is_ignored(ns[i].id) ? 'x' : ' ');
+            char batt[12] = "  -";
+            if (ns[i].battery >= 0) std::snprintf(batt, sizeof batt, "%3d%%", ns[i].battery);
+            // heard age (blank if never heard this session)
+            char age[8] = "";
+            if (ns[i].last_heard_ms) {
+                uint32_t s = (ctx.now_ms - ns[i].last_heard_ms) / 1000;
+                if (s < 600) std::snprintf(age, sizeof age, "%lus", (unsigned long)s);
+                else std::snprintf(age, sizeof age, "%lum", (unsigned long)(s / 60));
+            }
             char buf[96];
-            std::snprintf(buf, sizeof buf, "%c%-5s %-13s snr%+3d",
-                          mark, ns[i].short_name.c_str(), ns[i].long_name.c_str(), ns[i].snr);
+            std::snprintf(buf, sizeof buf, "%c%-4s %-13s snr%+3d %4s %-5s",
+                          mark, ns[i].short_name.c_str(), ns[i].long_name.c_str(), ns[i].snr, batt, age);
             return std::string(buf);
         }, ui::White, ui::BrightMagenta);
         ui::footer2(c, " enter:DM  i:info  t:traceroute  f:fav  x:ignore ",

@@ -42,7 +42,12 @@ struct Data {
     uint32_t       portnum = 0;
     const uint8_t* payload = nullptr;
     size_t         payload_len = 0;
+    uint32_t       request_id = 0;   // Data.request_id (field 6) — set on ROUTING acks
 };
+
+// Parse a Routing protobuf's error_reason (field 3 varint). Returns 0 for an
+// implicit/explicit ACK (NONE), >0 for a NAK reason, -1 if absent.
+int routing_error(const uint8_t* p, size_t len);
 
 // Parse a decrypted Data protobuf (field 1 = portnum varint, field 2 = payload
 // bytes). Returns false on malformed input or if no portnum — a good signal that
@@ -76,11 +81,18 @@ size_t encode_text(uint8_t* out, size_t cap, const char* text, size_t tlen);
 size_t write_header(uint8_t* out, const Header& h);
 
 struct NodeInfo {                 // NODEINFO_APP (4): User protobuf
-    char id[16] = {0};            // "!093fb19a"
-    char long_name[40] = {0};
-    char short_name[8] = {0};
+    char    id[16] = {0};         // "!093fb19a"
+    char    long_name[40] = {0};
+    char    short_name[8] = {0};
+    uint8_t public_key[32] = {0}; // X25519 pubkey (User.public_key, field 8)
+    bool    has_key = false;
 };
 bool decode_nodeinfo(const uint8_t* p, size_t len, NodeInfo& n);
+
+// Encode a Data protobuf carrying our own User (NODEINFO_APP) so peers learn our
+// name + public key (pubkey optional; pass nullptr to omit). Returns bytes.
+size_t encode_nodeinfo(uint8_t* out, size_t cap, const char* id, const char* long_name,
+                       const char* short_name, const uint8_t* pubkey32);
 
 struct Position {                 // POSITION_APP (3)
     double  lat = 0, lon = 0;     // degrees
