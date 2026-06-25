@@ -24,6 +24,7 @@
 #include "esp_lcd_panel_ops.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "esp_log.h"
 #include "core/text_canvas.h"
 #include "device/font6x12.h"
@@ -49,16 +50,43 @@ public:
     static constexpr bool INVERT_COLOR = true;
     static constexpr const char* TAG = "disp";
 
+    static constexpr ledc_timer_t   BL_TIMER = LEDC_TIMER_0;
+    static constexpr ledc_channel_t BL_CHAN  = LEDC_CHANNEL_0;
+    static constexpr ledc_mode_t    BL_MODE  = LEDC_LOW_SPEED_MODE;   // S3 has no high-speed mode
+    // This panel's backlight driver only conducts at very high duty when run at
+    // a high PWM frequency — at 5 kHz everything below ~full read as off. Match
+    // M5GFX/Plai's known-good config for this exact board: 256 Hz, 9-bit duty,
+    // with an offset floor so low brightness still keeps the panel lit.
+    static constexpr int            PWM_BITS  = 9;                    // 512 duty levels
+    static constexpr int            BL_FREQ   = 256;                  // Hz (M5GFX value)
+    static constexpr int            BL_OFFSET = 16;                   // min-duty floor (M5GFX value)
+
     bool begin() {
         init_palette();
-        // Backlight: drive the pin as a plain GPIO HIGH (full on). PWM dimming can
-        // come later — a plain high rules out any LEDC misconfig as the cause of a
-        // dark panel during bring-up.
-        gpio_config_t bl = {};
-        bl.pin_bit_mask = 1ULL << PIN_BL;
-        bl.mode = GPIO_MODE_OUTPUT;
-        gpio_config(&bl);
-        gpio_set_level((gpio_num_t)PIN_BL, 1);
+        // Backlight via LEDC PWM so the "Built-in brightness" setting can dim it.
+        // (ESP32-S3 only has LEDC_LOW_SPEED_MODE.) duty starts at 0 (off);
+        // self_test()/backlight(1) ramps it to the configured brightness.
+        ledc_timer_config_t lt = {};
+        lt.speed_mode      = BL_MODE;
+        lt.duty_resolution = (ledc_timer_bit_t)PWM_BITS;
+        lt.timer_num       = BL_TIMER;
+        lt.freq_hz         = BL_FREQ;
+        lt.clk_cfg         = LEDC_AUTO_CLK;
+        ledc_timer_config(&lt);
+        ledc_channel_config_t lc = {};
+        lc.gpio_num   = PIN_BL;
+        lc.speed_mode = BL_MODE;
+        lc.channel    = BL_CHAN;
+        lc.timer_sel  = BL_TIMER;
+        lc.intr_type  = LEDC_INTR_DISABLE;
+        lc.duty       = 0;
+        lc.hpoint     = 0;
+        ledc_channel_config(&lc);
+
+        // Completion gate: draw_bitmap is async (DMA); we must not refill rowbuf_
+        // until the prior band's transfer is done, or bands alias. Start "available".
+        trans_done_ = xSemaphoreCreateBinary();
+        xSemaphoreGive(trans_done_);
 
         spi_bus_config_t bus = {};
         bus.sclk_io_num = PIN_SCLK;
@@ -79,6 +107,8 @@ public:
         io.trans_queue_depth = 10;
         io.lcd_cmd_bits = 8;
         io.lcd_param_bits = 8;
+        io.on_color_trans_done = &BuiltinDisplay::on_color_done;
+        io.user_ctx = this;
         e = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)SPI3_HOST, &io, &io_);
         ESP_LOGI(TAG, "new_panel_io_spi -> %s", esp_err_to_name(e));
         if (e != ESP_OK) return false;
@@ -108,8 +138,32 @@ public:
         return true;
     }
 
-    void backlight(uint8_t duty) {       // on/off for now (plain GPIO)
-        gpio_set_level((gpio_num_t)PIN_BL, duty ? 1 : 0);
+    // Wake/sleep gate: on -> the configured brightness, off -> 0 (dark).
+    void backlight(uint8_t on) {
+        on_ = on != 0;
+        apply_bl();
+    }
+
+    // Apply a brightness 0..255 (the 1-10 setting -> 0..255 perceptual mapping
+    // lives in main.cpp). Converted here to a 9-bit LEDC duty via M5GFX's offset
+    // curve so the low end stays lit. Stored and re-applied when the screen wakes.
+    void set_brightness(int brightness) {
+        if (brightness < 0) brightness = 0;
+        if (brightness > 255) brightness = 255;
+        bl_duty_ = bright_to_duty(brightness);
+        apply_bl();
+    }
+
+    // M5GFX Light_PWM::setBrightness duty mapping (brightness 0..255 -> 9-bit duty).
+    static int bright_to_duty(int brightness) {
+        if (brightness <= 0) return 0;
+        uint32_t ofs = BL_OFFSET;
+        if (ofs) ofs = ofs * 259 >> 8;
+        uint32_t duty = (uint32_t)brightness * (257 - ofs);
+        duty += ofs * 255;
+        duty += 1 << (15 - PWM_BITS);
+        duty >>= 16 - PWM_BITS;
+        return (int)duty;
     }
 
     // Clear well beyond the 135px visible area: the LCD's RAM keeps whatever was
@@ -157,11 +211,26 @@ public:
         int rows = tc.height() < ROWS ? tc.height() : ROWS;
         int cols = tc.width() < COLS ? tc.width() : COLS;
         for (int r = 0; r < rows; ++r) {
+            // Wait for the previous band's DMA before reusing the shared buffer.
+            if (trans_done_) xSemaphoreTake(trans_done_, pdMS_TO_TICKS(100));
             std::memset(rowbuf_, 0, sizeof(uint16_t) * W * CH);   // full-width band, margins black
-            for (int c = 0; c < cols; ++c) draw_cell(tc.at(r, c), c);
+            // Row 0 is the status bar: inset its glyphs 1px so the clock isn't
+            // flush against the left edge of the bar's colour highlight.
+            int xpad = (r == 0) ? 1 : 0;
+            for (int c = 0; c < cols; ++c) draw_cell(tc.at(r, c), c, xpad);
             int y = Y_OFF + r * CH;
             esp_lcd_panel_draw_bitmap(panel_, 0, y, W, y + CH, rowbuf_);
         }
+        if (trans_done_) xSemaphoreTake(trans_done_, pdMS_TO_TICKS(100));  // let the last band finish
+        if (trans_done_) xSemaphoreGive(trans_done_);                      // leave "available" for next render
+    }
+
+    // esp_lcd color-transfer-done callback (ISR ctx): release the buffer gate.
+    static bool on_color_done(esp_lcd_panel_io_handle_t, esp_lcd_panel_io_event_data_t*, void* ctx) {
+        BaseType_t hp = pdFALSE;
+        auto* self = static_cast<BuiltinDisplay*>(ctx);
+        if (self->trans_done_) xSemaphoreGiveFromISR(self->trans_done_, &hp);
+        return hp == pdTRUE;
     }
 
     bool ok() const { return ok_; }
@@ -178,9 +247,14 @@ private:
     }
     static uint16_t dim565(uint16_t c) { return (uint16_t)((c >> 1) & 0x7BEF); }
 
+    void apply_bl() {
+        ledc_set_duty(BL_MODE, BL_CHAN, on_ ? bl_duty_ : 0);
+        ledc_update_duty(BL_MODE, BL_CHAN);
+    }
+
     // Rasterise one cell (col c) into the CH-tall row-band buffer (W wide), with
     // each source glyph pixel expanded into a SCALE x SCALE block (2x = 12x24).
-    void draw_cell(const ui::Cell& cell, int c) {
+    void draw_cell(const ui::Cell& cell, int c, int xpad = 0) {
         uint8_t f = cell.fg, b = cell.bg, a = cell.attr;
         if (a & ui::ATTR_BOLD) { if (f < 8) f += 8; }
         if (a & ui::ATTR_INVERSE) { uint8_t t = f; f = b; b = t; }
@@ -195,6 +269,13 @@ private:
         if (!block && !vbar && cp >= 0x20 && cp <= 0x7E) g = FONT6x12[cp - 0x20];
 
         int x0 = X_OFF + c * CW;                  // cell origin in scaled px (+ left margin)
+        // Fill the whole cell with the background first, so an xpad inset shows
+        // the cell's bg colour (the status-bar highlight) to the left of the
+        // glyph rather than the black margin.
+        for (int yy = 0; yy < CH; ++yy) {
+            uint16_t* row = &rowbuf_[yy * W + x0];
+            for (int xx = 0; xx < CW; ++xx) row[xx] = cb;
+        }
         for (int gy = 0; gy < FCH; ++gy) {        // 12 source glyph rows
             uint8_t bits = g ? g[gy] : 0;
             for (int gx = 0; gx < FCW; ++gx) {    // 6 source glyph cols
@@ -203,10 +284,12 @@ private:
                 else if (vbar) on = (gx == 2 || gx == 3);
                 else on = (bits >> (7 - gx)) & 1;
                 if (underline && gy == FCH - 2) on = true;
-                uint16_t col = on ? cf : cb;
+                if (!on) continue;
+                int px = x0 + gx * SCALE + xpad;
+                if (px + SCALE > W) continue;     // clamp at the right panel edge
                 for (int sy = 0; sy < SCALE; ++sy) {       // expand to SCALE x SCALE
-                    uint16_t* dst = &rowbuf_[(gy * SCALE + sy) * W + x0 + gx * SCALE];
-                    for (int sx = 0; sx < SCALE; ++sx) dst[sx] = col;
+                    uint16_t* dst = &rowbuf_[(gy * SCALE + sy) * W + px];
+                    for (int sx = 0; sx < SCALE; ++sx) dst[sx] = cf;
                 }
             }
         }
@@ -214,7 +297,10 @@ private:
 
     esp_lcd_panel_io_handle_t io_ = nullptr;
     esp_lcd_panel_handle_t panel_ = nullptr;
+    SemaphoreHandle_t trans_done_ = nullptr;
     bool ok_ = false;
+    bool on_ = true;            // backlight gate (wake/sleep)
+    int  bl_duty_ = bright_to_duty(160);   // configured 9-bit duty (~ level 8)
     uint16_t pal_[16];
     uint16_t rowbuf_[W * CH];                       // one 240x24 row-band (~11.5 KB)
 };

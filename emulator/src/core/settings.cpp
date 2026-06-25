@@ -117,9 +117,9 @@ void Settings::build_default() {
         en("tz", "Timezone", "UTC;GMT-5;GMT-4;GMT+0;GMT+1;GMT+2;GMT+8", "GMT-5", "Local timezone for the clock"),
         en("volume", "Notification volume", "Off;Low;Medium;High", "High",
            "Loudness of the notification beep (Off = silent)"),
-        num("brightness", "CYD brightness", 10, 100, "80", "External CYD screen backlight percent"),
-        num("brightness_builtin", "Built-in brightness", 10, 100, "80",
-            "Cardputer built-in screen backlight percent"),
+        num("brightness", "CYD brightness", 1, 10, "8", "External CYD screen backlight (1-10)"),
+        num("brightness_builtin", "Built-in brightness", 1, 10, "8",
+            "Cardputer built-in screen backlight (1-10)"),
     };
     groups_.push_back(sys);
 }

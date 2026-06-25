@@ -37,6 +37,16 @@ static const uint32_t BAUD = 921600;
 
 TFT_eSPI tft = TFT_eSPI();
 
+// ---- backlight dimming ----
+// The brain (Cardputer) owns the "CYD brightness" setting and pushes it to us as
+// a private CSI: ESC [ <duty> p (0..255, already perceptually scaled by the
+// brain). We drive TFT_BL with LEDC PWM. Old firmware without this case simply
+// ignores the sequence (full brightness).
+static const int BL_PIN = TFT_BL;     // 21 on the common ESP32-2432S028R
+static const int BL_CH  = 7;          // LEDC channel (TFT_eSPI uses none here)
+static int blDuty = 255;
+static void applyBacklight() { ledcWrite(BL_CH, (uint32_t)blDuty); }
+
 // 16-colour palette (VGA-ish), filled at boot with the panel's RGB565.
 static uint16_t PAL[16];
 static void initPalette() {
@@ -146,6 +156,13 @@ static void finishCSI(char final) {
         // avoids a visible black flash on each 1 Hz heartbeat repaint.
     } else if (final == 'm') {
         applySGR();
+    } else if (final == 'p') {                     // private: set backlight duty (0-255)
+        int v = 0; bool any = false;
+        for (int i = 0; i < csiN; ++i) {
+            char ch = csi[i];
+            if (ch >= '0' && ch <= '9') { v = v * 10 + (ch - '0'); any = true; }
+        }
+        if (any) { if (v < 0) v = 0; if (v > 255) v = 255; blDuty = v; applyBacklight(); }
     }
     // everything else: ignore
 }
@@ -201,6 +218,10 @@ void setup() {
     tft.setSwapBytes(true);                 // pushImage() buffers hold color565() order
     tft.fillScreen(TFT_BLACK);
     initPalette();
+    // Take over TFT_BL with PWM (tft.init() left it digital-HIGH = full on).
+    ledcSetup(BL_CH, 5000, 8);
+    ledcAttachPin(BL_PIN, BL_CH);
+    applyBacklight();
 #ifndef TERM_FROM_USB
     Serial1.setRxBufferSize(16384);                // hold a whole frame (see above)
     Serial1.begin(BAUD, SERIAL_8N1, RX_PIN, -1);   // RX-only on RXD/GPIO3

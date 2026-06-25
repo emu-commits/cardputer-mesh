@@ -10,6 +10,7 @@
 #include <ctime>
 #include <vector>
 #include "core/ui_kit.h"
+#include "core/wallclock.h"
 
 using namespace app;
 using ui::Key; using ui::KeyEvent; using ui::TextCanvas;
@@ -21,25 +22,19 @@ class Clock : public App {
     enum Overlay { NONE, SET_TIME };
 public:
     void on_create(AppContext& ctx) override {
-        if (ctx.state) {
-            offset_s_ = ctx.state->get_int("clock.offset_s", 0);
-            home_ = ctx.state->get("clock.home", "");
-        }
+        if (ctx.state) home_ = ctx.state->get("clock.home", "");
         // Land the cursor on the tagged system zone, if any.
         for (int i = 0; i < (int)zones().size(); ++i)
             if (home_ == zones()[i].label) { ls_.sel = i; break; }
     }
     void on_pause(AppContext& ctx) override {
-        if (ctx.state) {
-            ctx.state->set_int("clock.offset_s", offset_s_);
-            ctx.state->set("clock.home", home_);
-        }
+        if (ctx.state) ctx.state->set("clock.home", home_);
     }
 
-    bool on_key(AppContext&, const KeyEvent& k) override {
+    bool on_key(AppContext& ctx, const KeyEvent& k) override {
         if (overlay_ != NONE) {
             if (k.key == Key::Esc) { overlay_ = NONE; return true; }
-            if (k.key == Key::Enter) { commit_time(); overlay_ = NONE; return true; }
+            if (k.key == Key::Enter) { commit_time(ctx); overlay_ = NONE; return true; }
             if (k.key == Key::Backspace) { if (!ibuf_.empty()) ibuf_.pop_back(); return true; }
             if (k.is_char() && k.ch >= 0x20 && k.ch < 0x7f) ibuf_ += (char)k.ch;
             return true;
@@ -52,7 +47,7 @@ public:
 
     void render(AppContext&, TextCanvas& c) override {
         c.clear(ui::White, ui::Black);
-        std::time_t now = std::time(nullptr) + offset_s_; // honor a manually-set clock (#6)
+        std::time_t now = wallclock::now();               // honor a manually-set clock (#6)
         std::tm lt{}; localtime_r(&now, &lt);
         char date[32]; std::snprintf(date, sizeof date, "%04d-%02d-%02d", lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday);
         int top = ui::header(c, "Clock", ui::BrightGreen, date);
@@ -72,11 +67,14 @@ public:
             return std::string(sys ? "* " : "  ") + std::string(hm) + "  " +
                    ui::fit(zones()[i].label, 16) + " UTC" + off;
         }, ui::White, ui::BrightGreen);
-        ui::footer(c, " s:set time  z:set as system tz  *=system  esc ");
+        ui::footer(c, " s:set date/time  z:set as system tz  *=system  esc ");
         if (overlay_ == SET_TIME) {
             int ir, ic, iw, ih;
-            ui::modal_box(c, 6, 40, "Set time", ui::BrightGreen, ir, ic, iw, ih, "HH:MM or HH:MM:SS  enter:set");
-            c.text(ir, ic, "24-hour, e.g.  14:30", ui::Gray, ui::Black, ui::ATTR_DIM);
+            ui::modal_box(c, 6, 44, "Set date & time", ui::BrightGreen, ir, ic, iw, ih,
+                          "YYYY-MM-DD HH:MM  (or HH:MM)  enter:set");
+            char ex[40]; std::snprintf(ex, sizeof ex, "e.g.  %04d-%02d-%02d %02d:%02d",
+                                       lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday, lt.tm_hour, lt.tm_min);
+            c.text(ir, ic, ex, ui::Gray, ui::Black, ui::ATTR_DIM);
             ui::input_line(c, ir + 2, ic, "> ", ibuf_, ui::BrightWhite, iw);
         }
     }
@@ -93,24 +91,31 @@ private:
         };
         return z;
     }
-    // Set the displayed clock by storing an offset from real system time, so it
-    // persists. On the device this is where the RTC would be set.
-    void commit_time() {
-        int hh = 0, mm = 0, ss = 0;
-        if (std::sscanf(ibuf_.c_str(), "%d:%d:%d", &hh, &mm, &ss) < 2) return;
+    // Set the wall clock. Accepts a full "YYYY-MM-DD HH:MM[:SS]" or, for quick
+    // tweaks, just "HH:MM[:SS]" (keeps today's date). Stored as an offset from
+    // std::time via wallclock and persisted so it survives an app switch.
+    void commit_time(AppContext& ctx) {
+        int Y = 0, M = 0, D = 0, hh = 0, mm = 0, ss = 0;
+        bool have_date = std::sscanf(ibuf_.c_str(), "%d-%d-%d %d:%d:%d", &Y, &M, &D, &hh, &mm, &ss) >= 5;
+        std::tm lt{}; std::time_t cur = wallclock::now(); localtime_r(&cur, &lt);
+        if (!have_date) {
+            if (std::sscanf(ibuf_.c_str(), "%d:%d:%d", &hh, &mm, &ss) < 2) return;
+            Y = lt.tm_year + 1900; M = lt.tm_mon + 1; D = lt.tm_mday;
+        }
+        if (Y < 1970 || M < 1 || M > 12 || D < 1 || D > 31) return;
         if (hh < 0 || hh > 23 || mm < 0 || mm > 59 || ss < 0 || ss > 59) return;
-        std::time_t real = std::time(nullptr);
-        std::tm lt{}; localtime_r(&real, &lt);
-        int cur = lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec;
-        int tgt = hh * 3600 + mm * 60 + ss;
-        offset_s_ = tgt - cur;
+        std::tm t{}; t.tm_year = Y - 1900; t.tm_mon = M - 1; t.tm_mday = D;
+        t.tm_hour = hh; t.tm_min = mm; t.tm_sec = ss; t.tm_isdst = -1;
+        std::time_t epoch = std::mktime(&t);
+        if (epoch == (std::time_t)-1) return;
+        wallclock::set_epoch(epoch);
+        if (ctx.state) { ctx.state->set_int("clock.offset_s", (int)wallclock::offset()); ctx.state->flush(); }
     }
 
     ui::ListState ls_;
     int rows_ = 1;
     Overlay overlay_ = NONE;
     std::string ibuf_;
-    int offset_s_ = 0;     // manual clock offset from system time (#6)
     std::string home_;     // tagged system timezone label (#3)
 };
 

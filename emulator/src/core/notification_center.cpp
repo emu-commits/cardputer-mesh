@@ -1,5 +1,6 @@
 #include <vector>
 #include "core/notification_center.h"
+#include "core/wallclock.h"
 #include <algorithm>
 #include <cctype>
 #include <ctime>
@@ -71,7 +72,7 @@ static std::vector<std::string> wrap_words(const std::string& s, int width) {
 
 // Build "HH:MM" from wall-clock (00:00 until time is synced on device).
 static std::string clock_hhmm() {
-    std::time_t t = std::time(nullptr);
+    std::time_t t = wallclock::now();
     std::tm tm{};
     localtime_r(&t, &tm);
     char b[8];
@@ -95,7 +96,9 @@ void NotificationCenter::render_status(ui::TextCanvas& bar, uint32_t now_ms) {
             int pos = bar.width() - (int)right.size() + i;
             if (pos >= 0 && pos < bar.width()) strip[pos] = right[i];
         }
-        bar.text(0, 0, strip, ui::BrightWhite, ui::Blue, ui::ATTR_INVERSE);
+        // Dark bar with a light font (not a white highlight). The 1px inset before
+        // the clock is added by the device renderer (xpad on row 0).
+        bar.text(0, 0, strip, ui::BrightWhite, ui::Blue);
         int row = 1;
         for (auto it = ring_.rbegin(); it != ring_.rend() && row < bar.height(); ++it) {
             const char* tag = (it->type == NotifType::DM) ? "@" : (it->type == NotifType::Mention) ? "*"
