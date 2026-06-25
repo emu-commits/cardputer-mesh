@@ -1,0 +1,17 @@
+# Cardputer ADV = ESP32-S3FN8: 8 MB flash, 512 KB SRAM, NO PSRAM.
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+
+# Custom partition table (3 MB app + FAT storage).
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# Our portable C++ uses std::string/vector/function; enable exceptions + RTTI so
+# a throw (bad_alloc, stoi, vector::at) doesn't hard-abort. We have flash to spare.
+CONFIG_COMPILER_CXX_EXCEPTIONS=y
+CONFIG_COMPILER_CXX_RTTI=y
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
+# app_main runs the whole UI loop; give it headroom for std::string temporaries.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+CONFIG_FREERTOS_HZ=1000

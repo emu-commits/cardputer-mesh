@@ -14,3 +14,10 @@ emulator/cyd_pty.path
 
 # CYD terminal PlatformIO build output
 cyd-terminal/.pio/
+
+# device firmware (ESP-IDF) build output + generated config
+firmware/build/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/managed_components/
+firmware/dependencies.lock
