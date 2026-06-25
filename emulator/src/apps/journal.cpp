@@ -17,7 +17,14 @@ namespace apps {
 class Journal : public App {
     enum Overlay { NONE, NEW_TOPIC, ADD_ENTRY };
 public:
-    void on_create(AppContext& ctx) override { refresh(ctx); }
+    void on_create(AppContext& ctx) override {
+        refresh(ctx);
+        // Reopen the last-viewed topic automatically (#11).
+        std::string last = ctx.state ? ctx.state->get("journal.topic", "") : "";
+        if (!last.empty())
+            for (int i = 0; i < (int)topics_.size(); ++i)
+                if (topics_[i] == last) { ls_.sel = i; open_topic(ctx, last); break; }
+    }
 
     bool on_key(AppContext& ctx, const KeyEvent& k) override {
         if (overlay_ != NONE) return overlay_key(ctx, k);
@@ -67,6 +74,7 @@ private:
     // ---- entries (level 1) ----
     void open_topic(AppContext& ctx, const std::string& topic) {
         topic_ = topic; level_ = 1; escroll_ = 0;
+        if (ctx.state) ctx.state->set("journal.topic", topic_); // remember for next launch (#11)
         raw_.clear();
         if (ctx.fs) ctx.fs->read_text(path_of(topic_), raw_, 32 * 1024);
     }
@@ -99,7 +107,16 @@ private:
             int li = escroll_ + r;
             if (li >= (int)dl.size()) break;
             bool hdr = dl[li].size() > 1 && dl[li][0] == '[';
-            c.text(top + r, 0, dl[li], hdr ? ui::BrightCyan : ui::White, ui::Black);
+            if (hdr) {
+                // Only the "[date time]" stamp is blue; the entry text is white (#13).
+                size_t rb = dl[li].find(']');
+                std::string stamp = (rb == std::string::npos) ? dl[li] : dl[li].substr(0, rb + 1);
+                std::string rest = (rb == std::string::npos) ? "" : dl[li].substr(rb + 1);
+                c.text(top + r, 0, stamp, ui::BrightCyan, ui::Black);
+                if (!rest.empty()) c.text(top + r, (int)stamp.size(), rest, ui::White, ui::Black);
+            } else {
+                c.text(top + r, 0, dl[li], ui::White, ui::Black);
+            }
         }
         ui::footer(c, " a:add entry  e:edit in editor  up/dn:scroll  esc:topics ");
     }

@@ -82,12 +82,19 @@ std::vector<ui::KeyEvent> RawInput::poll() {
         if (b == 0x1b) {
             if (i + 1 < n && buf[i + 1] == '[') {
                 i += 2;
+                // xterm modified arrows: ESC [ 1 ; <mod> <A-D>; mod 5 = Ctrl.
+                bool ctrl_mod = false;
+                if (i + 3 < n && buf[i] == '1' && buf[i + 1] == ';') {
+                    if (buf[i + 2] == '5') ctrl_mod = true;        // Ctrl (and 6=Ctrl+Shift)
+                    if (buf[i + 2] == '6') ctrl_mod = true;
+                    i += 3; // advance to the final letter
+                }
                 if (i < n) {
                     switch (buf[i]) {
-                        case 'A': e.key = ui::Key::Up; break;
-                        case 'B': e.key = ui::Key::Down; break;
-                        case 'C': e.key = ui::Key::Right; break;
-                        case 'D': e.key = ui::Key::Left; break;
+                        case 'A': e.key = ui::Key::Up; e.ctrl = ctrl_mod; break;
+                        case 'B': e.key = ui::Key::Down; e.ctrl = ctrl_mod; break;
+                        case 'C': e.key = ui::Key::Right; e.ctrl = ctrl_mod; break;
+                        case 'D': e.key = ui::Key::Left; e.ctrl = ctrl_mod; break;
                         case 'H': e.key = ui::Key::Home; break;
                         case 'F': e.key = ui::Key::End; break;
                         case '3': e.key = ui::Key::Delete; if (i + 1 < n && buf[i+1]=='~') i++; break;

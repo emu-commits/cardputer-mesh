@@ -20,15 +20,25 @@ class Editor : public App {
     enum Overlay { NONE, SAVEAS };
 public:
     void on_create(AppContext& ctx) override {
-        path_ = "/notes/scratch.txt";
+        // reopen the last-edited file by default (#12); an explicit open: intent wins
+        path_ = (ctx.state ? ctx.state->get("editor.path", "/notes/scratch.txt") : "/notes/scratch.txt");
+        if (path_.empty()) path_ = "/notes/scratch.txt";
         if (ctx.nav_arg.rfind("open:", 0) == 0) { path_ = ctx.nav_arg.substr(5); ctx.nav_arg.clear(); }
         load(ctx);
     }
-    void on_pause(AppContext& ctx) override { if (dirty_) write(ctx); } // checkpoint
+    void on_pause(AppContext& ctx) override {
+        if (dirty_) write(ctx);                                  // checkpoint
+        if (ctx.state) ctx.state->set("editor.path", path_);     // reopen here next time (#12)
+    }
+    // Transient status messages (" saved " etc.) revert to the key-hint footer
+    // after 2 s without needing a keypress (#10).
+    void tick(AppContext& ctx) override {
+        if (status_until_ && ctx.now_ms >= status_until_) { status_.clear(); status_until_ = 0; }
+    }
 
     bool on_key(AppContext& ctx, const KeyEvent& k) override {
         if (overlay_ == SAVEAS) return saveas_key(ctx, k);
-        if (k.ctrl && (k.ch == 's' || k.ch == 'S')) { write(ctx); status_ = " saved "; return true; }
+        if (k.ctrl && (k.ch == 's' || k.ch == 'S')) { write(ctx); set_status(ctx, " saved "); return true; }
         if (k.ctrl && (k.ch == 'k' || k.ch == 'K')) { cut_line(ctx); return true; }
         if (k.ctrl && (k.ch == 'u' || k.ch == 'U')) { paste(ctx); return true; }
         switch (k.key) {
@@ -53,11 +63,11 @@ public:
 
     std::vector<Command> commands(AppContext&) override {
         return {
-            {"Save", [this](AppContext& c) { write(c); status_ = " saved "; }},
+            {"Save", [this](AppContext& c) { write(c); set_status(c, " saved "); }},
             {"Save as...", [this](AppContext&) { overlay_ = SAVEAS; pbuf_ = path_; }},
             {"Open file (browse)", [this](AppContext& c) { c.apps->request_switch("files"); }},
             {"Cut line", [this](AppContext& c) { cut_line(c); }},
-            {"Copy line", [this](AppContext& c) { if (c.clip) c.clip->set(lines_[cy_]); status_ = " copied "; }},
+            {"Copy line", [this](AppContext& c) { if (c.clip) c.clip->set(lines_[cy_]); set_status(c, " copied "); }},
             {"Paste", [this](AppContext& c) { paste(c); }},
         };
     }
@@ -102,7 +112,7 @@ public:
 private:
     bool saveas_key(AppContext& ctx, const KeyEvent& k) {
         if (k.key == Key::Esc) { overlay_ = NONE; return true; }
-        if (k.key == Key::Enter) { if (!pbuf_.empty()) path_ = pbuf_; write(ctx); status_ = " saved "; overlay_ = NONE; return true; }
+        if (k.key == Key::Enter) { if (!pbuf_.empty()) path_ = pbuf_; write(ctx); set_status(ctx, " saved "); overlay_ = NONE; return true; }
         if (k.key == Key::Backspace) { if (!pbuf_.empty()) pbuf_.pop_back(); return true; }
         if (k.is_char() && k.ch >= 0x20 && k.ch < 0x7f) pbuf_ += (char)k.ch;
         return true;
@@ -152,11 +162,12 @@ private:
         else return;
         dirty_ = true; status_.clear();
     }
+    void set_status(AppContext& ctx, const char* s) { status_ = s; status_until_ = ctx.now_ms + 2000; }
     void cut_line(AppContext& ctx) {
         if (ctx.clip) ctx.clip->set(lines_[cy_]);
         if (lines_.size() > 1) { lines_.erase(lines_.begin() + cy_); if (cy_ >= (int)lines_.size()) cy_ = (int)lines_.size() - 1; }
         else lines_[0].clear();
-        cx_ = 0; dirty_ = true; status_ = " cut ";
+        cx_ = 0; dirty_ = true; set_status(ctx, " cut ");
     }
     void paste(AppContext& ctx) {
         if (!ctx.clip || ctx.clip->empty()) return;
@@ -164,13 +175,14 @@ private:
             if (ch == '\n') split_line();
             else if (ch != '\r') { lines_[cy_].insert(cx_, 1, ch); cx_++; }
         }
-        dirty_ = true; status_ = " pasted ";
+        dirty_ = true; set_status(ctx, " pasted ");
     }
 
     std::vector<std::string> lines_{""};
     int cy_ = 0, cx_ = 0, top_ = 0, xoff_ = 0;
     bool dirty_ = false;
     std::string status_, path_, pbuf_;
+    uint32_t status_until_ = 0; // when to auto-clear status_ (#10)
     Overlay overlay_ = NONE;
 };
 

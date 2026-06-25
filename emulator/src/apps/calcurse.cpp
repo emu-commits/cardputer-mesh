@@ -81,7 +81,7 @@ public:
         return {
             {"New todo", [this](AppContext&) { mode_ = TODO; overlay_ = ADD_TODO; ibuf_.clear(); }},
             {"New todo topic", [this](AppContext&) { mode_ = TODO; overlay_ = ADD_TOPIC; ibuf_.clear(); }},
-            {"New appointment", [this](AppContext&) { mode_ = CAL; overlay_ = ADD_APPT; ibuf_.clear(); }},
+            {"New appointment", [this](AppContext&) { mode_ = CAL; overlay_ = ADD_APPT; edit_appt_ = -1; ibuf_.clear(); }},
             {"Pick date", [this](AppContext&) { mode_ = CAL; gy_ = sy_; gm_ = sm_; gd_ = sd_; overlay_ = GRID; }},
         };
     }
@@ -156,20 +156,47 @@ private:
     // ---- CAL view ----
     bool cal_key(const KeyEvent& k) {
         if (ls_.move(k, (int)appts_.size(), rows_)) return true;
+        if (k.key == Key::Enter && !appts_.empty()) { open_edit_appt(ls_.sel); return true; } // edit row (#8)
         if (k.is_char()) {
-            if (k.ch == 'a') { overlay_ = ADD_APPT; ibuf_.clear(); return true; }
+            if (k.ch == 'a') { overlay_ = ADD_APPT; edit_appt_ = -1; ibuf_.clear(); return true; }
             if (k.ch == 'g') { gy_ = sy_; gm_ = sm_; gd_ = sd_; overlay_ = GRID; return true; }
             if (k.ch == 'd' && !appts_.empty()) { appts_.erase(appts_.begin() + ls_.sel); ls_.clamp((int)appts_.size(), rows_); return true; }
         }
         return false;
     }
+    // Open the appt modal pre-filled to edit the selected row (#8).
+    void open_edit_appt(int idx) {
+        if (idx < 0 || idx >= (int)appts_.size()) return;
+        const Appt& a = appts_[idx];
+        edit_appt_ = idx;
+        sy_ = a.y; sm_ = a.m; sd_ = a.d; // so the modal's date line reflects this appt
+        ibuf_ = two(a.hh) + ":" + two(a.mm) + " " + a.text;
+        overlay_ = ADD_APPT;
+    }
+    // After picking a date, highlight the first appt on it (else first on/after) (#6).
+    void jump_to_date() {
+        for (int i = 0; i < (int)appts_.size(); ++i) {
+            const Appt& a = appts_[i];
+            if (a.y == sy_ && a.m == sm_ && a.d == sd_) { ls_.sel = i; ls_.clamp((int)appts_.size(), rows_); return; }
+        }
+        for (int i = 0; i < (int)appts_.size(); ++i) {
+            const Appt& a = appts_[i];
+            long sel = (long)sy_ * 10000 + sm_ * 100 + sd_, ad = (long)a.y * 10000 + a.m * 100 + a.d;
+            if (ad >= sel) { ls_.sel = i; ls_.clamp((int)appts_.size(), rows_); return; }
+        }
+    }
+    bool has_appt(int y, int m, int d) const {
+        for (auto& a : appts_) if (a.y == y && a.m == m && a.d == d) return true;
+        return false;
+    }
     void render_cal(TextCanvas& c) {
-        char r[16]; std::snprintf(r, sizeof r, "%04d-%02d-%02d", sy_, sm_, sd_);
+        // weekday of the selected day, just left of the date (#5)
+        static const char* DOW[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+        char r[24]; std::snprintf(r, sizeof r, "%s %04d-%02d-%02d", DOW[weekday(sy_, sm_, sd_)], sy_, sm_, sd_);
         int top = ui::header(c, "Calendar", ui::BrightMagenta, r);
         rows_ = ui::body_bottom(c) - top + 1;
         if (appts_.empty())
             c.text(top + 1, 2, "(no appointments — a:add  g:pick date)", ui::Gray, ui::Black, ui::ATTR_DIM);
-        static const char* DOW[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
         ui::list(c, top, rows_, ls_, (int)appts_.size(), [&](int i) {
             const Appt& a = appts_[i];
             return std::string(DOW[weekday(a.y, a.m, a.d)]) + " " + two(a.m) + "/" + two(a.d) +
@@ -186,13 +213,13 @@ private:
                 case Key::Right: step_day(1); return true;
                 case Key::Up:    step_day(-7); return true;
                 case Key::Down:  step_day(7); return true;
-                case Key::Enter: sy_ = gy_; sm_ = gm_; sd_ = gd_; overlay_ = NONE; return true;
+                case Key::Enter: sy_ = gy_; sm_ = gm_; sd_ = gd_; overlay_ = NONE; jump_to_date(); return true;
                 case Key::Esc:   overlay_ = NONE; return true;
                 default: return true;
             }
         }
         // text prompt (ADD_TODO / ADD_APPT)
-        if (k.key == Key::Esc) { overlay_ = NONE; return true; }
+        if (k.key == Key::Esc) { overlay_ = NONE; edit_appt_ = -1; return true; }
         if (k.key == Key::Enter) { commit_prompt(); overlay_ = NONE; return true; }
         if (k.key == Key::Backspace) { if (!ibuf_.empty()) ibuf_.pop_back(); return true; }
         if (k.is_char() && k.ch >= 0x20 && k.ch < 0x7f) ibuf_ += (char)k.ch;
@@ -206,7 +233,7 @@ private:
         else if (overlay_ == ADD_TOPIC) {
             topics_.push_back(s); cur_topic_ = (int)topics_.size() - 1; ls_.sel = 0;
         }
-        else { // ADD_APPT: optional leading "HH:MM "
+        else { // ADD_APPT (new or edit #8): optional leading "HH:MM "
             int hh = 9, mm = 0; std::string text = s;
             int rd = 0;
             if (std::sscanf(s.c_str(), "%d:%d%n", &hh, &mm, &rd) >= 2 && rd > 0) {
@@ -215,15 +242,34 @@ private:
             } else { hh = 9; mm = 0; }
             if (hh < 0 || hh > 23) hh = 9;
             if (mm < 0 || mm > 59) mm = 0;
-            appts_.push_back({sy_, sm_, sd_, hh, mm, text.empty() ? "(appt)" : text, false});
-            sort_all(); ls_.sel = 0;
+            if (text.empty()) text = "(appt)";
+            if (edit_appt_ >= 0 && edit_appt_ < (int)appts_.size()) {
+                Appt& a = appts_[edit_appt_]; a.hh = hh; a.mm = mm; a.text = text; a.fired = false;
+            } else {
+                appts_.push_back({sy_, sm_, sd_, hh, mm, text, false});
+            }
+            sort_all();
+            jump_to_date(); // keep the highlight on the appt's date
+            edit_appt_ = -1;
         }
     }
     void render_prompt(TextCanvas& c) {
         int ir, ic, iw, ih;
-        const char* title = (overlay_ == ADD_TODO) ? "New todo" : (overlay_ == ADD_TOPIC) ? "New topic" : "New appointment";
+        const char* title = (overlay_ == ADD_TODO) ? "New todo"
+                          : (overlay_ == ADD_TOPIC) ? "New topic"
+                          : (edit_appt_ >= 0) ? "Edit appointment" : "New appointment";
         const char* hint = (overlay_ == ADD_APPT) ? "HH:MM text   enter:ok  esc:cancel"
                                                    : "type text  enter:ok  esc:cancel";
+        if (overlay_ == ADD_APPT) {
+            // Show the date this appt belongs to, to reinforce context (#7).
+            static const char* DOW[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+            char d[40]; std::snprintf(d, sizeof d, "%s %04d-%02d-%02d  (%s)",
+                                      DOW[weekday(sy_, sm_, sd_)], sy_, sm_, sd_, MON[sm_ - 1]);
+            ui::modal_box(c, 6, 40, title, ui::BrightYellow, ir, ic, iw, ih, hint);
+            c.text(ir, ic, ui::fit(d, iw), ui::BrightCyan, ui::Black, ui::ATTR_BOLD);
+            ui::input_line(c, ir + 2, ic, "> ", ibuf_, ui::BrightWhite, iw);
+            return;
+        }
         ui::modal_box(c, 5, 40, title, ui::BrightYellow, ir, ic, iw, ih, hint);
         ui::input_line(c, ir + 1, ic, "> ", ibuf_, ui::BrightWhite, iw);
     }
@@ -240,8 +286,12 @@ private:
             int cell = fdow + day - 1;
             int rr = row + cell / 7, cc = col0 + (cell % 7) * 3;
             bool sel = (day == gd_);
-            c.text(rr, cc, two(day), sel ? ui::Black : ui::White, sel ? ui::BrightMagenta : ui::Black,
-                   sel ? ui::ATTR_INVERSE : ui::ATTR_NONE);
+            bool busy = has_appt(gy_, gm_, day); // days with appointments stand out (#9)
+            // selector highlight always overrides the busy color
+            uint8_t fg = sel ? ui::Black : (busy ? ui::BrightYellow : ui::White);
+            uint8_t bg = sel ? ui::BrightMagenta : ui::Black;
+            uint8_t at = sel ? ui::ATTR_INVERSE : (busy ? ui::ATTR_BOLD : ui::ATTR_NONE);
+            c.text(rr, cc, two(day), fg, bg, at);
         }
     }
 
@@ -343,6 +393,7 @@ private:
     std::string ibuf_;
     int sy_ = 2026, sm_ = 1, sd_ = 1; // selected date
     int gy_ = 2026, gm_ = 1, gd_ = 1; // month-grid cursor
+    int edit_appt_ = -1;              // index being edited via the appt modal (#8), -1 = new
 };
 
 std::unique_ptr<App> make_calcurse() { return std::make_unique<Calcurse>(); }

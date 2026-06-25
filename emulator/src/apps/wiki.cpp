@@ -89,8 +89,10 @@ private:
 
     bool read_key(const KeyEvent& k) {
         if (k.key == Key::Esc) { level_ = SEARCH; return true; }
-        if (k.key == Key::Up) { if (rscroll_ > 0) rscroll_--; return true; }
-        if (k.key == Key::Down) { rscroll_++; return true; }
+        // The Cardputer keyboard has no PgUp/PgDn keys, so page with Ctrl+Up/Down
+        // (PgUp/PgDn still work where a keyboard has them) (#2).
+        if (k.key == Key::Up)   { if (k.ctrl) rscroll_ = rscroll_ > 10 ? rscroll_ - 10 : 0; else if (rscroll_ > 0) rscroll_--; return true; }
+        if (k.key == Key::Down) { if (k.ctrl) rscroll_ += 10; else rscroll_++; return true; }
         if (k.key == Key::PageUp) { rscroll_ = rscroll_ > 10 ? rscroll_ - 10 : 0; return true; }
         if (k.key == Key::PageDown) { rscroll_ += 10; return true; }
         return true; // capture while reading
@@ -120,7 +122,7 @@ private:
                    hdr ? ui::ATTR_BOLD : ui::ATTR_NONE);
         }
         char pos[24]; std::snprintf(pos, sizeof pos, " %d/%d ", rscroll_ + 1, (int)dl.size());
-        ui::footer(c, std::string(" up/dn/pgup/pgdn scroll  esc:results ") + pos);
+        ui::footer(c, std::string(" up/dn scroll  ctrl+up/dn page  esc:results ") + pos);
     }
 
     Level level_ = SEARCH;

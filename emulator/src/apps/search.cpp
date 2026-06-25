@@ -46,7 +46,15 @@ public:
     // Search is foreground. Re-harvest only when the message log grows (cheap
     // count() check) so live messages show up without re-walking the filesystem.
     void tick(AppContext& ctx) override {
-        if (ctx.log && ctx.log->count() != last_log_count_) { build(ctx); refilter(ctx, /*reset_sel=*/false); }
+        if (ctx.log && ctx.log->count() != last_log_count_) {
+            // A live re-harvest reorders the corpus (messages are newest-first), so
+            // restoring the selection by index would slide the cursor onto a
+            // different result. Pin it to the selected item's identity instead (#1).
+            Item keep; bool have = selected_item(keep);
+            build(ctx);
+            refilter(ctx, /*reset_sel=*/false);
+            if (have) restore_sel(keep);
+        }
     }
 
     bool on_key(AppContext& ctx, const KeyEvent& k) override {
@@ -261,6 +269,26 @@ private:
         const Item& it = corpus_[shown_[i]];
         char tag[5] = {'[', it.kind, ']', ' ', 0};
         return std::string(tag) + it.label;
+    }
+
+    // The corpus item under the current selection (false when on the wiki row).
+    bool selected_item(Item& out) const {
+        int sel = ls_.sel;
+        if (wiki_row_) { if (sel == 0) return false; sel -= 1; }
+        if (sel < 0 || sel >= (int)shown_.size()) return false;
+        out = corpus_[shown_[sel]];
+        return true;
+    }
+    // After a re-harvest, put the cursor back on the same item if it's still shown.
+    void restore_sel(const Item& keep) {
+        for (int j = 0; j < (int)shown_.size(); ++j) {
+            const Item& it = corpus_[shown_[j]];
+            if (it.kind == keep.kind && it.target == keep.target && it.arg == keep.arg && it.label == keep.label) {
+                ls_.sel = (wiki_row_ ? 1 : 0) + j;
+                ls_.clamp(total_rows(), rows_);
+                return;
+            }
+        }
     }
 
     void activate(AppContext& ctx) {
