@@ -46,12 +46,12 @@ void NotificationCenter::bg_tick(uint32_t) {}
 
 void NotificationCenter::render_status(ui::TextCanvas& bar, uint32_t now_ms) {
     bar.clear(ui::White, ui::Black);
+    (void)now_ms;
 
-    // Screen sleeps (stays blank) when nothing has happened for OFF_MS. A new
-    // notification wakes it via last_activity_. No banner flashing — notifications
-    // just stack in the list while the screen is awake.
-    bool awake = last_activity_ != 0 && (now_ms - last_activity_) < OFF_MS;
-    if (!awake) return; // built-in screen off
+    // The built-in screen is an ALWAYS-ON ambient strip (clock/battery/nodes) on
+    // a USB-powered clamshell — it does not blank when idle (that read as "dead"
+    // on hardware). Notifications stack below as they arrive. (last_activity_ is
+    // still tracked for a future real power-save / dim, but we don't blank here.)
 
     // Status strip (row 0) — inverse bar: clock, battery, node count, unread.
     std::time_t t = std::time(nullptr);
