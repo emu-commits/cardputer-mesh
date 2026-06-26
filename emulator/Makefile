@@ -32,8 +32,17 @@ $(SQLITE_OBJ): $(SQLITE_DIR)/sqlite3.c
 run: all
 	./$(BIN)
 
+# CyberHack headless harness: tests + balance sweep + linter. Compiles only the
+# zero-dependency engine + the driver (sim/ is outside the src/ GLOB, so its
+# main() never collides with the emulator's). See docs/CYBERHACK.md.
+SIM_SRC := sim/cyberhack_sim.cpp src/core/cyberhack_world.cpp
+cyberhack_sim: $(SIM_SRC) src/core/cyberhack_world.h
+	$(CXX) $(CXXFLAGS) -o $@ $(SIM_SRC) $(LDLIBS)
+sim: cyberhack_sim
+	./cyberhack_sim
+
 clean:
-	rm -f $(OBJ) $(DEP) $(BIN)
+	rm -f $(OBJ) $(DEP) $(BIN) cyberhack_sim
 
 # note: SQLITE_OBJ is intentionally NOT removed by clean (slow to rebuild)
 .PHONY: all run clean

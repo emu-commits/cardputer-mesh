@@ -1,0 +1,42 @@
+# Build the CyberHack web app from the canonical engine and publish to GitHub
+# Pages. Single source of truth: the WASM is compiled in CI from
+# emulator/src/core/cyberhack_world.cpp, so the live page can never drift from the
+# firmware. No build artifacts are committed (see .gitignore).
+#
+# To enable: repo Settings → Pages → Source: "GitHub Actions". Then push to main.
+name: Deploy CyberHack (web)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - 'emulator/src/core/cyberhack_world.*'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mymindstorm/setup-emsdk@v14
+      - name: Build WASM from the engine
+        run: ./web/build.sh
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+      - id: deploy
+        uses: actions/deploy-pages@v4

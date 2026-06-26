@@ -21,3 +21,8 @@ firmware/sdkconfig
 firmware/sdkconfig.old
 firmware/managed_components/
 firmware/dependencies.lock
+
+# CyberHack web build artifacts (built in CI from the engine; not committed)
+web/cyberhack.js
+web/cyberhack.wasm
+emulator/cyberhack_sim

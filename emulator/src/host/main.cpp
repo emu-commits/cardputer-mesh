@@ -81,6 +81,7 @@ int main(int argc, char** argv) {
     mgr.reg("meshstatus", "Mesh status", apps::make_mesh_status);
     mgr.reg("channels", "Channels", apps::make_channels);
     mgr.reg("system", "System", apps::make_system);
+    mgr.reg("cyberhack", "CyberHack", apps::make_cyberhack);
     mgr.reg("settings", "Settings", apps::make_settings);
     mgr.reg("wizard", "Mesh setup wizard", apps::make_wizard, /*hidden=*/true); // reached from Settings (#18)
     mgr.reg("presets", "Config presets", apps::make_presets, /*hidden=*/true);  // reached from Settings

@@ -45,6 +45,10 @@ struct AppContext {
     // esp_get_free_heap_size so memory-heavy ops (a wiki FTS5 search) can bail
     // out gracefully instead of risking an OOM on the no-PSRAM part.
     std::function<size_t()> free_heap;
+    // Keep the second screen awake during a no-keypress animation (the CyberHack
+    // auto-crawl). Device main wires this to reset its CYD idle-sleep timer;
+    // null on host (the emulator terminal never sleeps).
+    std::function<void()> keep_awake;
 };
 
 // A palette command: a titled action. Apps contribute context commands that the

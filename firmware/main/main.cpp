@@ -91,6 +91,7 @@ extern "C" void app_main(void) {
     mgr.reg("meshstatus", "Mesh status", apps::make_mesh_status);
     mgr.reg("channels", "Channels", apps::make_channels);
     mgr.reg("system", "System", apps::make_system);
+    mgr.reg("cyberhack", "CyberHack", apps::make_cyberhack);
     mgr.reg("settings", "Settings", apps::make_settings);
     mgr.reg("wizard", "Mesh setup wizard", apps::make_wizard, /*hidden=*/true);
     mgr.reg("presets", "Config presets", apps::make_presets, /*hidden=*/true);
@@ -201,6 +202,9 @@ extern "C" void app_main(void) {
     ui::TextCanvas bar(device::BuiltinDisplay::COLS, device::BuiltinDisplay::ROWS);
     ui::AnsiRenderer rend;
     uint32_t last_full = 0, last_stats = 0, last_input = now_ms();
+    // Keep the CYD awake during a no-keypress animation (CyberHack's auto-crawl):
+    // the app calls this each step so the idle-sleep timer below never fires mid-dive.
+    ctx.keep_awake = [&last_input] { last_input = now_ms(); };
     bool screen_was_on = false, cyd_asleep = false;
     int applied_cyd_bl = -1, applied_builtin_bl = -1;   // -1 = not yet applied
     float v_prev = 0;
