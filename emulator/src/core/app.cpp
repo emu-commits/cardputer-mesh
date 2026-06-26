@@ -1,6 +1,22 @@
 #include "core/app.h"
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
+#include <exception>
+
+namespace {
+// Run an app callback under a guard: a thrown exception (e.g. std::bad_alloc on
+// the no-PSRAM heap, or a std::out_of_range from an app bug) is logged to the
+// console and swallowed, so one misbehaving frame degrades gracefully instead of
+// aborting the whole device. Exceptions are enabled in sdkconfig for exactly
+// this. The user can still Esc out; a transient fault clears on the next frame.
+template <class F>
+inline void guarded(const char* what, F&& fn) {
+    try { fn(); }
+    catch (const std::exception& e) { std::fprintf(stderr, "[app] %s: %s (recovered)\n", what, e.what()); }
+    catch (...) { std::fprintf(stderr, "[app] %s: unknown throw (recovered)\n", what); }
+}
+} // namespace
 
 namespace app {
 
@@ -55,8 +71,8 @@ void AppManager::apply_pending(AppContext& ctx) {
     pending_.clear();
     if (id == "__quit__") { quit_requested = true; return; }
     if (fac_.find(id) == fac_.end()) return;
-    if (cur_) { cur_->on_pause(ctx); cur_->on_destroy(ctx); }
-    start(id, ctx);
+    if (cur_) guarded("on_pause", [&]{ cur_->on_pause(ctx); cur_->on_destroy(ctx); });
+    guarded("on_create", [&]{ start(id, ctx); });
     // Checkpoint: the just-saved resume tokens (in on_pause) + the new active app.
     if (ctx.state) { ctx.state->set("session.active", id); ctx.state->flush(); }
 }
@@ -70,7 +86,11 @@ void AppManager::handle_key(AppContext& ctx, const ui::KeyEvent& k) {
     // The active app gets first crack at every key (including Esc) so it can
     // close an overlay or pop a sub-level. Only if it doesn't consume Esc do we
     // fall back to "Esc = leave app -> launcher".
-    if (cur_ && cur_->on_key(ctx, k)) return;
+    if (cur_) {
+        bool consumed = false;
+        guarded("on_key", [&]{ consumed = cur_->on_key(ctx, k); });
+        if (consumed) return;
+    }
     if (k.key == ui::Key::Esc && cur_id_ != "launcher") {
         if (!back_to_.empty()) { std::string b = back_to_; back_to_.clear(); request_switch(b); }
         else request_switch("launcher");
@@ -78,12 +98,12 @@ void AppManager::handle_key(AppContext& ctx, const ui::KeyEvent& k) {
 }
 
 void AppManager::tick(AppContext& ctx) {
-    if (cur_) cur_->tick(ctx);
+    if (cur_) guarded("tick", [&]{ cur_->tick(ctx); });
 }
 
 void AppManager::render(AppContext& ctx, ui::TextCanvas& canvas) {
-    if (cur_) cur_->render(ctx, canvas);
-    if (pal_) render_palette(ctx, canvas);
+    if (cur_) guarded("render", [&]{ cur_->render(ctx, canvas); });
+    if (pal_) guarded("palette", [&]{ render_palette(ctx, canvas); });
 }
 
 void AppManager::open_palette() {
@@ -129,7 +149,8 @@ void AppManager::palette_key(AppContext& ctx, const ui::KeyEvent& k) {
         case ui::Key::Enter:
             if (!items.empty() && pal_sel_ < (int)items.size()) {
                 pal_ = false;
-                items[pal_sel_].run(ctx); // may switch apps or mutate the active app
+                Command cmd = items[pal_sel_];
+                guarded("command", [&]{ cmd.run(ctx); }); // may switch apps or mutate the active app
             }
             return;
         case ui::Key::Char:

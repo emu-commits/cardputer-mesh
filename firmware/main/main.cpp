@@ -45,6 +45,15 @@ static constexpr uint32_t CYD_IDLE_MS = 120000;  // blank the CYD backlight afte
 
 static inline uint32_t now_ms() { return (uint32_t)(esp_timer_get_time() / 1000); }
 
+// Heap OOM hook: a failed allocation otherwise throws bad_alloc (caught by the
+// app guard) or aborts silently — this logs the size/caps so the soak trail
+// shows exactly what couldn't be satisfied. Runs in alloc context, so it uses
+// the DRAM-safe logger only.
+static void on_alloc_failed(size_t size, uint32_t caps, const char* fn) {
+    ESP_DRAM_LOGE("oom", "alloc failed: %u bytes caps=0x%x in %s",
+                  (unsigned)size, (unsigned)caps, fn ? fn : "?");
+}
+
 // Map a 1-10 brightness level to an 8-bit backlight duty along a perceptual
 // curve. The eye is roughly logarithmic, so equal duty steps bunch up near full
 // (87% looks the same as 100% — the slider feels dead). This spreads the visible
@@ -57,6 +66,8 @@ static int bl_level_to_duty(int level) {
 }
 
 extern "C" void app_main(void) {
+    heap_caps_register_failed_alloc_callback(on_alloc_failed);
+
     static device::RadioMesh meshf;
     static mesh::RamMessageLog store;
     static nc::NotificationCenter notify(&meshf);
@@ -114,6 +125,7 @@ extern "C" void app_main(void) {
     ctx.apps = &mgr; ctx.mesh = &meshf; ctx.log = &store; ctx.notify = &notify;
     ctx.state = &state; ctx.fs = &filesystem; ctx.clip = &clipboard; ctx.settings = &settings;
     ctx.wiki = &wiki;
+    ctx.free_heap = [] { return (size_t)esp_get_free_heap_size(); };  // low-heap guard seam
     ctx.now_ms = now_ms();
 
     // Re-apply persisted node favorite/ignore flags (NodeList writes them as CSV).
@@ -217,12 +229,15 @@ extern "C" void app_main(void) {
             std::snprintf(b, sizeof b, "USB");
         }
         notify.set_battery(b);
+        size_t freeb = esp_get_free_heap_size();
+        size_t minb  = esp_get_minimum_free_heap_size();
+        size_t blk   = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
         char r[48];
         std::snprintf(r, sizeof r, "%uK free / min %uK / blk %uK",
-                      (unsigned)(esp_get_free_heap_size() >> 10),
-                      (unsigned)(esp_get_minimum_free_heap_size() >> 10),
-                      (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) >> 10));
+                      (unsigned)(freeb >> 10), (unsigned)(minb >> 10), (unsigned)(blk >> 10));
         notify.set_ram(r);
+        ESP_LOGI("mem", "free=%uK min=%uK blk=%uK batt=%s",          // soak trail (10 s cadence)
+                 (unsigned)(freeb >> 10), (unsigned)(minb >> 10), (unsigned)(blk >> 10), b);
     };
     read_telemetry();
 

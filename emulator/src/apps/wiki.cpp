@@ -61,8 +61,14 @@ private:
         }
     }
     void run_search(AppContext& ctx) {
-        results_ = ctx.wiki->search(input_, 100);
         ls_ = {};
+        // Low-heap guard: an FTS5 search transiently needs ~50 KB of heap. If
+        // free heap is below a safe margin, skip rather than risk an allocation
+        // failure mid-query on the no-PSRAM part. Device only — ctx.free_heap is
+        // null on host, so the guard is a no-op in the emulator.
+        low_mem_ = ctx.free_heap && ctx.free_heap() < WIKI_MIN_FREE;
+        if (low_mem_) { results_.clear(); return; }
+        results_ = ctx.wiki->search(input_, 100);
     }
     void open_selected(AppContext& ctx) {
         if (results_.empty() || ls_.sel >= (int)results_.size()) return;
@@ -80,7 +86,9 @@ private:
         ui::input_line(c, top, 0, "search: ", input_, focus_ == QUERY ? ui::BrightWhite : ui::Gray);
         c.hline(top + 1, 1, c.width() - 2, U'-', ui::Gray, ui::Black);
         rows_ = ui::body_bottom(c) - (top + 2) + 1;
-        if (results_.empty())
+        if (low_mem_)
+            c.text(top + 3, 2, "low memory — close an app and retry", ui::Red, ui::Black);
+        else if (results_.empty())
             c.text(top + 3, 2, "type a query, enter to search", ui::Gray, ui::Black, ui::ATTR_DIM);
         ui::list(c, top + 2, rows_, ls_, (int)results_.size(),
                  [&](int i) { return results_[i].title; }, ui::White, ui::BrightBlue);
@@ -125,6 +133,8 @@ private:
         ui::footer(c, std::string(" up/dn scroll  ctrl+up/dn page  esc:results ") + pos);
     }
 
+    static constexpr size_t WIKI_MIN_FREE = 72 * 1024; // skip a search below this free heap
+    bool low_mem_ = false;
     Level level_ = SEARCH;
     Focus focus_ = QUERY;
     std::string input_;

@@ -40,6 +40,11 @@ struct AppContext {
     // "dm:439041101", "contact:439041101".
     std::string nav_arg;
     uint32_t now_ms = 0;
+    // Device heap introspection: total free bytes. Null on host (guards that
+    // depend on it are skipped); the device main loop sets it to
+    // esp_get_free_heap_size so memory-heavy ops (a wiki FTS5 search) can bail
+    // out gracefully instead of risking an OOM on the no-PSRAM part.
+    std::function<size_t()> free_heap;
 };
 
 // A palette command: a titled action. Apps contribute context commands that the
