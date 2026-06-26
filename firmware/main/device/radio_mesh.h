@@ -252,15 +252,16 @@ private:
         if (paylen <= 0 || ign_.count(h.src)) return;
         const uint8_t* payload = r.buf + mtp::HEADER_LEN;
 
-        uint8_t pt[256]; mtp::Data d; bool ok = false;
+        uint8_t pt[256]; mtp::Data d; bool ok = false; bool via_pkc = false;
         if (h.channel_hash == 0 && h.dst == our_id_ && have_keys_ && paylen > (int)pkc::OVERHEAD) {
             // PKC DM to us: decrypt with the sender's public key.
+            via_pkc = true;
             const mesh::Node* n = find(h.src);
             if (n && n->has_key) {
                 size_t pl = pkc::decrypt(our_priv_, n->pubkey, h.src, h.id, payload, paylen, pt);
                 if (pl) ok = mtp::parse_data(pt, pl, d);
             }
-            if (!ok) { ESP_LOGD(TAG, "PKC DM from !%08lx undecodable (no key?)", (unsigned long)h.src); }
+            if (!ok) { ESP_LOGW(TAG, "PKC DM from !%08lx undecodable (no/bad key)", (unsigned long)h.src); }
         } else {
             int ci = channel_by_hash(h.channel_hash);
             if (ci < 0) return;                         // unknown channel / PKC for someone else
@@ -276,8 +277,8 @@ private:
 
         mesh::Node& n = upsert(h.src);
         n.last_heard_ms = now_ms; n.snr = (int)lroundf(r.snr);
-        ESP_LOGI(TAG, "RX from=!%08lx %s %dB RSSI=%d", (unsigned long)h.src,
-                 mtp::portnum_name(d.portnum), paylen, (int)r.rssi);
+        ESP_LOGI(TAG, "RX from=!%08lx %s %s %dB RSSI=%d", (unsigned long)h.src,
+                 via_pkc ? "PKC" : "ch", mtp::portnum_name(d.portnum), paylen, (int)r.rssi);
 
         switch (d.portnum) {
         case 1: if (d.payload_len) {                    // TEXT -> chat + notify
