@@ -21,6 +21,7 @@
 #include "freertos/queue.h"
 #include "esp_timer.h"
 #include "esp_log.h"
+#include "esp_task_wdt.h"
 #include "mbedtls/aes.h"
 #include "core/mesh.h"
 #include "core/persist.h"
@@ -166,8 +167,14 @@ private:
     static uint32_t now_ms() { return (uint32_t)(esp_timer_get_time() / 1000); }
     static void task_tramp(void* a) { static_cast<RadioMesh*>(a)->run(); }
     void run() {
+        // The radio task is the most likely place to wedge (stuck SX1262 BUSY on
+        // the SD-shared SPI2 bus), so it's watched by the Task WDT. The 100 ms
+        // notify-take timeout guarantees we loop — and reset the WDT — well inside
+        // the timeout even when idle. A true hang trips the WDT -> panic -> reboot.
+        esp_task_wdt_add(nullptr);
         for (;;) {
             ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
+            esp_task_wdt_reset();
             if (pending_) { pending_ = false; apply_phy(pending_phy_); }
             radio_->processEvents();
             if (!tx_busy_ && txq_) { TxReq r; if (xQueueReceive(txq_, &r, 0) == pdTRUE) transmit(r); }

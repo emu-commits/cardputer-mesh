@@ -66,7 +66,7 @@ public:
             add("Storage", sb);
         }
         add("Battery", ctx.notify ? ctx.notify->battery() : "USB");
-        add("Free RAM", "(device HAL)"); // esp_get_free_heap_size() on hardware
+        add("Free RAM", ctx.notify ? ctx.notify->ram() : "(device HAL)"); // free/min/largest-block on hardware
 
         n_ = (int)rows.size();
         rows_ = ui::body_bottom(c) - top + 1;

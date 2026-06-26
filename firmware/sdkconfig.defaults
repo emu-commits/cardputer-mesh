@@ -22,6 +22,13 @@ CONFIG_FREERTOS_HZ=1000
 CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FATFS_MAX_LFN=255
 
+# Task watchdog: the main UI task and the radio task subscribe themselves and
+# reset each loop, so a real freeze (deadlock, stuck SX1262 BUSY on the shared
+# SPI2 bus) trips the WDT -> panic -> reboot instead of a silent hang. 30 s is
+# deliberately generous: the only long synchronous op on the main task is a wiki
+# FTS5 search, and a true hang is infinite, so this still recovers it.
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+
 # SQLite compiles with NDEBUG (see main/sqlite3_esp32.c). IDF's default assert.h
 # still *evaluates* assert() expressions under NDEBUG, which trips on SQLite's
 # SQLITE_DEBUG-only member references; make NDEBUG a true no-op instead. Only

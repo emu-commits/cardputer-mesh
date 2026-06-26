@@ -11,6 +11,9 @@
 #include "freertos/task.h"
 #include "esp_timer.h"
 #include "esp_log.h"
+#include "esp_system.h"
+#include "esp_heap_caps.h"
+#include "esp_task_wdt.h"
 #include "driver/gpio.h"
 
 #include "apps/apps.h"
@@ -25,6 +28,7 @@
 #include "core/wallclock.h"
 #include "esp_mac.h"
 
+#include "device/battery.h"
 #include "device/builtin_display.h"
 #include "device/cardputer_keyboard.h"
 #include "device/nvs_store.h"
@@ -37,6 +41,7 @@
 static constexpr int CYD_W = 53, CYD_H = 20;
 static constexpr int PORTA_TX_GPIO = 1;       // Grove G1 -> CYD GPIO35 (RX)
 static constexpr int CYD_BAUD = 921600;
+static constexpr uint32_t CYD_IDLE_MS = 120000;  // blank the CYD backlight after 2 min idle
 
 static inline uint32_t now_ms() { return (uint32_t)(esp_timer_get_time() / 1000); }
 
@@ -177,20 +182,65 @@ extern "C" void app_main(void) {
     bool radio_ok = meshf.begin(radio_pins, applied_phy, settings.get("lora", "modem_preset").c_str());
     if (!radio_ok) ESP_LOGW("deck", "no LoRa hat — radio disabled");
 
+    static device::Battery batt;
+    batt.begin();
+
     ui::TextCanvas cyd(CYD_W, CYD_H);
     ui::TextCanvas bar(device::BuiltinDisplay::COLS, device::BuiltinDisplay::ROWS);
     ui::AnsiRenderer rend;
-    uint32_t last_full = 0;
-    bool screen_was_on = false;
+    uint32_t last_full = 0, last_stats = 0, last_input = now_ms();
+    bool screen_was_on = false, cyd_asleep = false;
     int applied_cyd_bl = -1, applied_builtin_bl = -1;   // -1 = not yet applied
+    float v_prev = 0;
+
+    // The CYD is a dumb terminal; send it a private CSI (ESC [ <duty> p) that it
+    // parses into a backlight PWM duty (0 = off; ignored by old CYD firmware).
+    auto cyd_backlight = [&](int duty) {
+        char esc[16]; int n = std::snprintf(esc, sizeof esc, "\x1b[%dp", duty);
+        term.write(std::string(esc, n));
+    };
+    auto cyd_duty_setting = [&]() { return bl_level_to_duty((int)settings.get_num("system", "brightness")); };
+
+    // Battery + heap telemetry -> the status surfaces (System app, status strip).
+    // No fuel-gauge IC on this board: percent is the ADC voltage through a LiPo
+    // curve, and "+" (on charger) is INFERRED from the pack sitting high or
+    // rising — there is no charge/VBUS pin to read. Heap min-ever + largest free
+    // block are the numbers that expose no-PSRAM fragmentation over long uptime.
+    auto read_telemetry = [&]() {
+        char b[24];
+        if (batt.present()) {
+            float v = batt.voltage();
+            bool chg = v >= 4.18f || (v_prev > 0 && v - v_prev > 0.03f);
+            v_prev = v;
+            std::snprintf(b, sizeof b, "%d%%%s", device::Battery::level(v), chg ? "+" : "");
+        } else {
+            std::snprintf(b, sizeof b, "USB");
+        }
+        notify.set_battery(b);
+        char r[48];
+        std::snprintf(r, sizeof r, "%uK free / min %uK / blk %uK",
+                      (unsigned)(esp_get_free_heap_size() >> 10),
+                      (unsigned)(esp_get_minimum_free_heap_size() >> 10),
+                      (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) >> 10));
+        notify.set_ram(r);
+    };
+    read_telemetry();
 
     notify.add_event(nc::NotifType::Generic, "deck", "ready", now_ms());  // light up once at boot
 
+    // Watchdog: the main UI task joins the Task WDT (the radio task subscribes
+    // itself). A real freeze then trips the WDT -> panic -> reboot instead of a
+    // silent hang; the timeout (sdkconfig) is generous so a slow-but-legitimate
+    // synchronous wiki FTS5 search can't false-trip it.
+    esp_task_wdt_add(NULL);
+
     for (;;) {
+        esp_task_wdt_reset();
         uint32_t now = now_ms();
         ctx.now_ms = now;
 
-        for (auto& ke : kbd.poll()) mgr.handle_key(ctx, ke);
+        auto keys = kbd.poll();
+        for (auto& ke : keys) mgr.handle_key(ctx, ke);
         meshf.poll(now);
         mgr.apply_pending(ctx);
         mgr.tick(ctx);
@@ -204,28 +254,27 @@ extern "C" void app_main(void) {
             last_full = now;
             // Apply the two backlight settings (1-10) when they change, mapped to
             // an 8-bit duty on a perceptual curve. The built-in panel dims via
-            // LEDC; the CYD is dumb, so we send it a private CSI (ESC [ <duty> p)
-            // it parses into a PWM duty (ignored by old firmware).
+            // LEDC; the CYD via its CSI. Don't poke the CYD backlight while it's
+            // idle-asleep (it would relight); the new level is used on next wake.
             int bb = (int)settings.get_num("system", "brightness_builtin");
             if (bb != applied_builtin_bl) { applied_builtin_bl = bb; panel.set_brightness(bl_level_to_duty(bb)); }
             int cb = (int)settings.get_num("system", "brightness");
-            if (cb != applied_cyd_bl) {
-                applied_cyd_bl = cb;
-                char esc[16]; int n = std::snprintf(esc, sizeof esc, "\x1b[%dp", bl_level_to_duty(cb));
-                term.write(std::string(esc, n));
-            }
+            if (cb != applied_cyd_bl) { applied_cyd_bl = cb; if (!cyd_asleep) cyd_backlight(bl_level_to_duty(cb)); }
             // Retune the radio live if the LoRa settings changed (no reboot).
             if (radio_ok) {
                 lora::Phy np = lora::phy_from_settings(settings);
                 if (!lora::phy_same(np, applied_phy)) { applied_phy = np; meshf.request_retune(np); }
             }
         }
+        if (now - last_stats >= 10000) { last_stats = now; read_telemetry(); }
+
         rend.render(cyd, term);
 
         // Built-in screen sleeps (backlight off) between notifications; a new
         // notification lights it up for OFF_MS, then it goes dark again. Render
         // the fresh frame BEFORE turning the backlight on so the wake is clean.
         bool screen_on = notify.screen_on(now);
+        bool notif_wake = (!screen_was_on && screen_on);   // a notification just arrived
         if (screen_on) {
             if (!screen_was_on) panel.clear();        // wipe stale content before waking
             notify.render_status(bar, now);
@@ -235,6 +284,15 @@ extern "C" void app_main(void) {
             panel.backlight(0);
         }
         screen_was_on = screen_on;
+
+        // CYD idle-sleep: the PRIMARY screen blanks its backlight after the user
+        // has been away from the keyboard for CYD_IDLE_MS, relighting on the next
+        // key or a fresh notification (no lid sensor -> keyboard idle is the
+        // proxy for "not looking at it"). Frames keep streaming while dark so the
+        // content is already current the instant it wakes.
+        if (!keys.empty() || notif_wake) last_input = now;
+        if (!cyd_asleep && (now - last_input) >= CYD_IDLE_MS) { cyd_backlight(0); cyd_asleep = true; }
+        else if (cyd_asleep && (!keys.empty() || notif_wake)) { cyd_asleep = false; cyd_backlight(cyd_duty_setting()); last_full = 0; }
 
         vTaskDelay(pdMS_TO_TICKS(33));
     }

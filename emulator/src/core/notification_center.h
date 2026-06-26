@@ -38,6 +38,8 @@ public:
     }
     void set_battery(const std::string& b) { battery_ = b; } // device HAL pushes "NN%"
     const std::string& battery() const { return battery_; }
+    void set_ram(const std::string& r) { ram_ = r; }         // device HAL pushes heap stats
+    const std::string& ram() const { return ram_; }
 
     void render_status(ui::TextCanvas& bar, uint32_t now_ms);      // built-in screen
 
@@ -50,6 +52,7 @@ private:
     std::deque<Notification> ring_;
     int unread_ = 0;
     std::string battery_ = "USB";
+    std::string ram_ = "(device HAL)";
     uint32_t last_activity_ = 0;            // built-in screen sleeps after idle
     static constexpr size_t RING_MAX = 16;
     static constexpr uint32_t OFF_MS = 10000; // blank the screen after 10s quiet
