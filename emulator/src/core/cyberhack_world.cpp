@@ -16,7 +16,7 @@ static const char* FACTION_SHORT[F_COUNT] = {
     "Kurogane", "the Vultures", "Null Sigil", "Greywall", "the Switchboard"
 };
 static const char* NODE_TYPE_NAME[N_TYPECOUNT] = {
-    "corp vault", "gang server", "public grid", "abandoned node", "AI sanctuary"
+    "corp vault", "gang server", "public grid", "abandoned node", "cold cache"
 };
 static const char* ICE_NAME[I_COUNT] = {
     "Black ICE", "Trace Daemon", "Data Warden", "Entropy Swarm", "Watchdog", "Sysop"
@@ -554,9 +554,9 @@ void Sim::accrue_and_move() {
         heal(hp); add_heat(-12);
         if (run_.corruption > 0) add_corruption(-8);
         run_.buffer = run_.buffer_max;
-        here.flags |= NF_LOOTED;                                // a sanctuary gives once
-        logline(std::string("AI sanctuary at ") + node_label(world_, run_.pos) +
-                " — a free AI rebuilt your deck. integrity " + std::to_string((int)run_.integrity) +
+        here.flags |= NF_LOOTED;                                // a cold cache gives once
+        logline(std::string("cold cache at ") + node_label(world_, run_.pos) +
+                " — restored your deck from a clean backup. integrity " + std::to_string((int)run_.integrity) +
                 "/" + std::to_string((int)run_.integrity_max) + ", heat -12, corruption -8, buffer full.");
     } else {
         if (here.security <= 2) {                               // the deep dark cools and mends
@@ -674,7 +674,7 @@ void Sim::resolve_round(int option) {
     int cost = buffer_cost(mod);
     bool overclock = run_.buffer < cost;
     if (!overclock) run_.buffer = (int16_t)(run_.buffer - cost);
-    else add_corruption(3);
+    else add_corruption(5);                               // running the buffer dry rots the deck
 
     // corruption can misfire any module mid-fight
     bool misfire = (run_.corruption > 60 && rng_.chance(run_.corruption / 2));
@@ -702,7 +702,7 @@ void Sim::resolve_round(int option) {
     run_.ice_hp = (int16_t)(run_.ice_hp - brk);
 
     // --- module side-effects ---
-    if (mod == M_SPIKE) add_heat(3);                      // noisy
+    if (mod == M_SPIKE) { add_heat(3); add_corruption(1); }   // noisy AND dirty: raw break corrodes
     if (mod == M_MASK)  add_heat(-6);
     if (mod == M_PATCH) {
         int amt = !overclock ? 16 + run_.mod_level[M_PATCH] * 3 : 6;
@@ -717,7 +717,7 @@ void Sim::resolve_round(int option) {
         if (mod == M_MASK) atk = atk / 3;                 // mask blunts the incoming hit
         if (mod == ice_punish(ice)) atk = atk * 2 + tier; // punished: raw aggression vs heavy ICE gets you mauled
         atk -= run_.shield;
-        if (ice == I_SWARM) add_corruption(2);
+        if (ice == I_SWARM) add_corruption(3);
         if (ice == I_TRACE) add_heat(4);
         uint8_t cause = (run_.is_hunter_fight) ? D_HUNTED : D_ICE;
         hurt(std::max(1, atk), cause);
@@ -813,7 +813,7 @@ void Sim::open_branch() {
         std::string tag;
         if (nn.guard_named != NONE8 && !(nn.flags & NF_GUARD_DONE))
             tag = std::string("DANGER ") + named_name(world_.named[nn.guard_named].name_id);
-        else if (nn.type == N_SHRINE) tag = "RECOVERY sanctuary";
+        else if (nn.type == N_SHRINE) tag = "RECOVERY cache";
         else if (nn.shards > 0 && !(nn.flags & NF_LOOTED)) tag = "loot";
         else tag = "quiet";
         char b[64];
@@ -1047,9 +1047,9 @@ void Sim::resolve_extract(int option) {
     run_.objectives_done++;
     run_.has_ghostkey = true;
     int haul = world_.objective.reward;
-    if (mod == M_SPIKE) { haul = haul * 3 / 2; add_heat(25); }
-    else if (mod == M_MASK) { haul = haul * 3 / 4; add_heat(4); }
-    else if (mod == M_FORK) { haul = haul; add_heat(12); }
+    if (mod == M_SPIKE) { haul = haul * 3 / 2; add_heat(25); add_corruption(8); }   // loud + dirty
+    else if (mod == M_MASK) { haul = haul * 3 / 4; add_heat(4); }                    // clean quiet pull
+    else if (mod == M_FORK) { haul = haul; add_heat(12); add_corruption(3); }
     run_.shards = (uint16_t)(run_.shards + haul);
     grant_loot(node);
     int old_power = player_power(run_);
@@ -1060,7 +1060,7 @@ void Sim::resolve_extract(int option) {
     push_event(T_BIG_SCORE, run_.pos, I_COUNT, NONE8, (int8_t)run_.heat);
     push_event(T_REVENGE, run_.pos, I_COUNT, NONE8, 0);
     logline(std::string("burned the core of ") + node_label(world_, run_.pos) + " — " + std::to_string(haul) +
-            " shards" + (mod == M_SPIKE ? " (LOUD: heat +25)" : mod == M_FORK ? " (heat +12)" : " (quiet: heat +4)") + ".");
+            " shards" + (mod == M_SPIKE ? " (LOUD: heat +25, corr +8)" : mod == M_FORK ? " (heat +12, corr +3)" : " (quiet: heat +4)") + ".");
     logline(std::string("** DECK UPGRADE ** tier T") + std::to_string((int)run_.tier) + ", " + module_name(mod) +
             " -> L" + std::to_string((int)run_.mod_level[mod]) + ", buffer max " + std::to_string((int)run_.buffer_max) +
             ". power " + std::to_string(old_power) + " -> " + std::to_string(player_power(run_)) + ".");

@@ -319,7 +319,7 @@ private:
         // exits + legend
         int exr = play_top + AH;
         draw_exits(c, exr);
-        c.text(exr + 1, 1, ui::fit("@you .grid >jack-deeper + port $data &clinic  ICE:B/T/W/S/Y", c.width() - 2), ui::Gray, ui::Black);
+        c.text(exr + 1, 1, ui::fit("@you .grid >jack-deeper + port $data &cache  ICE:B/T/W/S/Y", c.width() - 2), ui::Gray, ui::Black);
         // siege bar (auto-combat) then the log, down to the status line
         int logtop = exr + 2;
         if (r.in_fight) {

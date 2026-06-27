@@ -80,7 +80,7 @@
     <div id="ribbon"></div>
     <div id="map"></div>
     <div id="exits"></div>
-    <div id="legend">@ you · . grid · &#62; jack deeper · + access port · $ data · letters = ICE · ◎ sanctuary</div>
+    <div id="legend">@ you · . grid · &#62; jack deeper · + access port · $ data · letters = ICE · ◎ cold cache</div>
     <div id="fightline"></div>
     <div id="log"></div>
     <button id="btn-jackout" class="hidden">JACK OUT &amp; BANK</button>
@@ -201,7 +201,7 @@ function endRun(){
 // Instead you watch one room at a time; @ walks across it toward the exit, the room
 // wipes when you cross into the next, and exits are labelled so you can route around
 // danger. node fields: [x,y,type,vis,named,name_pre,sec,loot,guardice,guarddone]
-const TYPE_NAME  = ["corp vault","gang server","public grid","abandoned node","AI sanctuary"];
+const TYPE_NAME  = ["corp vault","gang server","public grid","abandoned node","cold cache"];
 const ICE_GLYPH  = ["B","T","W","S","w","Y"];
 const ICE_SHORT  = ["BLACK","TRACE","WARDEN","SWARM","WATCH","SYSOP"];
 const NODE_PREFIX = ["GRID","NODE","VAULT","RELAY","GHOST","CACHE","SPIRE","SUMP","HOLLOW","EXCHANGE"];
@@ -218,7 +218,7 @@ function exitInfo(i){
   const n = S.nodes[i]; if (!n) return null;
   let kind="quiet", cls="";
   if (n[4]===1)        { kind="DANGER "+(n[8]>=0?ICE_SHORT[n[8]]:"ICE"); cls="danger"; }
-  else if (n[2]===4)   { kind="recovery sanctuary"; cls="rec"; }
+  else if (n[2]===4)   { kind="recovery cache"; cls="rec"; }
   else if (n[7]===1)   { kind="loot"; cls="loot"; }
   else if (n[8]>=0 && n[9]===0) kind = ICE_SHORT[n[8]];
   return { label:nodeLabel(i), sec:n[6], kind, cls };
