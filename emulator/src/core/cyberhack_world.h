@@ -176,6 +176,8 @@ struct Decision {
     uint8_t node = 0;
     uint8_t ice = I_COUNT;
     uint8_t named = NONE8;
+    uint8_t persona = PR_COUNT;   // parley only: who's behind the ICE
+    uint8_t disposition = 0;      // parley only: 0..100 openness
     std::string prompt;
     std::vector<std::string> options;  // 2..4 labels
     std::vector<uint8_t>     opt_module;// module each option uses, or M_COUNT
@@ -234,6 +236,9 @@ public:
     // Player pulls the plug: bank the haul and end the run (only out of combat).
     // The descent otherwise continues deeper until the player jacks out or dies.
     void jack_out();
+    // UI hook: the avatar physically reached the data cache in the room view —
+    // bank the current node's loot now (idempotent; only if its guard is clear).
+    void collect_current_node();
     bool needs_decision() const { return pending_; }
     const Decision& decision() const { return dec_; }
     void choose(int option_index);           // resolve the pending decision
@@ -292,6 +297,7 @@ private:
     void hurt(int d, uint8_t cause);
     void heal(int d);
     void grant_loot(Node&);
+    void apply_tier_growth();    // a level-up raises ALL vital maxima, not just power
     uint8_t committed_branch_ = NONE8;        // chosen next hop awaiting the move
     bool auto_combat_ = true;                  // deck auto-fights named ICE (watch, don't tap)
     bool survival_warned_ = false;            // suppress repeat survival spikes
@@ -312,6 +318,7 @@ int ai_decide(uint8_t personality, const RunState&, const Decision&, Rng&);
 
 // content-table accessors (also used by the linter + the app)
 const char* faction_name(uint8_t);
+const char* faction_short(uint8_t);                   // "Kurogane" etc. (for the carry-over readout)
 const char* node_type_name(uint8_t);
 const char* ice_name(uint8_t);
 const char* module_name(uint8_t);

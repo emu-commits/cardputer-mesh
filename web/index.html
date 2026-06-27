@@ -80,7 +80,7 @@
     <div id="ribbon"></div>
     <div id="map"></div>
     <div id="exits"></div>
-    <div id="legend">@ you · . grid · &#62; jack deeper · + access port · $ data · letters = ICE · ◎ cache</div>
+    <div id="legend">@ you · . grid · &#62; jack deeper · + access port · $ data · letters = ICE · ◎ sanctuary</div>
     <div id="fightline"></div>
     <div id="log"></div>
     <button id="btn-jackout" class="hidden">JACK OUT &amp; BANK</button>
@@ -121,6 +121,8 @@ CyberHackModule().then(m => {
     advance: m.cwrap("ch_advance","number",[]),
     choose: m.cwrap("ch_choose",null,["number"]),
     jack_out: m.cwrap("ch_jack_out",null,[]),
+    collect: m.cwrap("ch_collect",null,[]),
+    legendsInfo: m.cwrap("ch_legends_info","string",["string"]),
     running: m.cwrap("ch_running","number",[]),
     state: m.cwrap("ch_state","string",[]),
     chronicle: m.cwrap("ch_chronicle","string",[]),
@@ -139,8 +141,17 @@ function bootMenu(){
     grid.appendChild(b);
   });
   const leg = localStorage.getItem(LS_LEG) || "";
-  const mm = leg.match(/runs,(\d+)[\s\S]*?best,(\d+)/);
-  qs("memline").textContent = mm ? `net memory: ${mm[1]} runs, best ${mm[2]}` : "a fresh net. nobody knows your deck yet.";
+  let info = null; try { info = JSON.parse(CH.legendsInfo(leg)); } catch (e) {}
+  if (!info || !info.runs) {
+    qs("memline").innerHTML = "a fresh net. nobody knows your deck yet.";
+  } else {
+    let h = `net memory: <b>${info.runs}</b> runs · best <b>${info.best}</b>`;
+    if (info.factions.length) h += `<br>standing: ` +
+      info.factions.map(f => `${esc(f.name)} <b style="color:${f.g>0?'#ff6b6b':'#7bffd9'}">${f.g>0?'+':''}${f.g}</b>`).join(" · ");
+    if (info.allies.length) h += `<br><span style="color:#7bffd9">allies: ${esc(info.allies.join(", "))}</span>`;
+    if (info.fallen.length) h += `<br><span style="color:#ff6b6b">burned: ${esc(info.fallen.join(", "))}</span>`;
+    qs("memline").innerHTML = h;
+  }
 }
 
 function seeds(){
@@ -190,7 +201,7 @@ function endRun(){
 // Instead you watch one room at a time; @ walks across it toward the exit, the room
 // wipes when you cross into the next, and exits are labelled so you can route around
 // danger. node fields: [x,y,type,vis,named,name_pre,sec,loot,guardice,guarddone]
-const TYPE_NAME  = ["corp vault","gang server","public grid","abandoned node","AI shrine"];
+const TYPE_NAME  = ["corp vault","gang server","public grid","abandoned node","AI sanctuary"];
 const ICE_GLYPH  = ["B","T","W","S","w","Y"];
 const ICE_SHORT  = ["BLACK","TRACE","WARDEN","SWARM","WATCH","SYSOP"];
 const NODE_PREFIX = ["GRID","NODE","VAULT","RELAY","GHOST","CACHE","SPIRE","SUMP","HOLLOW","EXCHANGE"];
@@ -200,14 +211,14 @@ function statusHTML(r){
   const lo = r.int*100/r.intmax < 30, hot = r.heat>=48;
   return `Intg <b class="${lo?'lo':''}">${r.int}/${r.intmax}</b> · Buf <b>${r.buf}/${r.bufmax}</b> · ` +
          `Heat <b class="${hot?'hot':''}">${r.heat}</b> · Cor <b>${r.cor}%</b> · T<b>${r.tier}</b> · ` +
-         `<b>L${r.depth+1}</b> · obj <b>${r.objs}</b> · $<b>${r.sh}</b>`;
+         `<b>L${r.depth+1}</b> · obj <b>${r.objs}</b> · $<b>${r.shards}</b>`;
 }
 function nodeLabel(i){ const n=S.nodes[i]; return n ? NODE_PREFIX[n[5] % NODE_PREFIX.length]+"-"+(i+1) : "?"; }
 function exitInfo(i){
   const n = S.nodes[i]; if (!n) return null;
   let kind="quiet", cls="";
   if (n[4]===1)        { kind="DANGER "+(n[8]>=0?ICE_SHORT[n[8]]:"ICE"); cls="danger"; }
-  else if (n[2]===4)   { kind="recovery shrine"; cls="rec"; }
+  else if (n[2]===4)   { kind="recovery sanctuary"; cls="rec"; }
   else if (n[7]===1)   { kind="loot"; cls="loot"; }
   else if (n[8]>=0 && n[9]===0) kind = ICE_SHORT[n[8]];
   return { label:nodeLabel(i), sec:n[6], kind, cls };
@@ -270,12 +281,16 @@ function drawRoom(){
   g[oy+dw][ox]={c:"+",k:"door"}; g[oy+de][ox+rw-1]={c:"+",k:"door"};
   motes.forEach(([mx,my])=> g[oy+my][ox+mx]={c:":",k:"mote"});
   if(S.nexthop>=0) g[oy+stairs[1]][ox+stairs[0]]={c:">",k:"doorhot"};
-  if(loot)   g[oy+loot[1]][ox+loot[0]]={c:"$",k:"loot"};
+  if(loot && !room.lootTaken) g[oy+loot[1]][ox+loot[0]]={c:"$",k:"loot"};
   if(shrine) g[oy+shrine[1]][ox+shrine[0]]={c:"◎",k:"shrine"};
   if(ice)    g[oy+ice[1]][ox+ice[0]]={c:ICE_GLYPH[here[8]]||"#",k:here[4]===1?"named":"hot"};
   let idx = r.fight ? path.length-1 : Math.min(path.length-1, Math.floor(Math.min(1,(performance.now()-room.t0)/1300)*(path.length-1)));
   if(idx<0)idx=0;
   const [px,py]=path[idx]; g[oy+py][ox+px]={c:"@",k:"me"}; room.atCell=[px,py];
+  // @ walked onto the cache (and the guard's down): bank it now — shards tick + $ clears
+  if(loot && !room.lootTaken && px===loot[0] && py===loot[1] && (here[8]<0 || here[9]===1)){
+    CH.collect(); room.lootTaken=true; S=JSON.parse(CH.state()); qs("status").innerHTML=statusHTML(S.r);
+  }
   qs("map").innerHTML=g.map(row=>row.map(c=>c.k?`<span class="${c.k}">${c.c}</span>`:c.c).join("")).join("\n");
 }
 function drawExits(){
@@ -307,7 +322,7 @@ function render(){
   if (room.sig !== sig){
     const start = (room.pos===r.pos && room.atCell) ? room.atCell.slice() : null;
     if (room.pos !== r.pos){ const mp=qs("map"); mp.classList.add("wipe"); setTimeout(()=>mp.classList.remove("wipe"),130); }
-    room.pos = r.pos; room.sig = sig; room.t0 = performance.now(); room.built = buildRoom(start);
+    room.pos = r.pos; room.sig = sig; room.t0 = performance.now(); room.lootTaken = false; room.built = buildRoom(start);
   }
   drawRoom(); drawExits();
   // fight line (auto-combat siege, shown without covering anything)

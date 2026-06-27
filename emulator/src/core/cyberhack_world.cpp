@@ -16,7 +16,7 @@ static const char* FACTION_SHORT[F_COUNT] = {
     "Kurogane", "the Vultures", "Null Sigil", "Greywall", "the Switchboard"
 };
 static const char* NODE_TYPE_NAME[N_TYPECOUNT] = {
-    "corp vault", "gang server", "public grid", "abandoned node", "AI shrine"
+    "corp vault", "gang server", "public grid", "abandoned node", "AI sanctuary"
 };
 static const char* ICE_NAME[I_COUNT] = {
     "Black ICE", "Trace Daemon", "Data Warden", "Entropy Swarm", "Watchdog", "Sysop"
@@ -41,7 +41,7 @@ static const uint8_t ICE_WEAK[I_COUNT]   = { M_FORK, M_MASK, M_SPIKE, M_FORK, M_
 static const uint8_t ICE_PUNISH[I_COUNT] = { M_SPIKE, M_COUNT, M_COUNT, M_COUNT, M_COUNT, M_SPIKE };
 
 const char* faction_name(uint8_t f) { return f < F_COUNT ? FACTION_NAME[f] : "freelancers"; }
-static const char* faction_short(uint8_t f) { return f < F_COUNT ? FACTION_SHORT[f] : "nobody"; }
+const char* faction_short(uint8_t f) { return f < F_COUNT ? FACTION_SHORT[f] : "nobody"; }
 const char* node_type_name(uint8_t t) { return t < N_TYPECOUNT ? NODE_TYPE_NAME[t] : "node"; }
 const char* ice_name(uint8_t i) { return i < I_COUNT ? ICE_NAME[i] : "ICE"; }
 const char* module_name(uint8_t m) { return m < M_COUNT ? MODULE_NAME[m] : "?"; }
@@ -384,7 +384,28 @@ void Sim::heal(int d) { run_.integrity = (int16_t)std::min((int)run_.integrity_m
 void Sim::grant_loot(Node& n) {
     if ((n.flags & NF_LOOTED) || n.shards <= 0) return;
     run_.shards = (uint16_t)(run_.shards + n.shards);
+    logline(std::string("+") + std::to_string((int)n.shards) + " data shards (total " + std::to_string((int)run_.shards) + ").");
     n.flags |= NF_LOOTED;
+}
+
+// The avatar walked onto the cache in the room view: bank this node's loot now,
+// but only once its ICE is down (you don't pocket the data past a live guard).
+void Sim::collect_current_node() {
+    Node& here = world_.nodes[run_.pos];
+    if ((here.flags & NF_GUARD_DONE) || here.guard_ice >= I_COUNT) grant_loot(here);
+}
+
+// A level-up grows the whole deck, not just its bite: every Tier raises max
+// integrity and buffer (and, every other tier, shielding), and tops them up so
+// the gain is felt immediately. Power growth (Tier/modules) is handled by callers.
+void Sim::apply_tier_growth() {
+    run_.integrity_max = (int16_t)std::min(255, run_.integrity_max + 6);
+    heal(6);
+    run_.buffer_max = (int16_t)std::min(120, run_.buffer_max + 3);
+    run_.buffer = (int16_t)std::min((int)run_.buffer_max, run_.buffer + 3);
+    if (run_.tier % 2 == 0 && run_.shield < 9) run_.shield++;
+    logline(std::string("** GROWTH ** max integrity ") + std::to_string((int)run_.integrity_max) +
+            ", max buffer " + std::to_string((int)run_.buffer_max) + ", shield " + std::to_string((int)run_.shield) + ".");
 }
 
 // ---- lifecycle -------------------------------------------------------------
@@ -394,6 +415,7 @@ void Sim::start(uint32_t citynet_seed, uint32_t run_seed, uint8_t personality, c
     world_.run_seed = run_seed;
     run_ = RunState{};
     run_.personality = personality;
+    run_.shards = 40;   // a little credit on the deck — bribe/appease are live from node 1
     rng_.seed(((uint64_t)citynet_seed << 21) ^ run_seed ^ 0xC0FFEEuLL);
     log_.clear();
     ev_head_ = ev_count_ = 0;
@@ -521,20 +543,20 @@ void Sim::advance_hunter() {
 
 void Sim::accrue_and_move() {
     Node& here = world_.nodes[run_.pos];
-    bool shrine_fresh = (here.type == N_SHRINE) && !(here.flags & NF_LOOTED);
-    grant_loot(here);                                          // sets NF_LOOTED — read shrine_fresh first
+    bool clinic_fresh = (here.type == N_SHRINE) && !(here.flags & NF_LOOTED);
+    grant_loot(here);                                          // sets NF_LOOTED — read clinic_fresh first
 
-    // --- recovery happens every tick of the crawl. An AI shrine is a full
-    // fabricator bay (the payoff for routing toward recovery); quiet dark grids
+    // --- recovery happens every tick of the crawl. A black clinic is a full
+    // rebuild bay (the payoff for routing toward recovery); quiet dark grids
     // let the deck trickle back; surveilled corp turf notices you and heats up. ---
-    if (shrine_fresh) {
+    if (clinic_fresh) {
         int hp = run_.integrity_max / 3;
         heal(hp); add_heat(-12);
         if (run_.corruption > 0) add_corruption(-8);
         run_.buffer = run_.buffer_max;
-        here.flags |= NF_LOOTED;                                // a shrine gives once
-        logline(std::string("AI shrine at ") + node_label(world_, run_.pos) +
-                " — the fabricator rebuilt you. integrity " + std::to_string((int)run_.integrity) +
+        here.flags |= NF_LOOTED;                                // a sanctuary gives once
+        logline(std::string("AI sanctuary at ") + node_label(world_, run_.pos) +
+                " — a free AI rebuilt your deck. integrity " + std::to_string((int)run_.integrity) +
                 "/" + std::to_string((int)run_.integrity_max) + ", heat -12, corruption -8, buffer full.");
     } else {
         if (here.security <= 2) {                               // the deep dark cools and mends
@@ -740,6 +762,7 @@ void Sim::finish_fight(bool won, bool escaped) {
         run_.named_killed++;
         int old_power = player_power(run_);
         run_.tier = (uint8_t)std::min(9, run_.tier + 1);
+        apply_tier_growth();
         bool boss = world_.named[named].tier >= 7;
         world_.named[named].status = boss ? NS_CRIPPLED : NS_DEAD;
         if (node.faction < F_COUNT) world_.factions[node.faction].grudge += 2;
@@ -790,7 +813,7 @@ void Sim::open_branch() {
         std::string tag;
         if (nn.guard_named != NONE8 && !(nn.flags & NF_GUARD_DONE))
             tag = std::string("DANGER ") + named_name(world_.named[nn.guard_named].name_id);
-        else if (nn.type == N_SHRINE) tag = "RECOVERY shrine";
+        else if (nn.type == N_SHRINE) tag = "RECOVERY sanctuary";
         else if (nn.shards > 0 && !(nn.flags & NF_LOOTED)) tag = "loot";
         else tag = "quiet";
         char b[64];
@@ -813,6 +836,7 @@ void Sim::open_parley() {
     pending_ = true;
     dec_ = Decision{};
     dec_.kind = DK_PARLEY; dec_.node = run_.pos; dec_.named = here.guard_named; dec_.ice = m.archetype;
+    dec_.persona = m.persona; dec_.disposition = m.disposition;
     // a persona-flavored opening line, deterministic by who's behind the ICE
     const char* line;
     switch (m.persona) {
@@ -909,25 +933,39 @@ void Sim::resolve_parley(int option) {
             }
             break;
         }
-        case 3: {  // APPEASE — small tribute, de-escalate, build toward an ally
+        case 3: {  // APPEASE — a small tribute to de-escalate. Spurned by those who
+                   // want hard coin (daemons) or simply don't like you (low
+                   // disposition / high grudge): a gesture, not a transaction.
             if (run_.shards < parley_tribute_) {
                 logline(std::string("[APPEASE] nothing to offer ") + nm + ".");
                 to_fight();
-            } else {
-                run_.shards = (uint16_t)(run_.shards - parley_tribute_);
-                add_heat(-4);
-                m.grudge = (int8_t)std::max(-9, m.grudge - 3); faction_grudge(-2);
-                m.disposition = (uint8_t)std::min(100, (int)m.disposition + 15);
-                logline(std::string("[APPEASE] tribute paid — ") + nm + " softens; faction grudge eased.");
-                if (m.grudge <= -3) {
-                    m.status = NS_ALLIED;
-                    push_event(T_ALLY, parley_node_, m.archetype, parley_named_, 0);
-                    logline(std::string(nm) + " counts you a friend now.");
-                } else {
-                    push_event(T_PARLEY, parley_node_, m.archetype, parley_named_, 0);
-                }
-                bypass(false);
+                break;
             }
+            int chance = m.disposition - m.grudge * 6;
+            chance += (m.persona == PR_AI) ? 10 : (m.persona == PR_CONSTRUCT) ? 5
+                    : (m.persona == PR_DAEMON) ? -40 : -25;   // daemons want coin; sysops don't deal
+            chance = std::max(5, std::min(90, chance));
+            if (!rng_.chance(chance)) {                        // tribute spurned — you keep your shards
+                m.grudge = (int8_t)std::min(9, m.grudge + 1);
+                logline(std::string("[APPEASE] ") + nm +
+                        (m.persona == PR_DAEMON ? " spurns the tribute — it wanted hard coin, not trinkets."
+                                                : " spurns the tribute — the gesture means nothing to it."));
+                to_fight();
+                break;
+            }
+            run_.shards = (uint16_t)(run_.shards - parley_tribute_);
+            add_heat(-4);
+            m.grudge = (int8_t)std::max(-9, m.grudge - 3); faction_grudge(-2);
+            m.disposition = (uint8_t)std::min(100, (int)m.disposition + 15);
+            logline(std::string("[APPEASE] tribute paid — ") + nm + " softens; faction grudge eased.");
+            if (m.grudge <= -3) {
+                m.status = NS_ALLIED;
+                push_event(T_ALLY, parley_node_, m.archetype, parley_named_, 0);
+                logline(std::string(nm) + " counts you a friend now.");
+            } else {
+                push_event(T_PARLEY, parley_node_, m.archetype, parley_named_, 0);
+            }
+            bypass(false);
             break;
         }
         default:   // FIGHT
@@ -1017,7 +1055,7 @@ void Sim::resolve_extract(int option) {
     int old_power = player_power(run_);
     run_.tier = (uint8_t)std::min(9, run_.tier + 1);
     run_.mod_level[mod] = (uint8_t)std::min(9, run_.mod_level[mod] + 1);
-    run_.buffer_max = (int16_t)(run_.buffer_max + 4);
+    apply_tier_growth();
     if (node.faction < F_COUNT) world_.factions[node.faction].grudge += 3;
     push_event(T_BIG_SCORE, run_.pos, I_COUNT, NONE8, (int8_t)run_.heat);
     push_event(T_REVENGE, run_.pos, I_COUNT, NONE8, 0);
@@ -1393,18 +1431,27 @@ int ai_decide(uint8_t pers, const RunState& r, const Decision& d, Rng& rng) {
         }
         case DK_PARLEY: {
             // options: 0 Parley, 1 Bribe, 2 Threaten, 3 Appease, 4 Fight.
-            // each directive negotiates in character; combat is still the default
-            // when diplomacy doesn't fit, so progression (tier from kills) holds.
+            // Negotiate the way that actually works on THIS mind: appease/parley
+            // the relational ones (AI, construct), bribe the coin-hungry daemons,
+            // fight the sysops who won't deal. Combat stays the fallback so
+            // progression (tier from kills) still holds.
+            uint8_t p = d.persona;
+            bool relational = (p == PR_AI || p == PR_CONSTRUCT);
+            bool talkable   = relational && d.disposition >= 45;
+            bool can_pay    = r.shards >= 50;
             int lowint = r.integrity_max ? r.integrity * 100 / r.integrity_max : 0;
-            if (lowint < 30) {                                  // hurt: avoid the fight if you can
-                if (pers == P_OPPORTUNIST && r.shards >= 40) return 1;   // buy your way out
-                if (pers == P_LOYALIST || pers == P_CAUTIOUS) return r.shards >= 20 ? 3 : 0;
-                return 2;                                       // reckless leans on it
+            if (lowint < 30) {                                  // hurt: take any door out of the fight
+                if (talkable) return 0;                         // talk past it
+                if (p == PR_DAEMON && can_pay) return 1;        // buy past it
+                return p == PR_SYSOP ? 4 : 2;                   // sysops don't deal; else lean on it
             }
-            if (pers == P_RECKLESS)    return 4;                // break it
-            if (pers == P_OPPORTUNIST) return r.shards >= 60 ? 1 : 4;
-            if (pers == P_LOYALIST)    return r.shards >= 20 ? 3 : 0;
-            return 0;                                           // cautious: try to talk first
+            switch (pers) {
+                case P_RECKLESS:    return 4;                                   // break it
+                case P_OPPORTUNIST: return p == PR_DAEMON && can_pay ? 1 : talkable ? 0 : 4;
+                case P_LOYALIST:    return relational ? 3                        // appease to build allies (engine fights if broke)
+                                         : p == PR_DAEMON && can_pay ? 1 : 4;
+                default:            return talkable ? 0 : (p == PR_DAEMON && can_pay ? 1 : 4); // cautious
+            }
         }
         case DK_SURVIVAL: {
             int patch = find_module_option(d, M_PATCH);

@@ -30,11 +30,11 @@ static std::string state_json() {
     std::snprintf(b, sizeof b,
         "{\"r\":{\"int\":%d,\"intmax\":%d,\"buf\":%d,\"bufmax\":%d,\"heat\":%d,\"cor\":%d,"
         "\"tier\":%d,\"sh\":%d,\"pos\":%d,\"out\":%d,\"dc\":%d,\"fight\":%d,\"ihp\":%d,\"ihpmax\":%d,"
-        "\"objdone\":%d,\"hunt\":%d,\"hpos\":%d,\"score\":%d,\"depth\":%d,\"objs\":%d},",
+        "\"objdone\":%d,\"hunt\":%d,\"hpos\":%d,\"score\":%d,\"depth\":%d,\"objs\":%d,\"shards\":%d},",
         r.integrity, r.integrity_max, r.buffer, r.buffer_max, r.heat, r.corruption,
         r.tier, r.shield, r.pos, r.outcome, r.death_cause, r.in_fight ? 1 : 0, r.ice_hp, r.ice_hp_max,
         r.objective_done ? 1 : 0, r.hunt_active ? 1 : 0, r.hunt_active ? r.hunter_pos : -1, g_sim.score(),
-        r.depth, r.objectives_done);
+        r.depth, r.objectives_done, (int)r.shards);
     o += b;
     int nexthop = g_sim.next_hop_to_objective();
     std::snprintf(b, sizeof b, "\"obj\":%d,\"entry\":%d,\"nc\":%d,\"nexthop\":%d,", w.objective.target, w.entry, w.node_count, nexthop);
@@ -95,6 +95,33 @@ EMSCRIPTEN_KEEPALIVE void ch_start(unsigned cnet, unsigned seed, int pers, const
 EMSCRIPTEN_KEEPALIVE int  ch_advance() { return (int)g_sim.advance(); }
 EMSCRIPTEN_KEEPALIVE void ch_choose(int i) { g_sim.choose(i); }
 EMSCRIPTEN_KEEPALIVE void ch_jack_out() { g_sim.jack_out(); }   // player pulls the plug
+EMSCRIPTEN_KEEPALIVE void ch_collect() { g_sim.collect_current_node(); }  // @ reached the cache
+
+// carry-over readout for the new-run screen: what the net remembers across runs.
+EMSCRIPTEN_KEEPALIVE const char* ch_legends_info(const char* leg) {
+    Legends L{};
+    if (leg && *leg) legends_deserialize(std::string(leg), L);
+    std::string o = "{"; char b[128];
+    std::snprintf(b, sizeof b, "\"runs\":%u,\"best\":%u,", (unsigned)L.run_count, (unsigned)L.best_score); o += b;
+    o += "\"factions\":[";
+    bool first = true;
+    for (int f = 0; f < F_COUNT; ++f) if (L.grudge[f]) {
+        std::snprintf(b, sizeof b, "%s{\"name\":\"%s\",\"g\":%d}", first ? "" : ",", faction_short((uint8_t)f), (int)L.grudge[f]);
+        o += b; first = false;
+    }
+    o += "],\"allies\":[";
+    first = true;
+    for (int i = 0; i < L.named_count; ++i) if (L.named[i].status == NS_ALLIED) {
+        std::snprintf(b, sizeof b, "%s\"%s\"", first ? "" : ",", named_name(L.named[i].name_id)); o += b; first = false;
+    }
+    o += "],\"fallen\":[";
+    first = true;
+    for (int i = 0; i < L.named_count; ++i) if (L.named[i].status != NS_ALLIED) {
+        std::snprintf(b, sizeof b, "%s\"%s\"", first ? "" : ",", named_name(L.named[i].name_id)); o += b; first = false;
+    }
+    o += "]}";
+    g_buf = o; return g_buf.c_str();
+}
 EMSCRIPTEN_KEEPALIVE int  ch_running() { return g_sim.running() ? 1 : 0; }
 EMSCRIPTEN_KEEPALIVE const char* ch_state() { g_buf = state_json(); return g_buf.c_str(); }
 EMSCRIPTEN_KEEPALIVE const char* ch_chronicle() { g_buf = g_sim.chronicle(); return g_buf.c_str(); }

@@ -96,9 +96,27 @@ private:
         int dr = top + 2 + cy::P_COUNT + 1;
         for (auto& ln : ui::wrap_text(pers_desc(sel_), c.width() - 4))
             { if (dr > ui::body_bottom(c)) break; c.text(dr++, 2, ln, ui::BrightCyan, ui::Black); }
-        if (legends_.run_count)
-            { char b[48]; std::snprintf(b, sizeof b, "net memory: %d runs, best %u", legends_.run_count, (unsigned)legends_.best_score);
-              c.text(ui::body_bottom(c), 2, b, ui::Yellow, ui::Black); }
+        // carry-over: the net remembers across runs even though the deck resets.
+        if (legends_.run_count) {
+            int mr = ui::body_bottom(c) - 3; if (mr < dr + 1) mr = dr + 1;
+            char b[64]; std::snprintf(b, sizeof b, "net memory: %d runs, best %u",
+                                      legends_.run_count, (unsigned)legends_.best_score);
+            c.text(mr, 2, ui::fit(b, c.width() - 3), ui::Yellow, ui::Black);
+            std::string fs;
+            for (int f = 0; f < cy::F_COUNT; ++f) if (legends_.grudge[f]) {
+                char t[28]; std::snprintf(t, sizeof t, "%s%+d  ", cy::faction_short((uint8_t)f), (int)legends_.grudge[f]);
+                fs += t;
+            }
+            if (!fs.empty()) c.text(mr + 1, 2, ui::fit(std::string("standing: ") + fs, c.width() - 3), ui::Gray, ui::Black);
+            std::string allies, fallen;
+            for (int i = 0; i < legends_.named_count; ++i) {
+                const char* nm = cy::named_name(legends_.named[i].name_id);
+                if (legends_.named[i].status == cy::NS_ALLIED) { if (!allies.empty()) allies += ", "; allies += nm; }
+                else { if (!fallen.empty()) fallen += ", "; fallen += nm; }
+            }
+            if (!allies.empty()) c.text(mr + 2, 2, ui::fit(std::string("allies: ") + allies, c.width() - 3), ui::BrightCyan, ui::Black);
+            if (!fallen.empty()) c.text(mr + 3, 2, ui::fit(std::string("burned: ") + fallen, c.width() - 3), ui::BrightRed, ui::Black);
+        }
         ui::footer(c, " up/dn profile   enter: jack in   esc: back ");
     }
 
@@ -278,7 +296,8 @@ private:
         for (int i = 0; i < 3; ++i) if (!room_wall_[mote_y_[i]][mote_x_[i]])
             c.put(rtop + mote_y_[i], rleft + mote_x_[i], U':', ui::Green, ui::Black);
         if (nexthop >= 0) c.put(rtop + stairs_y_, rleft + stairs_x_, U'>', ui::BrightCyan, ui::Black, ui::ATTR_BOLD);
-        if (loot_x_ >= 0)   c.put(rtop + loot_y_,   rleft + loot_x_,   U'$', ui::BrightYellow, ui::Black, ui::ATTR_BOLD);
+        if (loot_x_ >= 0 && !(here.flags & cy::NF_LOOTED))
+            c.put(rtop + loot_y_, rleft + loot_x_, U'$', ui::BrightYellow, ui::Black, ui::ATTR_BOLD);
         if (shrine_x_ >= 0) c.put(rtop + shrine_y_, rleft + shrine_x_, U'&', ui::BrightCyan, ui::Black);
         if (ice_x_ >= 0)    c.put(rtop + ice_y_,    rleft + ice_x_, (char32_t)ice_glyph(here.guard_ice),
                                   named ? ui::BrightMagenta : ui::BrightRed, ui::Black, ui::ATTR_BOLD);
@@ -294,11 +313,13 @@ private:
             if (idx > path_len_ - 1) idx = path_len_ - 1;
             at_x_ = path_x_[idx]; at_y_ = path_y_[idx];
             c.put(rtop + at_y_, rleft + at_x_, U'@', ui::BrightWhite, ui::Black, ui::ATTR_BOLD);
+            if (loot_x_ >= 0 && at_x_ == loot_x_ && at_y_ == loot_y_)
+                sim_.collect_current_node();                     // walked onto the cache: bank it
         }
         // exits + legend
         int exr = play_top + AH;
         draw_exits(c, exr);
-        c.text(exr + 1, 1, ui::fit("@you .grid >jack-deeper + port $data &cache  ICE:B/T/W/S/Y", c.width() - 2), ui::Gray, ui::Black);
+        c.text(exr + 1, 1, ui::fit("@you .grid >jack-deeper + port $data &clinic  ICE:B/T/W/S/Y", c.width() - 2), ui::Gray, ui::Black);
         // siege bar (auto-combat) then the log, down to the status line
         int logtop = exr + 2;
         if (r.in_fight) {
@@ -319,7 +340,7 @@ private:
     }
     void render_status(TextCanvas& c) {
         const cy::RunState& r = sim_.state();
-        char b[80];
+        char b[112];
         std::snprintf(b, sizeof b, " Intg %d/%d Buf %d/%d Heat %d Cor %d%% T%d L%d obj%d $%d ",
                       (int)r.integrity, (int)r.integrity_max, (int)r.buffer, (int)r.buffer_max,
                       (int)r.heat, (int)r.corruption, (int)r.tier, (int)r.depth + 1,
