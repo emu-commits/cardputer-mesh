@@ -298,7 +298,9 @@ function drawRoom(){
   // pattern shifts on a ~110ms bucket so it flickers without thrashing.
   const corr=S.r.cor|0;
   if(corr>0){
-    const GC="#%&*?/\\=+~^@$01", dens=Math.min(30,(corr/4)|0), bucket=Math.floor(performance.now()/110);
+    // density + flicker speed both scale with corruption: faint slow shimmer when low,
+    // dense fast strobe when the deck is rotting. period 900ms -> 120ms.
+    const GC="#%&*?/\\=+~^@$01", dens=Math.min(25,(corr/5)|0), period=Math.max(120,900-corr*8), bucket=Math.floor(performance.now()/period);
     for(let y=0;y<AH;y++)for(let x=0;x<AW;x++){
       let h=(bucket*2654435761>>>0)^Math.imul(y,73856093)^Math.imul(x,19349663); h^=h>>>13; h=Math.imul(h,0x5bd1e995)>>>0; h^=h>>>15;
       if((h%100)>=dens) continue;

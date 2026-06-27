@@ -150,8 +150,11 @@ private:
     static void apply_glitch(TextCanvas& c, int r0, int r1, uint32_t now, int corr) {
         if (corr <= 0) return;
         static const char G[] = "#%&*?/\\=+~^@$01";
-        int density = corr / 4; if (density > 30) density = 30;   // cap so it stays readable
-        uint32_t bucket = now / 110;
+        int density = corr / 5; if (density > 25) density = 25;   // fraction of glyphs (calmer)
+        // flicker SPEED also scales with corruption: a slow shimmer when barely
+        // corrupted, a fast strobe when the deck is rotting. period 900ms -> 120ms.
+        int period = 900 - corr * 8; if (period < 120) period = 120;
+        uint32_t bucket = now / (uint32_t)period;
         for (int r = r0; r <= r1 && r < c.height(); ++r)
             for (int x = 0; x < c.width(); ++x) {
                 uint32_t h = bucket * 2654435761u ^ (uint32_t)(r * 73856093) ^ (uint32_t)(x * 19349663);
