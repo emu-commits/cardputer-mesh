@@ -43,11 +43,11 @@ enum Death    : uint8_t { D_NONE, D_ICE, D_CORRUPTION, D_HUNTED, D_TRACE, D_TIME
 enum Tag : uint8_t {
     T_NONE, T_JACKIN, T_FIRST_BLOOD, T_BIG_SCORE, T_CLOSE_CALL, T_REVENGE,
     T_BETRAYAL, T_SACRIFICE, T_HUMILIATION, T_LOCKDOWN, T_BURNED, T_HUNT,
-    T_EXTRACT, T_DEATH, T_PARLEY, T_ALLY, T_EXTORT, T_BRIBE, T_MEMORY, T_TAGCOUNT
+    T_EXTRACT, T_DEATH, T_PARLEY, T_ALLY, T_EXTORT, T_BRIBE, T_MEMORY, T_FLATLINE, T_TAGCOUNT
 };
 
 // decision-spike kinds (new kinds appended to keep the wire numbers stable)
-enum DecisionKind : uint8_t { DK_ENCOUNTER, DK_BRANCH, DK_FACTION, DK_SURVIVAL, DK_EXTRACT, DK_DIVE, DK_PARLEY, DK_MEMORY };
+enum DecisionKind : uint8_t { DK_ENCOUNTER, DK_BRANCH, DK_FACTION, DK_SURVIVAL, DK_EXTRACT, DK_DIVE, DK_PARLEY, DK_MEMORY, DK_FLATLINE };
 
 // NS_ALLIED: an entity you talked down / befriended — it opens gates on later runs
 enum NamedStatus : uint8_t { NS_ALIVE, NS_CRIPPLED, NS_DEAD, NS_ALLIED };
@@ -284,6 +284,8 @@ private:
     void resolve_parley(int option);
     void open_memory();          // a memory construct — dive / extract / stabilize / release
     void resolve_memory(int option);
+    void open_flatline();        // a killing blow mid-siege — jack the cord / burn a module / ride it
+    void resolve_flatline(int option);
     void open_survival();
     void open_extract();
     void open_dive();            // after an objective: jack out, or dive deeper
@@ -311,6 +313,9 @@ private:
     uint8_t parley_node_  = 0;                // node of the current parley
     int     parley_bribe_ = 0;                // bribe cost shown this parley
     int     parley_tribute_ = 0;              // appease tribute shown this parley
+    int16_t flatline_dmg_ = 0;                // held killing blow during a flatline beat
+    uint8_t flatline_cause_ = D_NONE;         // its death cause, applied if you don't survive
+    bool    flatline_used_ = false;           // one do-or-die per fight
 };
 
 // run a whole dive headless under an AI policy; returns the finished Sim.

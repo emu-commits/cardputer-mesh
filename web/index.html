@@ -49,6 +49,8 @@
   #decision.parley h2{color:#7bffd9}
   #decision.memory{border-color:#d77bff}
   #decision.memory h2{color:#d77bff}
+  #decision.flatline{border-color:var(--hot);box-shadow:0 0 14px rgba(255,75,75,.5)}
+  #decision.flatline h2{color:var(--hot)}
   #map .glitch{color:#d77bff}
   #decision h2{margin:0 0 6px;font-size:13px;letter-spacing:2px;color:var(--gold)}
   #decision p{margin:0 0 8px;font-size:14px}
@@ -358,9 +360,9 @@ function render(){
 function openDecision(){
   const d = S.dec; if (!d){ paused=false; return; }
   const el = qs("decision");
-  el.className = d.kind===0 ? "siege" : d.kind===6 ? "parley" : d.kind===7 ? "memory" : "";
+  el.className = d.kind===0 ? "siege" : d.kind===6 ? "parley" : d.kind===7 ? "memory" : d.kind===8 ? "flatline" : "";
   el.classList.remove("hidden");
-  const label = d.kind===5?"DESCENT":d.kind===4?"EXTRACTION":d.kind===3?"SURVIVAL":d.kind===6?"PARLEY":d.kind===7?"MEMORY DIVE":"ROUTE";
+  const label = d.kind===5?"DESCENT":d.kind===4?"EXTRACTION":d.kind===3?"SURVIVAL":d.kind===6?"PARLEY":d.kind===7?"MEMORY DIVE":d.kind===8?"!! FLATLINE !!":"ROUTE";
   let html = `<h2>${label}</h2><p>${esc(d.prompt)}</p>`;
   d.opts.forEach((o,i)=> html += `<button class="opt" data-i="${i}">${i+1}  ${esc(o)}</button>`);
   el.innerHTML = html;
@@ -370,7 +372,9 @@ function chooseOpt(i){
   CH.choose(i); render();
   if (!CH.running()){ qs("decision").classList.add("hidden"); return endRun(); }
   S = JSON.parse(CH.state());
-  if (S.dec){ openDecision(); }
+  // a flatline choice can hand the siege back to auto-combat (pending ENCOUNTER, kind 0);
+  // resume the watch loop in that case rather than popping a combat card.
+  if (S.dec && S.dec.kind !== 0){ openDecision(); }
   else { qs("decision").classList.add("hidden"); paused = false; }
 }
 

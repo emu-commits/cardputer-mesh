@@ -388,7 +388,9 @@ private:
     void choose_and_resume(AppContext& ctx) {
         sim_.choose(sel_); sel_ = 0;
         if (!sim_.running()) { end_run(ctx); return; }
-        if (sim_.needs_decision()) { view_ = CARD; }        // next siege round / next decision
+        // a flatline choice can hand the siege back to auto-combat (pending ENCOUNTER);
+        // that must resume the watch view, never surface as a player card.
+        if (sim_.needs_decision() && sim_.decision().kind != cy::DK_ENCOUNTER) { view_ = CARD; }
         else { view_ = CRAWL; last_step_ = ctx.now_ms; }
     }
     // A decision (route / extraction / survival — combat auto-resolves and never
@@ -399,9 +401,10 @@ private:
         int n = (int)d.options.size();
         const char* title = d.kind == cy::DK_DIVE ? " DESCENT " : d.kind == cy::DK_EXTRACT ? " EXTRACTION "
                           : d.kind == cy::DK_SURVIVAL ? " SURVIVAL " : d.kind == cy::DK_PARLEY ? " PARLEY "
-                          : d.kind == cy::DK_MEMORY ? " MEMORY DIVE " : " ROUTE ";
+                          : d.kind == cy::DK_MEMORY ? " MEMORY DIVE " : d.kind == cy::DK_FLATLINE ? " !! FLATLINE !! " : " ROUTE ";
         uint8_t accent = d.kind == cy::DK_SURVIVAL ? ui::BrightRed : d.kind == cy::DK_DIVE ? ui::BrightGreen
-                       : d.kind == cy::DK_PARLEY ? ui::BrightCyan : d.kind == cy::DK_MEMORY ? ui::BrightMagenta : ui::BrightYellow;
+                       : d.kind == cy::DK_PARLEY ? ui::BrightCyan : d.kind == cy::DK_MEMORY ? ui::BrightMagenta
+                       : d.kind == cy::DK_FLATLINE ? ui::BrightRed : ui::BrightYellow;
         int bottom = c.height() - 3;                       // leave status (h-2) + footer (h-1)
         auto pl = ui::wrap_text(d.prompt, c.width() - 2);
         int pln = (int)pl.size(); if (pln > 2) pln = 2;

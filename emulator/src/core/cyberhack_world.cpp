@@ -583,6 +583,25 @@ void Sim::accrue_and_move() {
     run_.pos = (uint8_t)hop;
     run_.node_clears = 0;                 // fresh node = fresh break-in
     world_.nodes[run_.pos].flags |= NF_VISITED;
+
+    // --- heat draws patrols. The hotter your trail, the more roaming daemons cut
+    // across your route: small auto-swept scuffles that cost a little and, more
+    // importantly, keep interrupting the descent. Running loud should FEEL loud. ---
+    int patrol_chance = ((int)run_.heat - 20) * 3 / 4;       // 0 below heat 20, ramps up
+    if (patrol_chance > 70) patrol_chance = 70;
+    Node& dest = world_.nodes[run_.pos];
+    bool dest_open = (dest.flags & NF_GUARD_DONE) || dest.guard_ice >= I_COUNT;
+    if (patrol_chance > 0 && dest_open && rng_.chance(patrol_chance)) {
+        uint8_t pice = rng_.chance(55) ? I_TRACE : I_WATCHDOG;   // common ICE, nothing named
+        int cost = 2;
+        if (run_.buffer >= cost) run_.buffer = (int16_t)(run_.buffer - cost); else add_corruption(2);
+        hurt(std::max(1, (int)dest.security / 2), D_ICE);
+        add_heat(1);                                          // the scuffle adds a little more noise
+        if (pice == I_TRACE) add_heat(2);
+        run_.ice_killed++;
+        logline(std::string("a roaming ") + ice_name(pice) + " patrol cut your route at " +
+                node_label(world_, run_.pos) + " — swept it, but it cost you.");
+    }
 }
 
 void Sim::check_thresholds() {
@@ -642,6 +661,7 @@ void Sim::begin_fight(uint8_t node, uint8_t ice, uint8_t named, bool hunter) {
     run_.fight_round = 0;
     run_.fork_active = false;
     run_.is_hunter_fight = hunter;
+    flatline_used_ = false;
     int tier = named != NONE8 ? world_.named[named].tier : (int)world_.nodes[node].security;
     run_.ice_hp_max = (int16_t)(12 + tier * 3);
     run_.ice_hp = run_.ice_hp_max;
@@ -727,7 +747,17 @@ void Sim::resolve_round(int option) {
         if (ice == I_SWARM) add_corruption(3);
         if (ice == I_TRACE) add_heat(4);
         uint8_t cause = (run_.is_hunter_fight) ? D_HUNTED : D_ICE;
-        hurt(std::max(1, atk), cause);
+        int dmg = std::max(1, atk);
+        // do-or-die: a hit that would flatline you pauses the siege for one panic
+        // decision (once per fight). The damage is held, not yet applied.
+        if (dmg >= run_.integrity && !flatline_used_) {
+            flatline_used_ = true;
+            flatline_dmg_ = (int16_t)dmg;
+            flatline_cause_ = cause;
+            open_flatline();
+            return;
+        }
+        hurt(dmg, cause);
     }
 
     // --- per-round readout: which module your deck (its directive = personality)
@@ -793,6 +823,73 @@ void Sim::finish_fight(bool won, bool escaped) {
     }
     if (run_.integrity * 100 / run_.integrity_max < 25)
         push_event(T_CLOSE_CALL, run_.fight_node, ice, named, 0);
+}
+
+// ---- flatline: a killing blow, held on the brink, surfaced as a do-or-die -----
+// Combat is otherwise hands-off, but a lethal hit is the run's climax — the one
+// moment we hand the wheel back. Three ways out: jack the cord (live, end the run
+// poorer), burn your best module (live, keep fighting, lasting scar), or ride it
+// (free gamble: scrape through at a thread, or flatline for real).
+void Sim::open_flatline() {
+    pending_ = true;
+    dec_ = Decision{};
+    dec_.kind = DK_FLATLINE; dec_.node = run_.fight_node; dec_.ice = run_.fight_ice; dec_.named = run_.fight_named;
+    std::string who = run_.fight_named != NONE8 ? named_name(world_.named[run_.fight_named].name_id) : ice_name(run_.fight_ice);
+    char b[112];
+    std::snprintf(b, sizeof b, "FLATLINE. %s's hit (%d) will kill you. The deck screams white.", who.c_str(), (int)flatline_dmg_);
+    dec_.prompt = b;
+    int hi = 0; for (int i = 1; i < M_COUNT; ++i) if (run_.mod_level[i] > run_.mod_level[hi]) hi = i;
+    bool can_burn = run_.mod_level[hi] >= 2;
+    dec_.options.clear(); dec_.opt_module.clear();
+    dec_.options.push_back("Jack the cord - live, lose part of the haul"); dec_.opt_module.push_back(M_COUNT);
+    if (can_burn) {
+        char mb[48]; std::snprintf(mb, sizeof mb, "Burn %s - survive, cripple it for the run", module_name(hi));
+        dec_.options.push_back(mb); dec_.opt_module.push_back((uint8_t)hi);
+    }
+    dec_.options.push_back("Ride it - gamble: scrape through, or flatline"); dec_.opt_module.push_back(M_COUNT);
+    logline(dec_.prompt);
+}
+void Sim::resolve_flatline(int option) {
+    uint8_t mod = (option >= 0 && option < (int)dec_.opt_module.size()) ? dec_.opt_module[option] : M_COUNT;
+    uint8_t ice = run_.fight_ice, named = run_.fight_named;
+    auto resume = [&]() {                                   // pick the siege back up
+        if (run_.ice_hp <= 0) finish_fight(true, false);
+        else if (run_.fight_round >= 8) finish_fight(false, true);
+        else open_fight_round();
+    };
+
+    if (mod != M_COUNT) {                                   // BURN A MODULE
+        int old = run_.mod_level[mod];
+        run_.mod_level[mod] = (uint8_t)std::max(1, old / 2);
+        run_.integrity = 1;
+        add_corruption(2);
+        push_event(T_FLATLINE, run_.fight_node, ice, named, 0);
+        logline(std::string("** SACRIFICE ** burned ") + module_name(mod) + " (L" + std::to_string(old) +
+                " -> L" + std::to_string((int)run_.mod_level[mod]) + ") to live. integrity 1.");
+        resume();
+        return;
+    }
+    if (option == 0) {                                      // JACK THE CORD
+        run_.in_fight = false;
+        int lost = run_.shards * 2 / 5;
+        run_.shards = (uint16_t)(run_.shards - lost);
+        push_event(T_SACRIFICE, run_.fight_node, ice, named, 0);
+        logline(std::string("** JACKED THE CORD ** ripped the trodes — alive, but ") +
+                std::to_string(lost) + " shards scrambled in the pull.");
+        jack_out();                                        // banks what's left, ends the run
+        return;
+    }
+    // RIDE IT
+    if (rng_.chance(45)) {
+        run_.integrity = 1;
+        push_event(T_FLATLINE, run_.fight_node, ice, named, 0);
+        logline("** RODE THE FLATLINE ** the deck held by a thread. integrity 1.");
+        resume();
+    } else {
+        logline("** FLATLINE ** the deck went to white noise. you didn't come back.");
+        hurt(flatline_dmg_, flatline_cause_);              // applies death
+        run_.in_fight = false;
+    }
 }
 void Sim::open_branch() {
     const Node& here = world_.nodes[run_.pos];
@@ -1118,6 +1215,7 @@ void Sim::choose(int option_index) {
         case DK_BRANCH:    resolve_branch(option_index); break;
         case DK_PARLEY:    resolve_parley(option_index); break;
         case DK_MEMORY:    resolve_memory(option_index); break;
+        case DK_FLATLINE:  resolve_flatline(option_index); break;
         case DK_SURVIVAL:  resolve_survival(option_index); break;
         case DK_EXTRACT:   resolve_extract(option_index); break;
         case DK_DIVE:      resolve_dive(option_index); break;
@@ -1427,6 +1525,10 @@ const char* B_MEMORY[] = {
     "You went down into {enemy}'s memory and came back carrying something that wasn't yours, {simile}.",
     "A dead mind called {enemy} was still dreaming in {node}; you walked through its dreams and out the other side.",
 };
+const char* B_FLATLINE[] = {
+    "You flatlined under {enemy} in {node} and clawed back out of the white, {simile}.",
+    "The deck died for a second against {enemy}; you came back leaving a piece of it behind.",
+};
 
 std::string subst(const std::string& tmpl, Rng& cr, const std::string& node,
                   const std::string& faction, const std::string& enemy) {
@@ -1477,6 +1579,7 @@ std::string Sim::chronicle() const {
             case T_EXTORT:      pool = B_EXTORT;      pooln = sizeof(B_EXTORT)/sizeof(char*); break;
             case T_BRIBE:       pool = B_BRIBE;       pooln = sizeof(B_BRIBE)/sizeof(char*); break;
             case T_MEMORY:      pool = B_MEMORY;      pooln = sizeof(B_MEMORY)/sizeof(char*); break;
+            case T_FLATLINE:    pool = B_FLATLINE;    pooln = sizeof(B_FLATLINE)/sizeof(char*); break;
             default: continue;
         }
         used[e.tag] = true;
@@ -1568,6 +1671,18 @@ int ai_decide(uint8_t pers, const RunState& r, const Decision& d, Rng& rng) {
                 case P_LOYALIST:    return relational ? 3                        // appease to build allies (engine fights if broke)
                                          : p == PR_DAEMON && can_pay ? 1 : 4;
                 default:            return talkable ? 0 : (p == PR_DAEMON && can_pay ? 1 : 4); // cautious
+            }
+        }
+        case DK_FLATLINE: {
+            // options: 0 jack the cord, [1 burn a module if offered], last ride it.
+            int jack = 0, ride = (int)d.options.size() - 1, burn = -1;
+            for (int i = 0; i < (int)d.opt_module.size(); ++i) if (d.opt_module[i] != M_COUNT) burn = i;
+            switch (pers) {
+                case P_RECKLESS:    return ride;                    // never stops; rides the white
+                case P_OPPORTUNIST: return jack;                   // protect the bag, bail alive
+                case P_CAUTIOUS:    return burn >= 0 ? burn : jack; // pay a module, keep going
+                case P_LOYALIST:    return burn >= 0 ? burn : jack;
+                default:            return jack;
             }
         }
         case DK_MEMORY: {
