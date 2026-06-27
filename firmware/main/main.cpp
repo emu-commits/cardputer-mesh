@@ -202,9 +202,6 @@ extern "C" void app_main(void) {
     ui::TextCanvas bar(device::BuiltinDisplay::COLS, device::BuiltinDisplay::ROWS);
     ui::AnsiRenderer rend;
     uint32_t last_full = 0, last_stats = 0, last_input = now_ms();
-    // Keep the CYD awake during a no-keypress animation (CyberHack's auto-crawl):
-    // the app calls this each step so the idle-sleep timer below never fires mid-dive.
-    ctx.keep_awake = [&last_input] { last_input = now_ms(); };
     bool screen_was_on = false, cyd_asleep = false;
     int applied_cyd_bl = -1, applied_builtin_bl = -1;   // -1 = not yet applied
     float v_prev = 0;
@@ -216,6 +213,16 @@ extern "C" void app_main(void) {
         term.write(std::string(esc, n));
     };
     auto cyd_duty_setting = [&]() { return bl_level_to_duty((int)settings.get_num("system", "brightness")); };
+
+    // Keep the CYD lit during a no-keypress animation (CyberHack's auto-crawl): the
+    // app calls this each frame while auto-running, so the idle-sleep timer below
+    // never fires mid-dive. It also RELIGHTS the panel if it had already slept (e.g.
+    // the run sat on a decision prompt past the idle timeout, then resumed) — resetting
+    // last_input alone wouldn't, since the wake path only triggers on a keypress.
+    ctx.keep_awake = [&] {
+        last_input = now_ms();
+        if (cyd_asleep) { cyd_asleep = false; cyd_backlight(cyd_duty_setting()); last_full = 0; }
+    };
 
     // Battery + heap telemetry -> the status surfaces (System app, status strip).
     // No fuel-gauge IC on this board: percent is the ADC voltage through a LiPo
