@@ -447,7 +447,7 @@ AdvanceResult Sim::advance() {
 
     // 5) branch at a junction (once per node)
     bool already = std::find(branched_.begin(), branched_.end(), run_.pos) != branched_.end();
-    if (!run_.exfil && !already && here.deg >= 3 && rng_.chance(35)) {
+    if (!run_.exfil && !already && here.deg >= 2 && rng_.chance(55)) {
         branched_.push_back(run_.pos);
         open_branch();
         if (pending_) return AR_DECISION;   // only if there were ≥2 real options
@@ -481,13 +481,29 @@ void Sim::advance_hunter() {
 
 void Sim::accrue_and_move() {
     Node& here = world_.nodes[run_.pos];
-    grant_loot(here);
-    if (here.security <= 1) add_heat(-1);                       // only the deep dark cools you off
-    else if (here.faction < F_COUNT && here.security >= 4) add_heat(2); // surveilled turf notices you
-    // Buffer trickles back in quiet zones — but a hot, deep dive never lets you
-    // top off, so the economy stays tight across the run.
-    if (here.security <= 2 && run_.buffer < run_.buffer_max)
-        run_.buffer = (int16_t)std::min((int)run_.buffer_max, run_.buffer + 3);
+    bool shrine_fresh = (here.type == N_SHRINE) && !(here.flags & NF_LOOTED);
+    grant_loot(here);                                          // sets NF_LOOTED — read shrine_fresh first
+
+    // --- recovery happens every tick of the crawl. An AI shrine is a full
+    // fabricator bay (the payoff for routing toward recovery); quiet dark grids
+    // let the deck trickle back; surveilled corp turf notices you and heats up. ---
+    if (shrine_fresh) {
+        int hp = run_.integrity_max / 3;
+        heal(hp); add_heat(-12);
+        if (run_.corruption > 0) add_corruption(-8);
+        run_.buffer = run_.buffer_max;
+        here.flags |= NF_LOOTED;                                // a shrine gives once
+        logline(std::string("AI shrine at ") + node_label(world_, run_.pos) +
+                " — the fabricator rebuilt you. integrity " + std::to_string((int)run_.integrity) +
+                "/" + std::to_string((int)run_.integrity_max) + ", heat -12, corruption -8, buffer full.");
+    } else {
+        if (here.security <= 2) {                               // the deep dark cools and mends
+            add_heat(-1);
+            if (run_.integrity < run_.integrity_max) heal(2);  // a slow knit between fights
+        } else if (here.faction < F_COUNT && here.security >= 4) add_heat(2);
+        if (run_.buffer < run_.buffer_max)                     // buffer always trickles a little
+            run_.buffer = (int16_t)std::min((int)run_.buffer_max, run_.buffer + 2);
+    }
     run_.step++;
 
     // descend toward this layer's objective (no exfil — you jack out by choice).
@@ -562,8 +578,16 @@ void Sim::begin_fight(uint8_t node, uint8_t ice, uint8_t named, bool hunter) {
     run_.ice_hp = run_.ice_hp_max;
     std::string who = named != NONE8 ? std::string(named_name(world_.named[named].name_id)) + " [" + ice_name(ice) + "]"
                                      : std::string(ice_name(ice));
+    // Boss ICE gets a loud announcement tick so you know it's a real wall.
+    bool boss = (named != NONE8) && (tier >= 6 || (world_.nodes[node].flags & NF_OBJECTIVE));
+    if (boss)
+        logline(std::string("!! BOSS ICE !! ") + named_name(world_.named[named].name_id) + " [" +
+                ice_name(ice) + "] tier " + std::to_string(tier) + " — a wall. brace the deck.");
     logline(hunter ? who + " has run you down at " + node_label(world_, node) + "."
                    : who + " stands in the way at " + node_label(world_, node) + ".");
+    // intel: spell out the counter so the fight is legible, not a black box
+    logline(std::string("  intel: weak to ") + module_name(ice_weakness(ice)) +
+            (ice_punish(ice) != M_COUNT ? std::string("; punishes ") + module_name(ice_punish(ice)) : std::string("")) + ".");
     open_fight_round();
 }
 void Sim::open_fight_round() {
@@ -637,6 +661,20 @@ void Sim::resolve_round(int option) {
         hurt(std::max(1, atk), cause);
     }
 
+    // --- per-round readout: which module your deck (its directive = personality)
+    // committed, whether it was the counter, what it cost — so the auto-fight is
+    // legible and you can see the personality acting round to round. ---
+    if (mod == M_SPIKE || mod == M_MASK || mod == M_FORK) {
+        static const char* PN[] = { "Reckless", "Cautious", "Opportunist", "Loyalist" };
+        char lb[120];
+        std::snprintf(lb, sizeof lb, "[%s] %s%s%s — %d break, ICE %d/%d",
+                      PN[run_.personality % 4], module_name(mod),
+                      (mod == ice_weakness(ice) ? " COUNTER" : ""),
+                      (overclock ? " (overclock!)" : (mod == M_SPIKE ? " heat+3" : mod == M_MASK ? " heat-6" : "")),
+                      brk, (int)(run_.ice_hp < 0 ? 0 : run_.ice_hp), (int)run_.ice_hp_max);
+        logline(lb);
+    }
+
     // --- resolve fight end ---
     if (run_.outcome != O_RUNNING) { run_.in_fight = false; return; }   // died mid-fight
     if (run_.ice_hp <= 0) { finish_fight(true, false); return; }
@@ -660,12 +698,15 @@ void Sim::finish_fight(bool won, bool escaped) {
     run_.node_clears++;
     if (named != NONE8) {
         run_.named_killed++;
+        int old_power = player_power(run_);
         run_.tier = (uint8_t)std::min(9, run_.tier + 1);
         bool boss = world_.named[named].tier >= 7;
         world_.named[named].status = boss ? NS_CRIPPLED : NS_DEAD;
         if (node.faction < F_COUNT) world_.factions[node.faction].grudge += 2;
         push_event(boss ? T_HUMILIATION : T_FIRST_BLOOD, run_.fight_node, ice, named, (int8_t)run_.heat);
         logline(std::string(boss ? "crippled " : "burned ") + named_name(world_.named[named].name_id) + ", left it as static.");
+        logline(std::string("** TIER UP -> T") + std::to_string((int)run_.tier) + " ** power " +
+                std::to_string(old_power) + " -> " + std::to_string(player_power(run_)) + ".");
         if (run_.hunt_active && named == run_.hunter_named) { run_.hunt_active = false; run_.hunter_named = NONE8; run_.next_hunt_step = (uint16_t)(run_.step + 12); }
     } else {
         push_event(T_FIRST_BLOOD, run_.fight_node, ice, NONE8, 0);
@@ -703,9 +744,17 @@ void Sim::open_branch() {
     dec_.prompt = std::string("Fork in the route at ") + node_label(world_, run_.pos) + ".";
     branch_opts_ = opts;
     for (uint8_t nb : opts) {
-        char b[48];
-        std::snprintf(b, sizeof b, "Route via %s (risk %d, %s)", node_label(world_, nb).c_str(),
-                      (int)world_.nodes[nb].security, world_.nodes[nb].shards > 0 ? "loot" : "quiet");
+        const Node& nn = world_.nodes[nb];
+        // spell out what's down each route so the player can steer AROUND a wall
+        // toward loot or recovery — the fork is a real routing decision, not a coin flip.
+        std::string tag;
+        if (nn.guard_named != NONE8 && !(nn.flags & NF_GUARD_DONE))
+            tag = std::string("DANGER ") + named_name(world_.named[nn.guard_named].name_id);
+        else if (nn.type == N_SHRINE) tag = "RECOVERY shrine";
+        else if (nn.shards > 0 && !(nn.flags & NF_LOOTED)) tag = "loot";
+        else tag = "quiet";
+        char b[64];
+        std::snprintf(b, sizeof b, "%s  sec%d  %s", node_label(world_, nb).c_str(), (int)nn.security, tag.c_str());
         dec_.options.push_back(b);
         dec_.opt_module.push_back(M_COUNT);
     }
@@ -769,7 +818,7 @@ void Sim::resolve_survival(int option) {
         logline("patched the deck — integrity " + std::to_string(run_.integrity) + ".");
     } else if (mod == M_GHOST) {
         add_heat(-20); add_corruption(4);
-        logline("ghosted — heat bleeding off, corruption climbing.");
+        logline("ghosted — heat -20, corruption +4.");
     } else {
         // pull out NOW: bank the haul and end the run
         jack_out();
@@ -789,13 +838,18 @@ void Sim::resolve_extract(int option) {
     else if (mod == M_FORK) { haul = haul; add_heat(12); }
     run_.shards = (uint16_t)(run_.shards + haul);
     grant_loot(node);
+    int old_power = player_power(run_);
     run_.tier = (uint8_t)std::min(9, run_.tier + 1);
     run_.mod_level[mod] = (uint8_t)std::min(9, run_.mod_level[mod] + 1);
     run_.buffer_max = (int16_t)(run_.buffer_max + 4);
     if (node.faction < F_COUNT) world_.factions[node.faction].grudge += 3;
     push_event(T_BIG_SCORE, run_.pos, I_COUNT, NONE8, (int8_t)run_.heat);
     push_event(T_REVENGE, run_.pos, I_COUNT, NONE8, 0);
-    logline(std::string("burned the core of ") + node_label(world_, run_.pos) + " — " + std::to_string(haul) + " shards.");
+    logline(std::string("burned the core of ") + node_label(world_, run_.pos) + " — " + std::to_string(haul) +
+            " shards" + (mod == M_SPIKE ? " (LOUD: heat +25)" : mod == M_FORK ? " (heat +12)" : " (quiet: heat +4)") + ".");
+    logline(std::string("** DECK UPGRADE ** tier T") + std::to_string((int)run_.tier) + ", " + module_name(mod) +
+            " -> L" + std::to_string((int)run_.mod_level[mod]) + ", buffer max " + std::to_string((int)run_.buffer_max) +
+            ". power " + std::to_string(old_power) + " -> " + std::to_string(player_power(run_)) + ".");
     open_dive();   // the choice: jack out with the haul, or dive deeper for more
 }
 

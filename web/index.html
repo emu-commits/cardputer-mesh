@@ -22,9 +22,19 @@
   #topbar { display:flex; justify-content:space-between; font-size:13px; color:var(--dim); }
   #status { font-size:13px; background:#08251a; border:1px solid var(--dim); border-radius:8px; padding:7px 9px; }
   #status .lo{color:var(--hot)} #status .hot{color:var(--hot)} #status b{color:var(--fg);font-weight:600}
-  #map { color:var(--cyan); white-space:pre; font-size:14px; line-height:1.12; padding:6px 0; overflow:auto;
-         border-bottom:1px solid #0d3324; min-height:118px; }
-  #map .me{color:#fff;font-weight:bold} #map .obj{color:var(--gold)} #map .hunter{color:var(--hot)} #map .named{color:var(--mag)} #map .q{color:var(--dim)}
+  #ribbon { font-size:12px; color:var(--dim); letter-spacing:1px; display:flex; justify-content:space-between; }
+  #ribbon b{color:var(--gold)}
+  #map { color:var(--cyan); white-space:pre; font-size:15px; line-height:1.05; padding:4px 0; overflow:hidden;
+         border-bottom:1px solid #0d3324; min-height:150px; transition:filter .12s, opacity .12s; }
+  #map.wipe { filter:brightness(2.4) blur(1px); opacity:.25; }
+  #map .me{color:#fff;font-weight:bold;text-shadow:0 0 6px #0f6} #map .obj{color:var(--gold)}
+  #map .hunter{color:var(--hot)} #map .named{color:var(--mag)} #map .loot{color:var(--gold)}
+  #map .wall{color:#176b48} #map .door{color:var(--cyan)} #map .doorhot{color:var(--hot)} #map .shrine{color:#7bffd9}
+  #map .trail{color:#2a6b4c}
+  #exits { font-size:12px; padding:3px 0; }
+  #exits .ex{display:inline-block;margin:0 8px 0 0}
+  #exits .danger{color:var(--hot)} #exits .rec{color:#7bffd9} #exits .loot{color:var(--gold)} #exits .next{text-decoration:underline}
+  #legend { font-size:11px; color:var(--dim); }
   #fightline { font-size:13px; min-height:18px; }
   #fightline .bar{display:inline-block;width:90px;height:8px;background:#0a2a1c;border-radius:4px;vertical-align:middle;overflow:hidden;margin:0 6px}
   #fightline .bar>i{display:block;height:100%;background:var(--hot)}
@@ -64,7 +74,10 @@
   <section id="screen-play" class="hidden" style="flex:1;display:flex;flex-direction:column;gap:6px;min-height:0">
     <div id="topbar"><span id="loc"></span><span id="netname">NIGHT-NET</span></div>
     <div id="status"></div>
+    <div id="ribbon"></div>
     <div id="map"></div>
+    <div id="exits"></div>
+    <div id="legend">@ you · $ loot · letters = ICE · ◎ shrine · &#9658; exit (underlined = toward objective)</div>
     <div id="fightline"></div>
     <div id="log"></div>
     <button id="btn-jackout" class="hidden">JACK OUT &amp; BANK</button>
@@ -92,7 +105,8 @@ const PROFILES = [
   ["Opportunist","detour for loot · fight smart"],
   ["Loyalist","careful · spares friendly factions"],
 ];
-let CH, S = null, timer = null, paused = false, pers = 1;
+let CH, S = null, timer = null, animTimer = null, paused = false, pers = 1;
+let room = { pos:-1, t0:0 };   // current-room view: which node, when we entered (for the walk anim)
 
 const qs = id => document.getElementById(id);
 const esc = s => s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
@@ -138,8 +152,11 @@ function jackIn(p){
   pers = p;
   const { cnet, seed } = seeds();
   CH.start(cnet>>>0, seed>>>0, p, localStorage.getItem(LS_LEG) || "");
-  paused = false; show("play"); qs("decision").classList.add("hidden"); render();
-  clearInterval(timer); timer = setInterval(tick, 650);
+  paused = false; room = { pos:-1, t0:0 }; show("play"); qs("decision").classList.add("hidden"); render();
+  // 1500ms engine cadence: slow enough to read stats + log + map between steps.
+  clearInterval(timer); timer = setInterval(tick, 1500);
+  // a faster paint loop just animates the @ walking across the room between ticks.
+  clearInterval(animTimer); animTimer = setInterval(() => { if (S && !paused) drawRoom(); }, 110);
 }
 
 function tick(){
@@ -152,6 +169,7 @@ function tick(){
 
 function endRun(){
   clearInterval(timer); timer = null;
+  clearInterval(animTimer); animTimer = null;
   const blob = CH.legends();
   if (blob) { localStorage.setItem(LS_LEG, blob); const m = blob.match(/citynet,(\d+)/); if (m) localStorage.setItem(LS_CNET, m[1]); }
   window._chron = CH.chronicle();
@@ -164,36 +182,88 @@ function endRun(){
   show("over");
 }
 
-// ---- always-visible chrome ----
-const TYPE_CH = ["V","G",".","x","A"];
+// ---- always-visible chrome: a NetHack-style CURRENT-ROOM view ----
+// We no longer plot the whole scattered node grid (that's why @ "jumped around").
+// Instead you watch one room at a time; @ walks across it toward the exit, the room
+// wipes when you cross into the next, and exits are labelled so you can route around
+// danger. node fields: [x,y,type,vis,named,name_pre,sec,loot,guardice,guarddone]
+const TYPE_NAME  = ["corp vault","gang server","public grid","abandoned node","AI shrine"];
+const ICE_GLYPH  = ["B","T","W","S","w","Y"];
+const ICE_SHORT  = ["BLACK","TRACE","WARDEN","SWARM","WATCH","SYSOP"];
 const NODE_PREFIX = ["GRID","NODE","VAULT","RELAY","GHOST","CACHE","SPIRE","SUMP","HOLLOW","EXCHANGE"];
+const RW = 30, RH = 6;   // room interior: box width, floor rows (a wide rectangle)
+
 function statusHTML(r){
   const lo = r.int*100/r.intmax < 30, hot = r.heat>=48;
   return `Intg <b class="${lo?'lo':''}">${r.int}/${r.intmax}</b> · Buf <b>${r.buf}/${r.bufmax}</b> · ` +
          `Heat <b class="${hot?'hot':''}">${r.heat}</b> · Cor <b>${r.cor}%</b> · T<b>${r.tier}</b> · ` +
          `<b>L${r.depth+1}</b> · obj <b>${r.objs}</b> · $<b>${r.sh}</b>`;
 }
+function nodeLabel(i){ const n=S.nodes[i]; return n ? NODE_PREFIX[n[5] % NODE_PREFIX.length]+"-"+(i+1) : "?"; }
+function exitInfo(i){
+  const n = S.nodes[i]; if (!n) return null;
+  let kind="quiet", cls="";
+  if (n[4]===1)        { kind="DANGER "+(n[8]>=0?ICE_SHORT[n[8]]:"ICE"); cls="danger"; }
+  else if (n[2]===4)   { kind="recovery shrine"; cls="rec"; }
+  else if (n[7]===1)   { kind="loot"; cls="loot"; }
+  else if (n[8]>=0 && n[9]===0) kind = ICE_SHORT[n[8]];
+  return { label:nodeLabel(i), sec:n[6], kind, cls };
+}
+
+function drawRoom(){
+  if (!S) return;
+  const r = S.r, here = S.nodes[r.pos];
+  const W = RW, rows = [];
+  const blank = () => Array.from({length:W}, () => ({c:" ",k:""}));
+  const top = blank(); top[0]={c:"╔",k:"wall"}; top[W-1]={c:"╗",k:"wall"};
+  for (let x=1;x<W-1;x++) top[x]={c:"═",k:"wall"};
+  rows.push(top);
+  for (let y=0;y<RH;y++){ const row=blank(); row[0]={c:"║",k:"wall"}; row[W-1]={c:"║",k:"wall"}; rows.push(row); }
+  const bot = blank(); bot[0]={c:"╚",k:"wall"}; bot[W-1]={c:"╝",k:"wall"};
+  for (let x=1;x<W-1;x++) bot[x]={c:"═",k:"wall"};
+  rows.push(bot);
+  const mid = 1 + (RH>>1);                            // middle floor row in rows[]
+  // exit door on the right wall, toward the objective
+  if (S.nexthop>=0) rows[mid][W-1] = {c:"▸", k:"doorhot"};
+  // room contents
+  if (here[7]===1) rows[mid+1][4] = {c:"$", k:"loot"};
+  if (here[2]===4) rows[mid-1][(W>>1)] = {c:"◎", k:"shrine"};
+  const guarded = here[8]>=0 && here[9]===0;          // ICE still standing here
+  const icex = W-7;
+  if (guarded) rows[mid-1][icex] = { c: ICE_GLYPH[here[8]]||"#", k: here[4]===1 ? "named":"wall" };
+  // you — walk toward the door between ticks; in a fight, stand off against the ICE
+  const f = Math.min(1, (performance.now()-room.t0)/1100);
+  let px = r.fight ? (guarded? icex-2 : W-5) : 3 + Math.round(f*(W-7));
+  if (px<2) px=2; if (px>W-2) px=W-2;
+  if (!r.fight) for (let x=2;x<px;x+=2) if (rows[mid][x].c===" ") rows[mid][x]={c:"·",k:"trail"};
+  rows[mid][px] = {c:"@", k:"me"};
+  qs("map").innerHTML = rows.map(row=>row.map(cell=>cell.k?`<span class="${cell.k}">${cell.c}</span>`:cell.c).join("")).join("\n");
+}
+function drawExits(){
+  if (!S) return;
+  const r = S.r, ex = (S.adj && S.adj[r.pos]) || [];
+  let html = "exits: ";
+  if (!ex.length) html += "<span class='danger'>none — boxed in</span>";
+  ex.forEach(i => {
+    const e = exitInfo(i); if (!e) return;
+    const next = i===S.nexthop ? " next":"";
+    html += `<span class="ex ${e.cls}${next}">&#9658; ${esc(e.label)} sec${e.sec} ${esc(e.kind)}</span>`;
+  });
+  qs("exits").innerHTML = html;
+}
+
 function render(){
   S = JSON.parse(CH.state());
-  const r = S.r;
+  const r = S.r, here = S.nodes[r.pos];
   qs("loc").textContent = "@ " + nodeLabel(r.pos);
   qs("status").innerHTML = statusHTML(r);
-  // map
-  let cols = 1; while (cols*cols < S.nc) cols++;
-  const rows = Math.ceil(S.nc/cols);
-  const grid = Array.from({length:rows}, () => Array(cols*2).fill(" "));
-  for (let i=0;i<S.nodes.length;i++){
-    const [x,y,type,vis,named] = S.nodes[i];
-    let ch="?", cls="q";
-    if (i===r.pos){ ch="@"; cls="me"; }
-    else if (r.hunt && i===r.hpos){ ch="H"; cls="hunter"; }
-    else if (i===S.obj && !r.objdone){ ch="*"; cls="obj"; }
-    else if (named){ ch="#"; cls="named"; }
-    else if (!vis){ ch="?"; cls="q"; }
-    else { ch=TYPE_CH[type]||"."; cls=""; }
-    grid[y][x*2] = cls ? `<span class="${cls}">${ch}</span>` : ch;
-  }
-  qs("map").innerHTML = grid.map(row=>row.join("")).join("\n");
+  qs("ribbon").innerHTML =
+    `<span>LAYER <b>${r.depth+1}</b> · ${TYPE_NAME[here[2]]} · sec ${here[6]}</span>` +
+    `<span>objective &#9658; <b>${nodeLabel(S.obj)}</b></span>`;
+  // crossed into a new room → wipe + restart the walk
+  if (room.pos !== r.pos){ room.pos = r.pos; room.t0 = performance.now();
+    const mp = qs("map"); mp.classList.add("wipe"); setTimeout(()=>mp.classList.remove("wipe"), 130); }
+  drawRoom(); drawExits();
   // fight line (auto-combat siege, shown without covering anything)
   if (r.fight){
     const pct = r.ihpmax ? Math.round(r.ihp*100/r.ihpmax) : 0;
@@ -205,7 +275,6 @@ function render(){
   // persistent JACK OUT — available out of combat once you've banked something to take
   qs("btn-jackout").classList.toggle("hidden", !(r.objs > 0 && !r.fight && !paused));
 }
-function nodeLabel(i){ const n=S.nodes[i]; return n ? NODE_PREFIX[n[5] % NODE_PREFIX.length]+"-"+(i+1) : "?"; }
 
 // ---- decision panel (docked; map + status stay visible above) ----
 function openDecision(){

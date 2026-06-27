@@ -236,6 +236,7 @@ public:
     const RunState& state() const { return run_; }
     const World&    world() const { return world_; }
     const std::vector<std::string>& log() const { return log_; }
+    int next_hop_to_objective() const { return next_hop_toward(world_.objective.target); } // first BFS step, -1 if none
 
     int score() const;
     std::string chronicle() const;           // Gibson-voice run summary

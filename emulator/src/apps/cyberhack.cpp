@@ -5,6 +5,7 @@
 // is only rendering + input + the HumanPolicy (you, answering the decision cards).
 #include "apps/apps.h"
 #include <cstdio>
+#include <cstring>
 #include <vector>
 #include "core/clipboard.h"
 #include "core/cyberhack_world.h"
@@ -19,7 +20,7 @@ namespace apps {
 
 class CyberHack : public App {
     enum View { START, CRAWL, CARD, OVER };
-    static constexpr uint32_t STEP_MS = 600;   // "watch it crawl" cadence
+    static constexpr uint32_t STEP_MS = 1500;  // "watch it crawl" cadence — slow enough to read stats + log
 public:
     void on_create(AppContext& ctx) override {
         load_legends(ctx);
@@ -50,8 +51,8 @@ public:
         c.clear(ui::White, ui::Black);
         switch (view_) {
             case START: render_start(c); break;
-            case CRAWL: render_crawl(c); break;
-            case CARD:  render_crawl(c); render_card(c); break;
+            case CRAWL: render_crawl(ctx, c); break;
+            case CARD:  render_crawl(ctx, c); render_card(c); break;
             case OVER:  render_over(c); break;
         }
     }
@@ -107,7 +108,7 @@ private:
         uint32_t rseed = ((uint32_t)ctx.now_ms * 2654435761u) ^ (legends_.run_count * 40503u) ^ 0x51A5u;
         if (!rseed) rseed = 1;
         sim_.start(cnet, rseed, pers, &legends_);
-        view_ = CRAWL; last_step_ = ctx.now_ms;
+        view_ = CRAWL; last_step_ = ctx.now_ms; last_pos_ = 0xFF;
     }
 
     // ---- CRAWL: the net-graph console you watch ----------------------------
@@ -120,43 +121,89 @@ private:
         }
         return false;   // Esc bubbles
     }
-    char node_glyph(const cy::World& w, uint8_t i) const {
-        const cy::Node& n = w.nodes[i];
-        if (i == sim_.state().pos) return '@';
-        if (sim_.state().hunt_active && i == sim_.state().hunter_pos) return 'H';
-        if ((n.flags & cy::NF_OBJECTIVE) && !sim_.state().objective_done) return '*';
-        if (n.guard_named != cy::NONE8 && !(n.flags & cy::NF_GUARD_DONE)) return '#';
-        if (!(n.flags & cy::NF_VISITED)) return '?';
-        switch (n.type) { case cy::N_VAULT: return 'V'; case cy::N_GANG: return 'G';
-            case cy::N_ABANDONED: return 'x'; case cy::N_SHRINE: return 'A'; default: return '.'; }
+    static char ice_glyph(uint8_t ice) {
+        static const char g[] = { 'B', 'T', 'W', 'S', 'w', 'Y' };
+        return ice < cy::I_COUNT ? g[ice] : '#';
     }
-    void render_crawl(TextCanvas& c) {
+    static const char* ice_short(uint8_t ice) {
+        static const char* s[] = { "BLACK", "TRACE", "WARDEN", "SWARM", "WATCH", "SYSOP" };
+        return ice < cy::I_COUNT ? s[ice] : "ICE";
+    }
+    // exits under the room: each usable neighbour labelled + colour-coded so you
+    // can see DANGER ahead and route around it (the door toward the objective is bold).
+    void draw_exits(TextCanvas& c, int row) {
         const cy::World& w = sim_.world();
         const cy::RunState& r = sim_.state();
+        const cy::Node& here = w.nodes[r.pos];
+        int nexthop = sim_.next_hop_to_objective();
+        int col = 1;
+        c.text(row, col, "exits:", ui::Gray, ui::Black); col += 7;
+        int shown = 0;
+        for (int k = 0; k < here.deg && shown < 3; ++k) {
+            uint8_t nb = here.nbr[k];
+            if (nb == cy::NONE8) continue;
+            const cy::Node& nn = w.nodes[nb];
+            const char* tag; uint8_t fg;
+            if (nn.guard_named != cy::NONE8 && !(nn.flags & cy::NF_GUARD_DONE)) { tag = "danger"; fg = ui::BrightRed; }
+            else if (nn.type == cy::N_SHRINE) { tag = "recov"; fg = ui::BrightCyan; }
+            else if (nn.shards > 0 && !(nn.flags & cy::NF_LOOTED)) { tag = "loot"; fg = ui::BrightYellow; }
+            else { tag = "quiet"; fg = ui::White; }
+            char b[28];
+            std::snprintf(b, sizeof b, "%s%s s%d %s", nb == nexthop ? ">" : " ",
+                          cy::node_label(w, nb).c_str(), (int)nn.security, tag);
+            int len = (int)std::strlen(b);
+            if (col + len > c.width() - 1) break;
+            c.text(row, col, b, fg, ui::Black, nb == nexthop ? ui::ATTR_BOLD : ui::ATTR_NONE);
+            col += len + 1; ++shown;
+        }
+    }
+    // The CYD console: a NetHack-style CURRENT-ROOM view. You watch @ walk across
+    // the room toward the exit, the room flashes when you cross into the next, and
+    // the exits are labelled so the navigation graphic is never obscured.
+    void render_crawl(AppContext& ctx, TextCanvas& c) {
+        const cy::World& w = sim_.world();
+        const cy::RunState& r = sim_.state();
+        const cy::Node& here = w.nodes[r.pos];
         char hd[24]; std::snprintf(hd, sizeof hd, "heat %d  T%d", (int)r.heat, (int)r.tier);
         int top = ui::header(c, "CyberHack :: NIGHT-NET", ui::BrightGreen, hd);
-        // map box (left), positioned by node x,y
-        int map_h = 0;
-        for (int i = 0; i < w.node_count; ++i) {
-            int rr = top + w.nodes[i].y;
-            int cc = 1 + w.nodes[i].x * 2;
-            if (rr > ui::body_bottom(c) - 6 || cc >= c.width() - 14) continue;
-            char g = node_glyph(w, i);
-            uint8_t fg = g == '@' ? ui::BrightWhite : g == '*' ? ui::BrightYellow : g == 'H' ? ui::BrightRed
-                       : g == '#' ? ui::BrightMagenta : g == '?' ? ui::Gray : ui::BrightCyan;
-            c.put(rr, cc, (char32_t)g, fg, ui::Black, g == '@' ? ui::ATTR_BOLD : ui::ATTR_NONE);
-            if (rr - top > map_h) map_h = rr - top;
-        }
-        // side legend
-        int lc = c.width() - 13;
-        c.text(top + 0, lc, "@ you", ui::BrightWhite, ui::Black);
-        c.text(top + 1, lc, "* target", ui::BrightYellow, ui::Black);
-        c.text(top + 2, lc, "# named", ui::BrightMagenta, ui::Black);
-        c.text(top + 3, lc, "H hunter", ui::BrightRed, ui::Black);
-        // log pane (recent lines) below the map
-        int logtop = top + map_h + 2;
-        c.hline(logtop - 1, 1, c.width() - 2, U'-', ui::Gray, ui::Black);
-        // auto-combat siege line — always visible, never a separate screen
+        // ribbon: layer / room type / security  +  objective marker
+        char rb[40]; std::snprintf(rb, sizeof rb, "L%d  %s  sec%d",
+                                   (int)r.depth + 1, cy::node_type_name(here.type), (int)here.security);
+        c.text(top, 1, rb, ui::BrightCyan, ui::Black);
+        { std::string ob = std::string("obj>") + cy::node_label(w, w.objective.target);
+          c.text(top, c.width() - 1 - (int)ob.size(), ob, ui::BrightYellow, ui::Black); }
+        // crossed into a new room → brief wipe flash on the walls + restart the walk
+        if (r.pos != last_pos_) { last_pos_ = r.pos; wipe_t0_ = ctx.now_ms; }
+        bool wiping = (ctx.now_ms - wipe_t0_) < 160;
+        // the room box (a wide rectangle filling the CYD width)
+        int boxr = top + 1, boxH = 8, W = c.width();
+        c.draw_box(boxr, 0, boxH, W, wiping ? ui::BrightWhite : ui::Gray, ui::Black);
+        int mid = boxr + boxH / 2;
+        int nexthop = sim_.next_hop_to_objective();
+        if (nexthop >= 0) c.put(mid, W - 1, U'>', ui::BrightCyan, ui::Black);   // door toward objective
+        // room contents
+        bool guarded = !(here.flags & cy::NF_GUARD_DONE) && here.guard_ice < cy::I_COUNT;
+        bool named   = here.guard_named != cy::NONE8 && !(here.flags & cy::NF_GUARD_DONE);
+        int icex = W - 7;
+        if (here.shards > 0 && !(here.flags & cy::NF_LOOTED)) c.put(mid + 1, 4, U'$', ui::BrightYellow, ui::Black);
+        if (here.type == cy::N_SHRINE) c.put(mid - 1, W / 2, U'&', ui::BrightCyan, ui::Black);
+        if (guarded) c.put(mid - 1, icex, (char32_t)ice_glyph(here.guard_ice),
+                           named ? ui::BrightMagenta : ui::Gray, ui::Black, named ? ui::ATTR_BOLD : ui::ATTR_NONE);
+        // @ walks toward the door between ticks; in a fight it stands off the ICE
+        float f = (float)((int32_t)ctx.now_ms - (int32_t)last_step_) / 1100.0f;
+        if (f < 0) f = 0;
+        if (f > 1) f = 1;
+        int px = r.in_fight ? (guarded ? icex - 2 : W - 5) : 2 + (int)(f * (W - 6));
+        if (px < 2) px = 2;
+        if (px > W - 2) px = W - 2;
+        if (!r.in_fight) for (int x = 2; x < px; x += 2) c.put(mid, x, U'.', ui::Gray, ui::Black);
+        c.put(mid, px, U'@', ui::BrightWhite, ui::Black, ui::ATTR_BOLD);
+        // exits + legend
+        int exr = boxr + boxH;
+        draw_exits(c, exr);
+        c.text(exr + 1, 1, ui::fit("@ you  $ loot  &shrine  letters=ICE  >exit", c.width() - 2), ui::Gray, ui::Black);
+        // siege bar (auto-combat) then the log, down to the status line
+        int logtop = exr + 2;
         if (r.in_fight) {
             int barw = 16; int filled = r.ice_hp_max > 0 ? r.ice_hp * barw / r.ice_hp_max : 0;
             std::string bar = "breaking ICE [";
@@ -275,6 +322,8 @@ private:
     View view_ = START;
     int sel_ = 0;
     uint32_t last_step_ = 0;
+    uint8_t last_pos_ = 0xFF;     // room-view: detect crossing into a new room (wipe + walk restart)
+    uint32_t wipe_t0_ = 0;        // when the last room transition started (for the flash)
     std::string chron_;
     int over_scroll_ = 0;
     bool copied_ = false;

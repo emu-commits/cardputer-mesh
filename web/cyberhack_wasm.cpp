@@ -36,16 +36,34 @@ static std::string state_json() {
         r.objective_done ? 1 : 0, r.hunt_active ? 1 : 0, r.hunt_active ? r.hunter_pos : -1, g_sim.score(),
         r.depth, r.objectives_done);
     o += b;
-    std::snprintf(b, sizeof b, "\"obj\":%d,\"entry\":%d,\"nc\":%d,", w.objective.target, w.entry, w.node_count);
+    int nexthop = g_sim.next_hop_to_objective();
+    std::snprintf(b, sizeof b, "\"obj\":%d,\"entry\":%d,\"nc\":%d,\"nexthop\":%d,", w.objective.target, w.entry, w.node_count, nexthop);
     o += b;
-    // nodes: [x,y,type,visited,named-guard-pending]
+    // nodes: [x,y,type,visited,named-guard-pending,name_pre,sec,loot,guardice,guarddone]
     o += "\"nodes\":[";
     for (int i = 0; i < w.node_count; ++i) {
         const Node& n = w.nodes[i];
         int named = (n.guard_named != NONE8 && !(n.flags & NF_GUARD_DONE)) ? 1 : 0;
-        std::snprintf(b, sizeof b, "%s[%d,%d,%d,%d,%d,%d]", i ? "," : "",
-                      n.x, n.y, n.type, (n.flags & NF_VISITED) ? 1 : 0, named, n.name_pre);
+        int loot  = (n.shards > 0 && !(n.flags & NF_LOOTED)) ? 1 : 0;
+        int guard = (!(n.flags & NF_GUARD_DONE) && n.guard_ice < I_COUNT) ? (int)n.guard_ice : -1;
+        std::snprintf(b, sizeof b, "%s[%d,%d,%d,%d,%d,%d,%d,%d,%d,%d]", i ? "," : "",
+                      n.x, n.y, n.type, (n.flags & NF_VISITED) ? 1 : 0, named, n.name_pre,
+                      (int)n.security, loot, guard, (n.flags & NF_GUARD_DONE) ? 1 : 0);
         o += b;
+    }
+    o += "],";
+    // adjacency: usable neighbors of each node (so the web can draw exits + scout ahead)
+    o += "\"adj\":[";
+    for (int i = 0; i < w.node_count; ++i) {
+        const Node& n = w.nodes[i];
+        o += i ? ",[" : "[";
+        bool first = true;
+        for (int k = 0; k < n.deg; ++k) {
+            uint8_t nb = n.nbr[k];
+            if (nb == NONE8) continue;
+            std::snprintf(b, sizeof b, "%s%d", first ? "" : ",", (int)nb); o += b; first = false;
+        }
+        o += "]";
     }
     o += "],";
     // decision (if any)
