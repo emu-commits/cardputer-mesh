@@ -157,13 +157,15 @@ private:
             col += len + 1; ++shown;
         }
     }
-    // ---- procedural room + 4-direction pathfinding (NetHack-style) -------------
+    // ---- a NetHack-style lit room (open . floor, walls, a down-stair) themed as a
+    // cyberspace construct; @ auto-tours it 4-directionally: in via the access port,
+    // over to the data ($), up to the ICE to break it, then down the stair. ---------
     bool blocked_cell(int x, int y) const {
         return room_wall_[y][x] || (ice_x_ >= 0 && x == ice_x_ && y == ice_y_);
     }
-    bool bfs_path(int sx, int sy, int gx, int gy) {
+    bool bfs_seg(int sx, int sy, int gx, int gy, uint8_t* ox, uint8_t* oy, int& olen) {
         const int W = room_W_, H = room_H_, N = W * H;
-        static int16_t prev[64 * 8], q[64 * 8], tmp[64 * 8];
+        static int16_t prev[64 * 16], q[64 * 16], tmp[64 * 16];
         for (int i = 0; i < N; ++i) prev[i] = -2;
         int qh = 0, qt = 0, s = sy * W + sx, goal = gy * W + gx;
         prev[s] = -1; q[qt++] = (int16_t)s;
@@ -183,40 +185,52 @@ private:
         if (prev[goal] == -2) return false;
         int n = 0;
         for (int cc = goal; cc != -1; cc = prev[cc]) tmp[n++] = (int16_t)cc;
-        path_len_ = n;
-        for (int i = 0; i < n; ++i) { int cc = tmp[n - 1 - i]; path_x_[i] = (uint8_t)(cc % W); path_y_[i] = (uint8_t)(cc / W); }
+        olen = n;
+        for (int i = 0; i < n; ++i) { int cc = tmp[n - 1 - i]; ox[i] = (uint8_t)(cc % W); oy[i] = (uint8_t)(cc / W); }
         return true;
     }
-    void build_room(const cy::World& w, const cy::RunState& r, int W, int H, int sx, int sy) {
+    void append_seg(int sx, int sy, int gx, int gy) {
+        static uint8_t sgx[64 * 16], sgy[64 * 16]; int sl = 0;
+        if (!bfs_seg(sx, sy, gx, gy, sgx, sgy, sl)) return;
+        int start = (path_len_ > 0) ? 1 : 0;                 // skip the duplicated joint cell
+        for (int i = start; i < sl && path_len_ < (int)sizeof(path_x_); ++i) {
+            path_x_[path_len_] = sgx[i]; path_y_[path_len_] = sgy[i]; ++path_len_;
+        }
+    }
+    bool ice_adj(int& ax, int& ay) const {
+        const int dx[4] = {-1, 1, 0, 0}, dy[4] = {0, 0, -1, 1};
+        for (int d = 0; d < 4; ++d) { int nx = ice_x_ + dx[d], ny = ice_y_ + dy[d];
+            if (nx >= 0 && nx < room_W_ && ny >= 0 && ny < room_H_ && !blocked_cell(nx, ny)) { ax = nx; ay = ny; return true; } }
+        return false;
+    }
+    void build_room(const cy::World& w, const cy::RunState& r, int AW, int AH, int sx, int sy) {
         const cy::Node& here = w.nodes[r.pos];
-        room_W_ = W; room_H_ = H;
         uint32_t h = w.run_seed ^ ((uint32_t)r.pos * 73856093u) ^ (((uint32_t)r.depth + 1) * 19349663u)
                      ^ (((uint32_t)here.security + 1) * 83492791u);
-        auto rnd = [&]() { h = h * 1664525u + 1013904223u; return (h >> 16) & 0xff; };
-        for (int y = 0; y < H; ++y) for (int x = 0; x < W; ++x) room_wall_[y][x] = rnd() < 41;  // ~16% pillars
-        int my = H / 2;
-        door_y_ = my;
+        auto rnd = [&](int n) { h = h * 1664525u + 1013904223u; return (int)((h >> 16) % (uint32_t)(n < 1 ? 1 : n)); };
+        int rh = AH - 2; if (rh < 5) rh = 5; if (rh > 14) rh = 14;
+        int rw = AW - 12; if (rw < 14) rw = 14; if (rw > 46) rw = 46;
+        room_W_ = rw; room_H_ = rh; room_ox_ = (AW - rw) / 2; room_oy_ = 1;
+        for (int y = 0; y < rh; ++y) for (int x = 0; x < rw; ++x)
+            room_wall_[y][x] = (x == 0 || x == rw - 1 || y == 0 || y == rh - 1);   // border walls, open floor
+        door_w_ = 1 + rnd(rh - 2);
+        door_e_ = 1 + rnd(rh - 2);
+        room_wall_[door_w_][0] = false;                       // access ports (doorways)
+        room_wall_[door_e_][rw - 1] = false;
+        stairs_x_ = rw - 2; stairs_y_ = door_e_;              // the down-stair (jack deeper)
         bool guarded = !(here.flags & cy::NF_GUARD_DONE) && here.guard_ice < cy::I_COUNT;
-        ice_x_ = guarded ? W - 4 : -1; ice_y_ = my - 1;
-        loot_x_ = (here.shards > 0 && !(here.flags & cy::NF_LOOTED)) ? 3 : -1; loot_y_ = my + 1;
-        shrine_x_ = (here.type == cy::N_SHRINE) ? W / 2 : -1; shrine_y_ = my - 1;
-        int ex = (sx >= 0 && sx < W) ? sx : 0, ey = (sy >= 0 && sy < H) ? sy : my;
-        int doorx = W - 1;
-        room_wall_[ey][ex] = false; room_wall_[my][doorx] = false;
-        if (ice_x_ >= 0) room_wall_[ice_y_][ice_x_] = false;
-        if (loot_x_ >= 0) room_wall_[loot_y_][loot_x_] = false;
-        if (shrine_x_ >= 0) room_wall_[shrine_y_][shrine_x_] = false;
-        int tx = doorx, ty = my;
-        if (guarded) {                                       // target a cell next to the ICE (bump it)
-            const int dx[4] = {-1, 1, 0, 0}, dy[4] = {0, 0, -1, 1};
-            for (int d = 0; d < 4; ++d) { int nx = ice_x_ + dx[d], ny = ice_y_ + dy[d];
-                if (nx >= 0 && nx < W && ny >= 0 && ny < H && !blocked_cell(nx, ny)) { tx = nx; ty = ny; break; } }
-        }
-        if (!bfs_path(ex, ey, tx, ty)) {                     // pillars boxed it in — carve the mid row
-            for (int x = 0; x < W; ++x) room_wall_[my][x] = false;
-            ey = my; room_wall_[ey][ex] = false;
-            if (!bfs_path(ex, ey, tx, ty)) path_len_ = 0;
-        }
+        ice_x_ = ice_y_ = loot_x_ = loot_y_ = shrine_x_ = shrine_y_ = -1;
+        if (guarded) { ice_x_ = rw / 2 + rnd((rw - 2) / 3); if (ice_x_ > rw - 2) ice_x_ = rw - 2; ice_y_ = 1 + rnd(rh - 2); }
+        if (here.shards > 0 && !(here.flags & cy::NF_LOOTED)) { loot_x_ = 1 + rnd((rw - 2) / 2); loot_y_ = 1 + rnd(rh - 2); }
+        if (here.type == cy::N_SHRINE) { shrine_x_ = rw / 2; shrine_y_ = rh / 2; }
+        for (int i = 0; i < 3; ++i) { mote_x_[i] = 1 + rnd(rw - 2); mote_y_[i] = 1 + rnd(rh - 2); }
+        // tour path: enter just inside the west port -> data -> ICE (or -> stair)
+        int ex = (sx >= 1 && sx < rw - 1) ? sx : 1, ey = (sy >= 1 && sy < rh - 1) ? sy : door_w_;
+        path_len_ = 0; int cx = ex, cy2 = ey;
+        if (loot_x_ >= 0) { append_seg(cx, cy2, loot_x_, loot_y_); if (path_len_) { cx = path_x_[path_len_ - 1]; cy2 = path_y_[path_len_ - 1]; } }
+        if (guarded) { int ax, ay; if (ice_adj(ax, ay)) append_seg(cx, cy2, ax, ay); }
+        else append_seg(cx, cy2, stairs_x_, stairs_y_);
+        if (path_len_ == 0) { path_x_[0] = (uint8_t)ex; path_y_[0] = (uint8_t)ey; path_len_ = 1; }
     }
 
     // The CYD console: a NetHack-style CURRENT-ROOM view. You watch @ auto-navigate
@@ -236,7 +250,7 @@ private:
           c.text(top, c.width() - 1 - (int)ob.size(), ob, ui::BrightYellow, ui::Black); }
         // (re)generate the room layout + path when we cross into a new node, or when
         // the guard clears / a fight starts — @ then re-routes from where it stands.
-        int W = c.width() - 2, H = 6, boxH = H + 2;
+        const int play_top = top + 1, AH = 10;               // play area: rows play_top..play_top+9
         bool guarded = !(here.flags & cy::NF_GUARD_DONE) && here.guard_ice < cy::I_COUNT;
         bool named   = here.guard_named != cy::NONE8 && !(here.flags & cy::NF_GUARD_DONE);
         uint32_t sig = ((uint32_t)r.pos << 2) | (guarded ? 2u : 0u) | (r.in_fight ? 1u : 0u);
@@ -245,21 +259,30 @@ private:
             if ((room_sig_ >> 2) == (uint32_t)r.pos) { sx = at_x_; sy = at_y_; }  // same node: continue
             else wipe_t0_ = ctx.now_ms;                                            // new node: flash
             room_sig_ = sig; last_room_t0_ = ctx.now_ms;
-            build_room(w, r, W, H, sx, sy);
+            build_room(w, r, c.width(), AH, sx, sy);
         }
         bool wiping = (ctx.now_ms - wipe_t0_) < 160;
-        // the room box (a wide rectangle filling the CYD width)
-        int boxr = top + 1;
-        c.draw_box(boxr, 0, boxH, c.width(), wiping ? ui::BrightWhite : ui::Gray, ui::Black);
-        // interior walls + features (interior origin is boxr+1, col 1)
-        for (int y = 0; y < H; ++y) for (int x = 0; x < W; ++x)
-            if (room_wall_[y][x]) c.put(boxr + 1 + y, 1 + x, U'#', ui::Gray, ui::Black);
-        if (loot_x_ >= 0)   c.put(boxr + 1 + loot_y_,   1 + loot_x_,   U'$', ui::BrightYellow, ui::Black);
-        if (shrine_x_ >= 0) c.put(boxr + 1 + shrine_y_, 1 + shrine_x_, U'&', ui::BrightCyan, ui::Black);
-        if (ice_x_ >= 0)    c.put(boxr + 1 + ice_y_,    1 + ice_x_, (char32_t)ice_glyph(here.guard_ice),
-                                  named ? ui::BrightMagenta : ui::Gray, ui::Black, ui::ATTR_BOLD);
-        if (sim_.next_hop_to_objective() >= 0) c.put(boxr + 1 + door_y_, c.width() - 1, U'>', ui::BrightCyan, ui::Black);
-        // @ steps along the path, cell by cell, around the walls
+        const int rtop = play_top + room_oy_, rleft = room_ox_, rw = room_W_, rh = room_H_;
+        uint8_t wallc = wiping ? ui::BrightWhite : ui::Cyan;
+        int nexthop = sim_.next_hop_to_objective();
+        // corridors out into the dark, west (in) and east (deeper)
+        for (int x = 0; x < rleft; ++x)             c.put(rtop + door_w_, x, U'#', ui::Gray, ui::Black);
+        for (int x = rleft + rw; x < c.width(); ++x) c.put(rtop + door_e_, x, U'#', ui::Gray, ui::Black);
+        // room: border walls + open lit floor (the matrix grid)
+        for (int y = 0; y < rh; ++y) for (int x = 0; x < rw; ++x) {
+            if (room_wall_[y][x]) c.put(rtop + y, rleft + x, (y == 0 || y == rh - 1) ? U'-' : U'|', wallc, ui::Black);
+            else                  c.put(rtop + y, rleft + x, U'.', ui::Green, ui::Black);
+        }
+        c.put(rtop + door_w_, rleft + 0,      U'+', ui::BrightCyan, ui::Black);   // access ports
+        c.put(rtop + door_e_, rleft + rw - 1, U'+', ui::BrightCyan, ui::Black);
+        for (int i = 0; i < 3; ++i) if (!room_wall_[mote_y_[i]][mote_x_[i]])
+            c.put(rtop + mote_y_[i], rleft + mote_x_[i], U':', ui::Green, ui::Black);
+        if (nexthop >= 0) c.put(rtop + stairs_y_, rleft + stairs_x_, U'>', ui::BrightCyan, ui::Black, ui::ATTR_BOLD);
+        if (loot_x_ >= 0)   c.put(rtop + loot_y_,   rleft + loot_x_,   U'$', ui::BrightYellow, ui::Black, ui::ATTR_BOLD);
+        if (shrine_x_ >= 0) c.put(rtop + shrine_y_, rleft + shrine_x_, U'&', ui::BrightCyan, ui::Black);
+        if (ice_x_ >= 0)    c.put(rtop + ice_y_,    rleft + ice_x_, (char32_t)ice_glyph(here.guard_ice),
+                                  named ? ui::BrightMagenta : ui::BrightRed, ui::Black, ui::ATTR_BOLD);
+        // @ steps cell-by-cell along the tour (around walls / up to the ICE)
         if (path_len_ > 0) {
             int idx;
             if (r.in_fight) idx = path_len_ - 1;
@@ -269,15 +292,13 @@ private:
                    idx = (int)(f * (path_len_ - 1)); }
             if (idx < 0) idx = 0;
             if (idx > path_len_ - 1) idx = path_len_ - 1;
-            for (int i = 0; i < idx; ++i) if (!room_wall_[path_y_[i]][path_x_[i]])
-                c.put(boxr + 1 + path_y_[i], 1 + path_x_[i], U'.', ui::Gray, ui::Black);
             at_x_ = path_x_[idx]; at_y_ = path_y_[idx];
-            c.put(boxr + 1 + at_y_, 1 + at_x_, U'@', ui::BrightWhite, ui::Black, ui::ATTR_BOLD);
+            c.put(rtop + at_y_, rleft + at_x_, U'@', ui::BrightWhite, ui::Black, ui::ATTR_BOLD);
         }
         // exits + legend
-        int exr = boxr + boxH;
+        int exr = play_top + AH;
         draw_exits(c, exr);
-        c.text(exr + 1, 1, ui::fit("@ you  $ loot  &shrine  letters=ICE  >exit", c.width() - 2), ui::Gray, ui::Black);
+        c.text(exr + 1, 1, ui::fit("@you .grid >jack-deeper + port $data &cache  ICE:B/T/W/S/Y", c.width() - 2), ui::Gray, ui::Black);
         // siege bar (auto-combat) then the log, down to the status line
         int logtop = exr + 2;
         if (r.in_fight) {
@@ -399,11 +420,13 @@ private:
     int sel_ = 0;
     uint32_t last_step_ = 0;
     uint32_t wipe_t0_ = 0;        // when the last room transition started (for the flash)
-    // room-view (procedural room + 4-dir pathfinding) state
-    bool room_wall_[8][64] = {};
-    uint8_t path_x_[512] = {}, path_y_[512] = {};
-    int path_len_ = 0, room_W_ = 0, room_H_ = 0, door_y_ = 0;
+    // room-view (NetHack-style room + 4-dir pathfinding) state
+    bool room_wall_[16][64] = {};
+    uint8_t path_x_[1024] = {}, path_y_[1024] = {};
+    int path_len_ = 0, room_W_ = 0, room_H_ = 0;
+    int room_ox_ = 0, room_oy_ = 1, door_w_ = 1, door_e_ = 1, stairs_x_ = 0, stairs_y_ = 0;
     int ice_x_ = -1, ice_y_ = -1, loot_x_ = -1, loot_y_ = -1, shrine_x_ = -1, shrine_y_ = -1;
+    int mote_x_[3] = {-1, -1, -1}, mote_y_[3] = {0, 0, 0};
     int at_x_ = 0, at_y_ = 0;
     uint32_t room_sig_ = 0xFFFFFFFFu, last_room_t0_ = 0;
     std::string chron_;
