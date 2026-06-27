@@ -990,7 +990,15 @@ void Sim::open_extract() {
     dec_.kind = DK_EXTRACT; dec_.node = run_.pos;
     dec_.prompt = std::string("The core of ") + node_label(world_, run_.pos) + " is open. " +
                   faction_short(world_.nodes[run_.pos].faction) + "'s payload is right there.";
-    dec_.options = { "Spike the core (loud)", "Mask a quiet pull", "Fork the warden" };
+    // spell out the trade so the choice is legible: haul vs heat/corruption, and it
+    // also levels the module you use. (Spike=smash&grab before jacking out; Mask=
+    // stay quiet to keep diving; Fork=balanced.)
+    int rw = world_.objective.reward;
+    char so[64], mo[64], fo[64];
+    std::snprintf(so, sizeof so, "Spike the core - %d haul, heat+25 corr+8 (LOUD)", rw * 3 / 2);
+    std::snprintf(mo, sizeof mo, "Mask a quiet pull - %d haul, heat+4 (clean)", rw * 3 / 4);
+    std::snprintf(fo, sizeof fo, "Fork the warden - %d haul, heat+12 corr+3", rw);
+    dec_.options = { so, mo, fo };
     dec_.opt_module = { M_SPIKE, M_MASK, M_FORK };
     logline(dec_.prompt);
 }
