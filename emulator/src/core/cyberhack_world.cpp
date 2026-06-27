@@ -31,7 +31,7 @@ static const char* NODE_PREFIX[] = {
     "GRID", "NODE", "VAULT", "RELAY", "GHOST", "CACHE", "SPIRE", "SUMP", "HOLLOW", "EXCHANGE"
 };
 static const int NODE_PREFIX_N = (int)(sizeof(NODE_PREFIX) / sizeof(NODE_PREFIX[0]));
-static const char* PERSONA_NAME[PR_COUNT] = { "semi-sentient AI", "corporate sysop", "gang daemon", "rogue construct" };
+static const char* PERSONA_NAME[PR_COUNT] = { "semi-sentient AI", "corporate sysop", "gang daemon", "rogue construct", "memory construct" };
 
 // Weaknesses map only to the three damage routines (Spike/Mask/Fork) so a
 // counter actually breaks the ICE faster. Ghost (disengage) and Patch (heal) are
@@ -225,6 +225,9 @@ void Sim::place_content() {
             if (n.faction == F_VULTURES || n.type == N_GANG) m.persona = PR_DAEMON;
             else if (n.faction == F_NULLSIGIL || n.type == N_ABANDONED) m.persona = PR_CONSTRUCT;
         }
+        // some non-boss entities are dead minds looped in the ICE — a memory construct
+        // you dive instead of fight (Dixie-Flatline flavor). Not on the objective.
+        if (!(n.flags & NF_OBJECTIVE) && arch != I_SYSOP && r.chance(28)) m.persona = PR_MEMORY;
         // disposition: how talkable it is. AIs are curious, sysops are walls.
         switch (m.persona) {
             case PR_AI:        m.disposition = (uint8_t)r.between(55, 85); break;
@@ -485,7 +488,10 @@ AdvanceResult Sim::advance() {
                 logline(std::string(named_name(m.name_id)) + " holds the gate open for you — an old debt repaid.");
                 return AR_STEPPED;
             }
-            if (!(here.flags & NF_PARLEYED)) { open_parley(); return AR_DECISION; }
+            if (!(here.flags & NF_PARLEYED)) {
+                if (m.persona == PR_MEMORY) open_memory(); else open_parley();
+                return AR_DECISION;
+            }
         }
         bool boss = (run_.node_clears >= here.guard_count - 1) && here.guard_named != NONE8;
         begin_fight(run_.pos, here.guard_ice, boss ? here.guard_named : NONE8, false);
@@ -589,7 +595,8 @@ void Sim::check_thresholds() {
         // pick a fully-intact named of that faction as the hunter, else generic
         run_.hunter_named = NONE8;
         for (int i = 0; i < world_.named_count; ++i)
-            if (world_.named[i].faction == worst && world_.named[i].status == NS_ALIVE) { run_.hunter_named = (uint8_t)i; break; }
+            if (world_.named[i].faction == worst && world_.named[i].status == NS_ALIVE
+                && world_.named[i].persona != PR_MEMORY) { run_.hunter_named = (uint8_t)i; break; }  // a dead mind doesn't hunt
         push_event(T_HUNT, run_.pos, I_BLACK, run_.hunter_named, 0);
         logline(run_.hunter_named != NONE8
                 ? std::string(faction_short(worst)) + " loosed " + named_name(world_.named[run_.hunter_named].name_id) + " on your trail."
@@ -973,6 +980,102 @@ void Sim::resolve_parley(int option) {
             break;
     }
 }
+// ---- memory dive: a dead mind looped in the ICE (a special NPC encounter) -----
+// Same "talk to something" loop as parley, different verbs: dive it for lore + a
+// small permanent buff, extract it for shards at the cost of corruption, stabilize
+// it to clean your own corruption, or release it — a gamble on a future ally/enemy.
+namespace {
+const char* MEM_FRAGMENT[] = {
+    "a childhood that wasn't yours: rain on a window, a language you almost speak.",
+    "the last login of someone who never logged out — a name, a debt, a way in.",
+    "a decker's muscle-memory, the shape of a hundred breaks you've never run.",
+    "a corporate black-budget schematic, half-corrupted, still warm.",
+    "a face you'll see again, and the exact weight of how it betrayed you.",
+    "the cadence of a dead operator's keystrokes, and you find your hands faster.",
+};
+}
+void Sim::open_memory() {
+    const Node& here = world_.nodes[run_.pos];
+    NamedIce& m = world_.named[here.guard_named];
+    parley_named_ = here.guard_named;
+    parley_node_  = run_.pos;
+    parley_bribe_ = m.tier * 6 + 8;     // shards an extraction yields
+    pending_ = true;
+    dec_ = Decision{};
+    dec_.kind = DK_MEMORY; dec_.node = run_.pos; dec_.named = here.guard_named; dec_.ice = m.archetype;
+    dec_.persona = m.persona; dec_.disposition = m.disposition;
+    dec_.prompt = std::string(named_name(m.name_id)) + ", a memory construct looped in the ICE at " +
+                  node_label(world_, run_.pos) + " — a dead mind, still dreaming. What do you do with it?";
+    char ex[48];
+    std::snprintf(ex, sizeof ex, "Extract - %d shards, corr+10 (rip it)", parley_bribe_);
+    dec_.options    = { "Dive - lore + a permanent edge", ex, "Stabilize - clean your corruption", "Release - make a friend or a foe" };
+    dec_.opt_module = { M_COUNT, M_COUNT, M_COUNT, M_COUNT };
+    logline(dec_.prompt);
+}
+void Sim::resolve_memory(int option) {
+    Node& node = world_.nodes[parley_node_];
+    NamedIce& m = world_.named[parley_named_];
+    node.flags |= NF_PARLEYED;
+    node.flags |= NF_GUARD_DONE;        // interacted with — the way is clear either way
+    const char* nm = named_name(m.name_id);
+    uint8_t f = m.faction;
+    auto faction_grudge = [&](int d) {
+        if (f < F_COUNT) world_.factions[f].grudge = (int8_t)std::max(-9, std::min(9, world_.factions[f].grudge + d));
+    };
+
+    switch (option) {
+        case 0: {  // DIVE — lore + a small permanent edge (learn from the dead mind)
+            const char* frag = MEM_FRAGMENT[rng_.range((uint32_t)(sizeof(MEM_FRAGMENT)/sizeof(MEM_FRAGMENT[0])))];
+            logline(std::string("[DIVE] you fall into ") + nm + "'s memory: " + frag);
+            // teach the lowest-level module (else widen the buffer if all maxed)
+            int lo = 0; for (int i = 1; i < M_COUNT; ++i) if (run_.mod_level[i] < run_.mod_level[lo]) lo = i;
+            if (run_.mod_level[lo] < 9) {
+                run_.mod_level[lo] = (uint8_t)(run_.mod_level[lo] + 1);
+                logline(std::string("  the dead operator's reflexes are yours now — ") + module_name(lo) +
+                        " -> L" + std::to_string((int)run_.mod_level[lo]) + ".");
+            } else {
+                run_.buffer_max = (int16_t)std::min(120, run_.buffer_max + 4);
+                logline("  the memory widens your buffer.");
+            }
+            add_corruption(2);          // diving a dead mind leaves a little residue
+            push_event(T_MEMORY, parley_node_, m.archetype, parley_named_, 0);
+            break;
+        }
+        case 1: {  // EXTRACT — rip it for data: shards now, corruption later
+            run_.shards = (uint16_t)(run_.shards + parley_bribe_);
+            add_corruption(10);
+            m.grudge = (int8_t)std::min(9, m.grudge + 2); faction_grudge(1);
+            logline(std::string("[EXTRACT] you strip ") + nm + " for parts — +" + std::to_string(parley_bribe_) +
+                    " shards, corruption +10. something in you curdles.");
+            push_event(T_BIG_SCORE, parley_node_, m.archetype, parley_named_, (int8_t)run_.heat);
+            break;
+        }
+        case 2: {  // STABILIZE — help the construct hold together; it steadies your deck
+            int before = run_.corruption;
+            add_corruption(-14);
+            m.disposition = (uint8_t)std::min(100, (int)m.disposition + 10);
+            m.grudge = (int8_t)std::max(-9, m.grudge - 1); faction_grudge(-1);
+            logline(std::string("[STABILIZE] you shore up ") + nm + "'s loops — corruption " +
+                    std::to_string(before) + " -> " + std::to_string((int)run_.corruption) + ".");
+            push_event(T_MEMORY, parley_node_, m.archetype, parley_named_, 0);
+            break;
+        }
+        default: {  // RELEASE — cut it loose: a future ally, or a future enemy
+            int chance = m.disposition - m.grudge * 6;
+            chance = std::max(10, std::min(90, chance));
+            if (rng_.chance(chance)) {
+                m.status = NS_ALLIED; faction_grudge(-1);
+                push_event(T_ALLY, parley_node_, m.archetype, parley_named_, 0);
+                logline(std::string("[RELEASE] you free ") + nm + " into the grid — it remembers kindness. an ally, somewhere ahead.");
+            } else {
+                m.grudge = (int8_t)std::min(9, m.grudge + 3); faction_grudge(2);
+                push_event(T_REVENGE, parley_node_, m.archetype, parley_named_, 0);
+                logline(std::string("[RELEASE] you free ") + nm + " — and it comes back wrong. you've made an enemy.");
+            }
+            break;
+        }
+    }
+}
 void Sim::open_survival() {
     pending_ = true;
     dec_ = Decision{};
@@ -1014,6 +1117,7 @@ void Sim::choose(int option_index) {
         case DK_ENCOUNTER: resolve_round(option_index); break;
         case DK_BRANCH:    resolve_branch(option_index); break;
         case DK_PARLEY:    resolve_parley(option_index); break;
+        case DK_MEMORY:    resolve_memory(option_index); break;
         case DK_SURVIVAL:  resolve_survival(option_index); break;
         case DK_EXTRACT:   resolve_extract(option_index); break;
         case DK_DIVE:      resolve_dive(option_index); break;
@@ -1319,6 +1423,10 @@ const char* B_EXTORT[] = {
 const char* B_BRIBE[] = {
     "You paid {enemy} off in {node}; down here even the watchdogs took coin.",
 };
+const char* B_MEMORY[] = {
+    "You went down into {enemy}'s memory and came back carrying something that wasn't yours, {simile}.",
+    "A dead mind called {enemy} was still dreaming in {node}; you walked through its dreams and out the other side.",
+};
 
 std::string subst(const std::string& tmpl, Rng& cr, const std::string& node,
                   const std::string& faction, const std::string& enemy) {
@@ -1368,6 +1476,7 @@ std::string Sim::chronicle() const {
             case T_ALLY:        pool = B_ALLY;        pooln = sizeof(B_ALLY)/sizeof(char*); break;
             case T_EXTORT:      pool = B_EXTORT;      pooln = sizeof(B_EXTORT)/sizeof(char*); break;
             case T_BRIBE:       pool = B_BRIBE;       pooln = sizeof(B_BRIBE)/sizeof(char*); break;
+            case T_MEMORY:      pool = B_MEMORY;      pooln = sizeof(B_MEMORY)/sizeof(char*); break;
             default: continue;
         }
         used[e.tag] = true;
@@ -1459,6 +1568,18 @@ int ai_decide(uint8_t pers, const RunState& r, const Decision& d, Rng& rng) {
                 case P_LOYALIST:    return relational ? 3                        // appease to build allies (engine fights if broke)
                                          : p == PR_DAEMON && can_pay ? 1 : 4;
                 default:            return talkable ? 0 : (p == PR_DAEMON && can_pay ? 1 : 4); // cautious
+            }
+        }
+        case DK_MEMORY: {
+            // options: 0 Dive, 1 Extract, 2 Stabilize, 3 Release.
+            // clean your corruption first if it's getting dangerous; otherwise each
+            // directive treats the dead mind in character.
+            if (r.corruption >= 45) return 2;                  // stabilize before it bites
+            switch (pers) {
+                case P_RECKLESS:    return 1;                  // rip it for shards
+                case P_OPPORTUNIST: return r.corruption < 25 ? 1 : 0;
+                case P_LOYALIST:    return 3;                  // free it, make a friend
+                default:            return 0;                  // cautious: dive for the edge
             }
         }
         case DK_SURVIVAL: {

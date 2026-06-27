@@ -32,8 +32,10 @@ enum Attitude : uint8_t { A_FRIENDLY, A_NEUTRAL, A_HOSTILE, A_HUNTING };
 enum Module   : uint8_t { M_SPIKE, M_MASK, M_FORK, M_PATCH, M_GHOST, M_COUNT };
 enum Ice      : uint8_t { I_BLACK, I_TRACE, I_WARDEN, I_SWARM, I_WATCHDOG, I_SYSOP, I_COUNT };
 enum Personality : uint8_t { P_RECKLESS, P_CAUTIOUS, P_OPPORTUNIST, P_LOYALIST, P_COUNT };
-// the four kinds of mind behind a named entity — drives dialogue + which tactic bites
-enum Persona  : uint8_t { PR_AI, PR_SYSOP, PR_DAEMON, PR_CONSTRUCT, PR_COUNT };
+// the kinds of mind behind a named entity — drives dialogue + which tactic bites.
+// PR_MEMORY is special: a dead mind looped in the ICE; you don't fight or bargain
+// with it, you dive its memory (a different encounter, same "talk to something" loop).
+enum Persona  : uint8_t { PR_AI, PR_SYSOP, PR_DAEMON, PR_CONSTRUCT, PR_MEMORY, PR_COUNT };
 enum Outcome  : uint8_t { O_RUNNING, O_EXTRACTED, O_DIED };
 enum Death    : uint8_t { D_NONE, D_ICE, D_CORRUPTION, D_HUNTED, D_TRACE, D_TIMEOUT };
 
@@ -41,11 +43,11 @@ enum Death    : uint8_t { D_NONE, D_ICE, D_CORRUPTION, D_HUNTED, D_TRACE, D_TIME
 enum Tag : uint8_t {
     T_NONE, T_JACKIN, T_FIRST_BLOOD, T_BIG_SCORE, T_CLOSE_CALL, T_REVENGE,
     T_BETRAYAL, T_SACRIFICE, T_HUMILIATION, T_LOCKDOWN, T_BURNED, T_HUNT,
-    T_EXTRACT, T_DEATH, T_PARLEY, T_ALLY, T_EXTORT, T_BRIBE, T_TAGCOUNT
+    T_EXTRACT, T_DEATH, T_PARLEY, T_ALLY, T_EXTORT, T_BRIBE, T_MEMORY, T_TAGCOUNT
 };
 
-// decision-spike kinds (DK_PARLEY appended last to keep the wire numbers stable)
-enum DecisionKind : uint8_t { DK_ENCOUNTER, DK_BRANCH, DK_FACTION, DK_SURVIVAL, DK_EXTRACT, DK_DIVE, DK_PARLEY };
+// decision-spike kinds (new kinds appended to keep the wire numbers stable)
+enum DecisionKind : uint8_t { DK_ENCOUNTER, DK_BRANCH, DK_FACTION, DK_SURVIVAL, DK_EXTRACT, DK_DIVE, DK_PARLEY, DK_MEMORY };
 
 // NS_ALLIED: an entity you talked down / befriended — it opens gates on later runs
 enum NamedStatus : uint8_t { NS_ALIVE, NS_CRIPPLED, NS_DEAD, NS_ALLIED };
@@ -280,6 +282,8 @@ private:
     void open_branch();
     void open_parley();          // a named entity blocks the way — negotiate or fight
     void resolve_parley(int option);
+    void open_memory();          // a memory construct — dive / extract / stabilize / release
+    void resolve_memory(int option);
     void open_survival();
     void open_extract();
     void open_dive();            // after an objective: jack out, or dive deeper

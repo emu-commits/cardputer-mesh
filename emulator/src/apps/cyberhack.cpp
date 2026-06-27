@@ -143,6 +143,25 @@ private:
         static const char g[] = { 'B', 'T', 'W', 'S', 'w', 'Y' };
         return ice < cy::I_COUNT ? g[ice] : '#';
     }
+    // Overlay corruption noise on the room view: replace a fraction of the drawn
+    // glyphs (skip empty void) with glitch characters in a sick magenta/red. The
+    // fraction tracks corruption%; the pattern is seeded by a ~110ms time bucket so
+    // it flickers without re-diffing every 33ms frame.
+    static void apply_glitch(TextCanvas& c, int r0, int r1, uint32_t now, int corr) {
+        if (corr <= 0) return;
+        static const char G[] = "#%&*?/\\=+~^@$01";
+        int density = corr / 4; if (density > 30) density = 30;   // cap so it stays readable
+        uint32_t bucket = now / 110;
+        for (int r = r0; r <= r1 && r < c.height(); ++r)
+            for (int x = 0; x < c.width(); ++x) {
+                uint32_t h = bucket * 2654435761u ^ (uint32_t)(r * 73856093) ^ (uint32_t)(x * 19349663);
+                h ^= h >> 13; h *= 0x5bd1e995u; h ^= h >> 15;
+                if ((int)(h % 100) >= density) continue;
+                if (c.at(r, x).cp == U' ') continue;             // keep the dark void dark
+                char g = G[h % (sizeof(G) - 1)];
+                c.put(r, x, (char32_t)g, (h & 1) ? ui::BrightMagenta : ui::BrightRed, ui::Black);
+            }
+    }
     static const char* ice_short(uint8_t ice) {
         static const char* s[] = { "BLACK", "TRACE", "WARDEN", "SWARM", "WATCH", "SYSOP" };
         return ice < cy::I_COUNT ? s[ice] : "ICE";
@@ -316,6 +335,10 @@ private:
             if (loot_x_ >= 0 && at_x_ == loot_x_ && at_y_ == loot_y_)
                 sim_.collect_current_node();                     // walked onto the cache: bank it
         }
+        // corruption glitch: the deck's own rot eats into the picture. Density scales
+        // with corruption%; the pattern shifts a few times a second (seeded by a time
+        // bucket so it's stable between buckets = no needless diff churn to the CYD).
+        apply_glitch(c, play_top, play_top + AH - 1, ctx.now_ms, (int)r.corruption);
         // exits + legend
         int exr = play_top + AH;
         draw_exits(c, exr);
@@ -372,9 +395,10 @@ private:
         const cy::Decision& d = sim_.decision();
         int n = (int)d.options.size();
         const char* title = d.kind == cy::DK_DIVE ? " DESCENT " : d.kind == cy::DK_EXTRACT ? " EXTRACTION "
-                          : d.kind == cy::DK_SURVIVAL ? " SURVIVAL " : d.kind == cy::DK_PARLEY ? " PARLEY " : " ROUTE ";
+                          : d.kind == cy::DK_SURVIVAL ? " SURVIVAL " : d.kind == cy::DK_PARLEY ? " PARLEY "
+                          : d.kind == cy::DK_MEMORY ? " MEMORY DIVE " : " ROUTE ";
         uint8_t accent = d.kind == cy::DK_SURVIVAL ? ui::BrightRed : d.kind == cy::DK_DIVE ? ui::BrightGreen
-                       : d.kind == cy::DK_PARLEY ? ui::BrightCyan : ui::BrightYellow;
+                       : d.kind == cy::DK_PARLEY ? ui::BrightCyan : d.kind == cy::DK_MEMORY ? ui::BrightMagenta : ui::BrightYellow;
         int bottom = c.height() - 3;                       // leave status (h-2) + footer (h-1)
         auto pl = ui::wrap_text(d.prompt, c.width() - 2);
         int pln = (int)pl.size(); if (pln > 2) pln = 2;
