@@ -31,6 +31,7 @@ static const char* NODE_PREFIX[] = {
     "GRID", "NODE", "VAULT", "RELAY", "GHOST", "CACHE", "SPIRE", "SUMP", "HOLLOW", "EXCHANGE"
 };
 static const int NODE_PREFIX_N = (int)(sizeof(NODE_PREFIX) / sizeof(NODE_PREFIX[0]));
+static const char* PERSONA_NAME[PR_COUNT] = { "semi-sentient AI", "corporate sysop", "gang daemon", "rogue construct" };
 
 // Weaknesses map only to the three damage routines (Spike/Mask/Fork) so a
 // counter actually breaks the ICE faster. Ghost (disengage) and Patch (heal) are
@@ -45,6 +46,7 @@ const char* node_type_name(uint8_t t) { return t < N_TYPECOUNT ? NODE_TYPE_NAME[
 const char* ice_name(uint8_t i) { return i < I_COUNT ? ICE_NAME[i] : "ICE"; }
 const char* module_name(uint8_t m) { return m < M_COUNT ? MODULE_NAME[m] : "?"; }
 const char* named_name(uint8_t id) { return id < NAMED_POOL_N ? NAMED_POOL[id] : "SOMETHING"; }
+const char* persona_name(uint8_t p) { return p < PR_COUNT ? PERSONA_NAME[p] : "process"; }
 uint8_t ice_weakness(uint8_t i) { return i < I_COUNT ? ICE_WEAK[i] : M_SPIKE; }
 uint8_t ice_punish(uint8_t i) { return i < I_COUNT ? ICE_PUNISH[i] : M_COUNT; }
 
@@ -210,6 +212,26 @@ void Sim::place_content() {
         m.tier = (uint8_t)std::min(9, std::max(1, tier));
         m.faction = n.faction;
         m.status = NS_ALIVE;
+        // persona: who's behind the ICE. Archetype drives it (so the gauntlet's
+        // ARCH_CYCLE yields an even spread of minds), with faction/turf overriding
+        // for flavor — gangs run daemons, Null Sigil breeds rogue constructs.
+        switch (arch) {
+            case I_SYSOP:                  m.persona = PR_SYSOP; break;
+            case I_TRACE: case I_WATCHDOG: m.persona = PR_DAEMON; break;
+            case I_SWARM:                  m.persona = PR_CONSTRUCT; break;
+            default:                       m.persona = PR_AI; break;   // Black ICE / Warden
+        }
+        if (arch != I_SYSOP) {
+            if (n.faction == F_VULTURES || n.type == N_GANG) m.persona = PR_DAEMON;
+            else if (n.faction == F_NULLSIGIL || n.type == N_ABANDONED) m.persona = PR_CONSTRUCT;
+        }
+        // disposition: how talkable it is. AIs are curious, sysops are walls.
+        switch (m.persona) {
+            case PR_AI:        m.disposition = (uint8_t)r.between(55, 85); break;
+            case PR_CONSTRUCT: m.disposition = (uint8_t)r.between(35, 75); break;
+            case PR_DAEMON:    m.disposition = (uint8_t)r.between(40, 70); break;
+            default:           m.disposition = (uint8_t)r.between(10, 40); break;  // sysop
+        }
         n.guard_named = w.named_count;
         w.named_count++;
     };
@@ -268,6 +290,11 @@ void Sim::apply_legends(const Legends* prior) {
                 } else if (prior->named[j].status == NS_CRIPPLED) {
                     w.named[i].tier = (uint8_t)std::min(9, w.named[i].tier + 2);  // back, angrier
                     w.named[i].grudge = prior->named[j].grudge;
+                } else if (prior->named[j].status == NS_ALLIED) {
+                    // a friend from a past run — holds the gate open, no fight
+                    w.named[i].status = NS_ALLIED;
+                    w.named[i].grudge = prior->named[j].grudge;
+                    w.named[i].disposition = 90;
                 }
             }
         }
@@ -425,6 +452,19 @@ AdvanceResult Sim::advance() {
         // more ICE fought in sequence (node_clears tracks progress here).
         bool trivial = (here.guard_count <= 1 && here.guard_named == NONE8 && here.guard_ice == I_WATCHDOG);
         if (trivial) { auto_trivial(here.guard_ice); here.flags |= NF_GUARD_DONE; return AR_STEPPED; }
+        // a named entity is a mind, not just a wall: an ally waves you in, a
+        // stranger gets one chance to be talked down before the deck commits.
+        if (here.guard_named != NONE8) {
+            NamedIce& m = world_.named[here.guard_named];
+            if (m.status == NS_ALLIED) {
+                here.flags |= NF_GUARD_DONE;
+                grant_loot(here);
+                push_event(T_ALLY, run_.pos, m.archetype, here.guard_named, 0);
+                logline(std::string(named_name(m.name_id)) + " holds the gate open for you — an old debt repaid.");
+                return AR_STEPPED;
+            }
+            if (!(here.flags & NF_PARLEYED)) { open_parley(); return AR_DECISION; }
+        }
         bool boss = (run_.node_clears >= here.guard_count - 1) && here.guard_named != NONE8;
         begin_fight(run_.pos, here.guard_ice, boss ? here.guard_named : NONE8, false);
         return decide_or_auto();
@@ -760,6 +800,141 @@ void Sim::open_branch() {
     }
     logline(dec_.prompt);
 }
+// ---- parley: a named entity blocks the way — talk, pay, threaten, or break it -
+// The fixed 5-option layout (Parley/Bribe/Threaten/Appease/Fight) keeps the AI
+// policy + indices stable; unaffordable choices fall through to a fight.
+void Sim::open_parley() {
+    const Node& here = world_.nodes[run_.pos];
+    NamedIce& m = world_.named[here.guard_named];
+    parley_named_ = here.guard_named;
+    parley_node_  = run_.pos;
+    parley_bribe_   = m.tier * 8 + here.security * 2;     // pay to bypass
+    parley_tribute_ = m.tier * 3 + 4;                     // smaller, to de-escalate
+    pending_ = true;
+    dec_ = Decision{};
+    dec_.kind = DK_PARLEY; dec_.node = run_.pos; dec_.named = here.guard_named; dec_.ice = m.archetype;
+    // a persona-flavored opening line, deterministic by who's behind the ICE
+    const char* line;
+    switch (m.persona) {
+        case PR_SYSOP:     line = "locks the node. 'Unauthorized. You will be traced.'"; break;
+        case PR_DAEMON:    line = "bares its teeth. 'Toll's due, runner. Pay or bleed.'"; break;
+        case PR_CONSTRUCT: line = "flickers, wearing a dead voice. 'Do I know you? Should I?'"; break;
+        default:           line = "unfolds across the gate. 'Another ghost in my corridors. State your intent.'"; break;
+    }
+    dec_.prompt = std::string(named_name(m.name_id)) + " [" + ice_name(m.archetype) + "], a " +
+                  persona_name(m.persona) + " (tier " + std::to_string((int)m.tier) + "), " + line;
+    char bribe[40], appe[40], fight[48];
+    std::snprintf(bribe, sizeof bribe, "Bribe (%d shards)", parley_bribe_);
+    std::snprintf(appe,  sizeof appe,  "Appease (tribute %d)", parley_tribute_);
+    std::snprintf(fight, sizeof fight, "Fight it (counter: %s)", module_name(ice_weakness(m.archetype)));
+    dec_.options   = { "Parley - talk it down", bribe, "Threaten (heat +10)", appe, fight };
+    dec_.opt_module = { M_COUNT, M_COUNT, M_COUNT, M_COUNT, M_COUNT };
+    logline(dec_.prompt);
+}
+void Sim::resolve_parley(int option) {
+    Node& node = world_.nodes[parley_node_];
+    NamedIce& m = world_.named[parley_named_];
+    node.flags |= NF_PARLEYED;
+    uint8_t f = m.faction;
+    int fg = (f < F_COUNT) ? world_.factions[f].grudge : 0;
+    const char* nm = named_name(m.name_id);
+
+    auto faction_grudge = [&](int d) {
+        if (f < F_COUNT) world_.factions[f].grudge = (int8_t)std::max(-9, std::min(9, world_.factions[f].grudge + d));
+    };
+    auto bypass = [&](bool loot) {                       // peaceful pass; advance() moves on next tick
+        node.flags |= NF_GUARD_DONE;
+        if (loot) grant_loot(node);
+    };
+    // Fall through to combat WITHOUT starting it here: NF_PARLEYED is already set,
+    // so the next advance() reaches begin_fight on the normal auto-combat path
+    // (which animates round by round). Starting the fight inline would surface an
+    // encounter card and break the hands-off combat rule.
+    auto to_fight = [&]() { /* NF_PARLEYED set above; advance() takes the fight */ };
+
+    switch (option) {
+        case 0: {  // PARLEY — talk it down (free, risky)
+            int chance = m.disposition + ((m.persona == PR_AI || m.persona == PR_CONSTRUCT) ? 15 : 0)
+                         - m.tier * 4 - fg * 5;
+            chance = std::max(5, std::min(95, chance));
+            if (rng_.chance(chance)) {
+                m.grudge = (int8_t)std::max(-9, m.grudge - 1); faction_grudge(-1);
+                push_event(T_PARLEY, parley_node_, m.archetype, parley_named_, 0);
+                logline(std::string("[PARLEY] ") + nm + " stands down — the corridor opens.");
+                if (m.disposition >= 65 && (m.persona == PR_AI || m.persona == PR_CONSTRUCT)) {
+                    m.status = NS_ALLIED;
+                    push_event(T_ALLY, parley_node_, m.archetype, parley_named_, 0);
+                    logline(std::string(nm) + " marks you a friend — it'll remember next time.");
+                }
+                bypass(true);
+            } else {
+                add_heat(2);
+                logline(std::string("[PARLEY] ") + nm + " won't hear it — talk's over.");
+                to_fight();
+            }
+            break;
+        }
+        case 1: {  // BRIBE — pay to bypass (sysops refuse)
+            if (m.persona == PR_SYSOP) {
+                add_heat(4); faction_grudge(1); m.grudge = (int8_t)std::min(9, m.grudge + 1);
+                logline(std::string("[BRIBE] ") + nm + " doesn't take bribes — and flags the attempt.");
+                to_fight();
+            } else if (run_.shards < parley_bribe_) {
+                logline(std::string("[BRIBE] not enough shards to interest ") + nm + ".");
+                to_fight();
+            } else {
+                run_.shards = (uint16_t)(run_.shards - parley_bribe_);
+                faction_grudge(-1);
+                push_event(T_BRIBE, parley_node_, m.archetype, parley_named_, 0);
+                logline(std::string("[BRIBE] paid ") + std::to_string(parley_bribe_) + " shards — " + nm + " waves you through.");
+                bypass(false);
+            }
+            break;
+        }
+        case 2: {  // THREATEN — costs heat, intimidate the weak, anger the rest
+            add_heat(10);
+            int chance = 55 + (run_.tier - m.tier) * 8 - (m.persona == PR_SYSOP ? 25 : 0) - fg * 3;
+            chance = std::max(5, std::min(90, chance));
+            if (rng_.chance(chance)) {
+                int take = m.tier * 4 + 3;
+                run_.shards = (uint16_t)(run_.shards + take);
+                m.grudge = (int8_t)std::min(9, m.grudge + 2); faction_grudge(1);
+                push_event(T_EXTORT, parley_node_, m.archetype, parley_named_, 0);
+                logline(std::string("[THREATEN] ") + nm + " folds — extorted " + std::to_string(take) + " shards, free passage.");
+                bypass(false);
+            } else {
+                m.grudge = (int8_t)std::min(9, m.grudge + 2); faction_grudge(1);
+                logline(std::string("[THREATEN] ") + nm + " calls your bluff.");
+                to_fight();
+            }
+            break;
+        }
+        case 3: {  // APPEASE — small tribute, de-escalate, build toward an ally
+            if (run_.shards < parley_tribute_) {
+                logline(std::string("[APPEASE] nothing to offer ") + nm + ".");
+                to_fight();
+            } else {
+                run_.shards = (uint16_t)(run_.shards - parley_tribute_);
+                add_heat(-4);
+                m.grudge = (int8_t)std::max(-9, m.grudge - 3); faction_grudge(-2);
+                m.disposition = (uint8_t)std::min(100, (int)m.disposition + 15);
+                logline(std::string("[APPEASE] tribute paid — ") + nm + " softens; faction grudge eased.");
+                if (m.grudge <= -3) {
+                    m.status = NS_ALLIED;
+                    push_event(T_ALLY, parley_node_, m.archetype, parley_named_, 0);
+                    logline(std::string(nm) + " counts you a friend now.");
+                } else {
+                    push_event(T_PARLEY, parley_node_, m.archetype, parley_named_, 0);
+                }
+                bypass(false);
+            }
+            break;
+        }
+        default:   // FIGHT
+            to_fight();
+            break;
+    }
+}
 void Sim::open_survival() {
     pending_ = true;
     dec_ = Decision{};
@@ -792,6 +967,7 @@ void Sim::choose(int option_index) {
     switch (kind) {
         case DK_ENCOUNTER: resolve_round(option_index); break;
         case DK_BRANCH:    resolve_branch(option_index); break;
+        case DK_PARLEY:    resolve_parley(option_index); break;
         case DK_SURVIVAL:  resolve_survival(option_index); break;
         case DK_EXTRACT:   resolve_extract(option_index); break;
         case DK_DIVE:      resolve_dive(option_index); break;
@@ -1082,6 +1258,21 @@ const char* B_LOCKDOWN[] = {
 const char* B_SACRIFICE[] = {
     "You left the prize on the table and ran for the door.",
 };
+const char* B_PARLEY[] = {
+    "You traded words with {enemy} in {node} until the gate sighed open, {simile}.",
+    "{enemy} listened, which was more than the ICE usually did, and let you slide past.",
+};
+const char* B_ALLY[] = {
+    "{enemy} owed you now — a voice that would answer next time you came up cold into the dark.",
+    "You'd turned {enemy}, bought yourself a ghost in somebody else's machine, {simile}.",
+};
+const char* B_EXTORT[] = {
+    "You leaned on {enemy} until it bled credit, {simile}.",
+    "{enemy} bought its own life back from you in {node}, and hated you for it.",
+};
+const char* B_BRIBE[] = {
+    "You paid {enemy} off in {node}; down here even the watchdogs took coin.",
+};
 
 std::string subst(const std::string& tmpl, Rng& cr, const std::string& node,
                   const std::string& faction, const std::string& enemy) {
@@ -1127,6 +1318,10 @@ std::string Sim::chronicle() const {
             case T_REVENGE:     pool = B_REVENGE;     pooln = sizeof(B_REVENGE)/sizeof(char*); break;
             case T_LOCKDOWN:    pool = B_LOCKDOWN;    pooln = sizeof(B_LOCKDOWN)/sizeof(char*); break;
             case T_SACRIFICE:   pool = B_SACRIFICE;   pooln = sizeof(B_SACRIFICE)/sizeof(char*); break;
+            case T_PARLEY:      pool = B_PARLEY;      pooln = sizeof(B_PARLEY)/sizeof(char*); break;
+            case T_ALLY:        pool = B_ALLY;        pooln = sizeof(B_ALLY)/sizeof(char*); break;
+            case T_EXTORT:      pool = B_EXTORT;      pooln = sizeof(B_EXTORT)/sizeof(char*); break;
+            case T_BRIBE:       pool = B_BRIBE;       pooln = sizeof(B_BRIBE)/sizeof(char*); break;
             default: continue;
         }
         used[e.tag] = true;
@@ -1195,6 +1390,21 @@ int ai_decide(uint8_t pers, const RunState& r, const Decision& d, Rng& rng) {
             if (n <= 0) return 0;
             if (pers == P_RECKLESS || pers == P_OPPORTUNIST) return n - 1;  // highest risk/reward (sorted asc)
             return 0;                                                       // cautious/loyalist: safest
+        }
+        case DK_PARLEY: {
+            // options: 0 Parley, 1 Bribe, 2 Threaten, 3 Appease, 4 Fight.
+            // each directive negotiates in character; combat is still the default
+            // when diplomacy doesn't fit, so progression (tier from kills) holds.
+            int lowint = r.integrity_max ? r.integrity * 100 / r.integrity_max : 0;
+            if (lowint < 30) {                                  // hurt: avoid the fight if you can
+                if (pers == P_OPPORTUNIST && r.shards >= 40) return 1;   // buy your way out
+                if (pers == P_LOYALIST || pers == P_CAUTIOUS) return r.shards >= 20 ? 3 : 0;
+                return 2;                                       // reckless leans on it
+            }
+            if (pers == P_RECKLESS)    return 4;                // break it
+            if (pers == P_OPPORTUNIST) return r.shards >= 60 ? 1 : 4;
+            if (pers == P_LOYALIST)    return r.shards >= 20 ? 3 : 0;
+            return 0;                                           // cautious: try to talk first
         }
         case DK_SURVIVAL: {
             int patch = find_module_option(d, M_PATCH);

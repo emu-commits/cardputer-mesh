@@ -351,8 +351,9 @@ private:
         const cy::Decision& d = sim_.decision();
         int n = (int)d.options.size();
         const char* title = d.kind == cy::DK_DIVE ? " DESCENT " : d.kind == cy::DK_EXTRACT ? " EXTRACTION "
-                          : d.kind == cy::DK_SURVIVAL ? " SURVIVAL " : " ROUTE ";
-        uint8_t accent = d.kind == cy::DK_SURVIVAL ? ui::BrightRed : d.kind == cy::DK_DIVE ? ui::BrightGreen : ui::BrightYellow;
+                          : d.kind == cy::DK_SURVIVAL ? " SURVIVAL " : d.kind == cy::DK_PARLEY ? " PARLEY " : " ROUTE ";
+        uint8_t accent = d.kind == cy::DK_SURVIVAL ? ui::BrightRed : d.kind == cy::DK_DIVE ? ui::BrightGreen
+                       : d.kind == cy::DK_PARLEY ? ui::BrightCyan : ui::BrightYellow;
         int bottom = c.height() - 3;                       // leave status (h-2) + footer (h-1)
         auto pl = ui::wrap_text(d.prompt, c.width() - 2);
         int pln = (int)pl.size(); if (pln > 2) pln = 2;
@@ -369,7 +370,7 @@ private:
             c.text(row, 1, ui::fit(line, c.width() - 2), s ? ui::BrightWhite : ui::White, ui::Black, s ? ui::ATTR_INVERSE : ui::ATTR_NONE);
         }
         render_status(c);                                  // keep status visible under the panel
-        ui::footer(c, " up/dn pick   enter/1-4 choose   esc:leave ");
+        ui::footer(c, " up/dn pick   enter/1-5 choose   esc:leave ");
     }
 
     // ---- OVER: the chronicle -----------------------------------------------

@@ -45,6 +45,8 @@
   /* decision panel — docked at bottom, never covers map/status */
   #decision { border:1px solid var(--gold); border-radius:10px; background:var(--panel); padding:10px; }
   #decision.siege{border-color:var(--hot)}
+  #decision.parley{border-color:#7bffd9}
+  #decision.parley h2{color:#7bffd9}
   #decision h2{margin:0 0 6px;font-size:13px;letter-spacing:2px;color:var(--gold)}
   #decision p{margin:0 0 8px;font-size:14px}
   #decision .opt{display:block;width:100%;text-align:left;margin:5px 0}
@@ -324,9 +326,9 @@ function render(){
 function openDecision(){
   const d = S.dec; if (!d){ paused=false; return; }
   const el = qs("decision");
-  el.className = d.kind===0 ? "siege" : "";
+  el.className = d.kind===0 ? "siege" : d.kind===6 ? "parley" : "";
   el.classList.remove("hidden");
-  const label = d.kind===5?"DESCENT":d.kind===4?"EXTRACTION":d.kind===3?"SURVIVAL":"ROUTE";
+  const label = d.kind===5?"DESCENT":d.kind===4?"EXTRACTION":d.kind===3?"SURVIVAL":d.kind===6?"PARLEY":"ROUTE";
   let html = `<h2>${label}</h2><p>${esc(d.prompt)}</p>`;
   d.opts.forEach((o,i)=> html += `<button class="opt" data-i="${i}">${i+1}  ${esc(o)}</button>`);
   el.innerHTML = html;

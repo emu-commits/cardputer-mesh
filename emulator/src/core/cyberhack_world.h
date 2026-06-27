@@ -32,6 +32,8 @@ enum Attitude : uint8_t { A_FRIENDLY, A_NEUTRAL, A_HOSTILE, A_HUNTING };
 enum Module   : uint8_t { M_SPIKE, M_MASK, M_FORK, M_PATCH, M_GHOST, M_COUNT };
 enum Ice      : uint8_t { I_BLACK, I_TRACE, I_WARDEN, I_SWARM, I_WATCHDOG, I_SYSOP, I_COUNT };
 enum Personality : uint8_t { P_RECKLESS, P_CAUTIOUS, P_OPPORTUNIST, P_LOYALIST, P_COUNT };
+// the four kinds of mind behind a named entity — drives dialogue + which tactic bites
+enum Persona  : uint8_t { PR_AI, PR_SYSOP, PR_DAEMON, PR_CONSTRUCT, PR_COUNT };
 enum Outcome  : uint8_t { O_RUNNING, O_EXTRACTED, O_DIED };
 enum Death    : uint8_t { D_NONE, D_ICE, D_CORRUPTION, D_HUNTED, D_TRACE, D_TIMEOUT };
 
@@ -39,13 +41,14 @@ enum Death    : uint8_t { D_NONE, D_ICE, D_CORRUPTION, D_HUNTED, D_TRACE, D_TIME
 enum Tag : uint8_t {
     T_NONE, T_JACKIN, T_FIRST_BLOOD, T_BIG_SCORE, T_CLOSE_CALL, T_REVENGE,
     T_BETRAYAL, T_SACRIFICE, T_HUMILIATION, T_LOCKDOWN, T_BURNED, T_HUNT,
-    T_EXTRACT, T_DEATH, T_TAGCOUNT
+    T_EXTRACT, T_DEATH, T_PARLEY, T_ALLY, T_EXTORT, T_BRIBE, T_TAGCOUNT
 };
 
-// decision-spike kinds
-enum DecisionKind : uint8_t { DK_ENCOUNTER, DK_BRANCH, DK_FACTION, DK_SURVIVAL, DK_EXTRACT, DK_DIVE };
+// decision-spike kinds (DK_PARLEY appended last to keep the wire numbers stable)
+enum DecisionKind : uint8_t { DK_ENCOUNTER, DK_BRANCH, DK_FACTION, DK_SURVIVAL, DK_EXTRACT, DK_DIVE, DK_PARLEY };
 
-enum NamedStatus : uint8_t { NS_ALIVE, NS_CRIPPLED, NS_DEAD };
+// NS_ALLIED: an entity you talked down / befriended — it opens gates on later runs
+enum NamedStatus : uint8_t { NS_ALIVE, NS_CRIPPLED, NS_DEAD, NS_ALLIED };
 
 // ---- RNG (xorshift128) — the one source of determinism ---------------------
 struct Rng {
@@ -60,7 +63,8 @@ struct Rng {
 // ---- world structures ------------------------------------------------------
 enum NodeFlags : uint8_t {
     NF_VISITED   = 1, NF_BURNED_GUARD = 2, NF_MARKED = 4,
-    NF_BACKDOOR  = 8, NF_LOOTED = 16, NF_GUARD_DONE = 32, NF_OBJECTIVE = 64
+    NF_BACKDOOR  = 8, NF_LOOTED = 16, NF_GUARD_DONE = 32, NF_OBJECTIVE = 64,
+    NF_PARLEYED  = 128   // a parley was already offered at this node (once per node)
 };
 
 struct Node {
@@ -88,6 +92,8 @@ struct NamedIce {
     uint8_t status   = NS_ALIVE;
     uint8_t faction  = F_COUNT;
     int8_t  grudge   = 0;
+    uint8_t persona  = PR_AI;     // kind of mind — drives dialogue + negotiation
+    uint8_t disposition = 50;     // 0..100 openness to being talked down
 };
 
 struct FactionState { uint8_t attitude = A_NEUTRAL; int8_t grudge = 0; };
@@ -267,6 +273,8 @@ private:
     void resolve_round(int option);
     void finish_fight(bool won, bool escaped);
     void open_branch();
+    void open_parley();          // a named entity blocks the way — negotiate or fight
+    void resolve_parley(int option);
     void open_survival();
     void open_extract();
     void open_dive();            // after an objective: jack out, or dive deeper
@@ -289,6 +297,10 @@ private:
     bool survival_warned_ = false;            // suppress repeat survival spikes
     std::vector<uint8_t> branched_;           // nodes a branch was already offered at
     std::vector<uint8_t> branch_opts_;        // neighbor id per current branch option
+    uint8_t parley_named_ = NONE8;            // entity in the current parley
+    uint8_t parley_node_  = 0;                // node of the current parley
+    int     parley_bribe_ = 0;                // bribe cost shown this parley
+    int     parley_tribute_ = 0;              // appease tribute shown this parley
 };
 
 // run a whole dive headless under an AI policy; returns the finished Sim.
@@ -304,6 +316,7 @@ const char* node_type_name(uint8_t);
 const char* ice_name(uint8_t);
 const char* module_name(uint8_t);
 const char* named_name(uint8_t name_id);
+const char* persona_name(uint8_t persona);            // "AI" / "sysop" / "daemon" / "construct"
 std::string node_label(const World&, uint8_t node);   // e.g. "GRID-13"
 uint8_t ice_weakness(uint8_t ice);                    // module that counters it
 uint8_t ice_punish(uint8_t ice);                      // module it punishes (or M_COUNT)
