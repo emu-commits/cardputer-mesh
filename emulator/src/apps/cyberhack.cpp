@@ -112,8 +112,12 @@ private:
 
     // ---- CRAWL: the net-graph console you watch ----------------------------
     bool key_crawl(AppContext& ctx, const KeyEvent& k) {
-        (void)ctx;
         if (k.is_char() && (k.ch == ' ')) { last_step_ = 0; return true; }  // nudge a step
+        if (k.is_char() && (k.ch == 'j' || k.ch == 'J')) {                  // pull the plug, bank the haul
+            sim_.jack_out();
+            if (!sim_.running()) end_run(ctx);
+            return true;
+        }
         return false;   // Esc bubbles
     }
     char node_glyph(const cy::World& w, uint8_t i) const {
@@ -152,20 +156,30 @@ private:
         // log pane (recent lines) below the map
         int logtop = top + map_h + 2;
         c.hline(logtop - 1, 1, c.width() - 2, U'-', ui::Gray, ui::Black);
+        // auto-combat siege line — always visible, never a separate screen
+        if (r.in_fight) {
+            int barw = 16; int filled = r.ice_hp_max > 0 ? r.ice_hp * barw / r.ice_hp_max : 0;
+            std::string bar = "breaking ICE [";
+            for (int i = 0; i < barw; ++i) bar += (i < filled ? '#' : '-');
+            char hp[24]; std::snprintf(hp, sizeof hp, "] %d/%d", (int)r.ice_hp, (int)r.ice_hp_max);
+            c.text(logtop, 1, ui::fit(bar + hp, c.width() - 2), ui::BrightRed, ui::Black);
+            logtop += 1;
+        }
         const auto& log = sim_.log();
         int rows = (c.height() - 3) - logtop + 1;
         int start = (int)log.size() - rows; if (start < 0) start = 0;
         for (int i = start, rr = logtop; i < (int)log.size() && rr <= c.height() - 3; ++i, ++rr)
             c.text(rr, 1, ui::fit(log[i], c.width() - 2), i == (int)log.size() - 1 ? ui::White : ui::Gray, ui::Black);
         render_status(c);
-        ui::footer(c, " watch the dive   space: step   esc: leave ");
+        ui::footer(c, " watch the dive   j: jack out   space: step   esc: leave ");
     }
     void render_status(TextCanvas& c) {
         const cy::RunState& r = sim_.state();
         char b[80];
-        std::snprintf(b, sizeof b, " Intg %d/%d  Buf %d/%d  Heat %d  Cor %d%%  T%d  $%d ",
+        std::snprintf(b, sizeof b, " Intg %d/%d Buf %d/%d Heat %d Cor %d%% T%d L%d obj%d $%d ",
                       (int)r.integrity, (int)r.integrity_max, (int)r.buffer, (int)r.buffer_max,
-                      (int)r.heat, (int)r.corruption, (int)r.tier, (int)r.shards);
+                      (int)r.heat, (int)r.corruption, (int)r.tier, (int)r.depth + 1,
+                      (int)r.objectives_done, (int)r.shards);
         c.text(c.height() - 2, 0, ui::fit(b, c.width()), ui::Black, ui::BrightGreen);
     }
 
@@ -186,32 +200,32 @@ private:
         if (sim_.needs_decision()) { view_ = CARD; }        // next siege round / next decision
         else { view_ = CRAWL; last_step_ = ctx.now_ms; }
     }
+    // A decision (route / extraction / survival — combat auto-resolves and never
+    // reaches here). Docked as a panel ABOVE the status line so the map + status
+    // stay visible the whole time; never a full-screen modal.
     void render_card(TextCanvas& c) {
         const cy::Decision& d = sim_.decision();
-        const cy::RunState& r = sim_.state();
         int n = (int)d.options.size();
-        int rows = n + (r.in_fight ? 7 : 5);
-        int ir, ic, iw, ih;
-        bool fight = (d.kind == cy::DK_ENCOUNTER);
-        ui::modal_box(c, rows, 40, fight ? "ICE SIEGE" : "DECISION",
-                      fight ? ui::BrightRed : ui::BrightYellow, ir, ic, iw, ih, "1-5 / enter");
-        int row = ir;
-        for (auto& ln : ui::wrap_text(d.prompt, iw)) { if (row >= ir + ih - n - 1) break; c.text(row++, ic, ln, ui::White, ui::Black); }
-        if (r.in_fight) {
-            // ICE integrity bar + your buffer — the siege state
-            int barw = iw - 8; if (barw < 6) barw = 6;
-            int filled = r.ice_hp_max > 0 ? r.ice_hp * barw / r.ice_hp_max : 0;
-            std::string bar = "ICE ["; for (int i = 0; i < barw; ++i) bar += (i < filled ? '#' : '-'); bar += "]";
-            c.text(row++, ic, ui::fit(bar, iw), ui::BrightRed, ui::Black);
-            char bb[40]; std::snprintf(bb, sizeof bb, "buffer %d/%d   corr %d%%", (int)r.buffer, (int)r.buffer_max, (int)r.corruption);
-            c.text(row++, ic, bb, r.buffer < 5 ? ui::BrightRed : ui::BrightCyan, ui::Black);
-        }
-        row++;
-        for (int i = 0; i < n && row < ir + ih; ++i, ++row) {
+        const char* title = d.kind == cy::DK_DIVE ? " DESCENT " : d.kind == cy::DK_EXTRACT ? " EXTRACTION "
+                          : d.kind == cy::DK_SURVIVAL ? " SURVIVAL " : " ROUTE ";
+        uint8_t accent = d.kind == cy::DK_SURVIVAL ? ui::BrightRed : d.kind == cy::DK_DIVE ? ui::BrightGreen : ui::BrightYellow;
+        int bottom = c.height() - 3;                       // leave status (h-2) + footer (h-1)
+        auto pl = ui::wrap_text(d.prompt, c.width() - 2);
+        int pln = (int)pl.size(); if (pln > 2) pln = 2;
+        int h = 1 + pln + n;                               // title + prompt + options
+        int topr = bottom - h + 1; if (topr < 3) topr = 3;
+        c.fill_rect(topr - 1, 0, h + 1, c.width(), U' ', ui::White, ui::Black);
+        c.hline(topr - 1, 0, c.width(), U'=', accent, ui::Black);
+        c.text(topr - 1, 2, title, accent, ui::Black, ui::ATTR_BOLD);
+        int row = topr;
+        for (int i = 0; i < pln; ++i) c.text(row++, 1, ui::fit(pl[i], c.width() - 2), ui::White, ui::Black);
+        for (int i = 0; i < n && row <= bottom; ++i, ++row) {
             bool s = (i == sel_);
             char line[48]; std::snprintf(line, sizeof line, "%d %s", i + 1, d.options[i].c_str());
-            c.text(row, ic, ui::fit(line, iw), s ? ui::BrightWhite : ui::White, ui::Black, s ? ui::ATTR_INVERSE : ui::ATTR_NONE);
+            c.text(row, 1, ui::fit(line, c.width() - 2), s ? ui::BrightWhite : ui::White, ui::Black, s ? ui::ATTR_INVERSE : ui::ATTR_NONE);
         }
+        render_status(c);                                  // keep status visible under the panel
+        ui::footer(c, " up/dn pick   enter/1-4 choose   esc:leave ");
     }
 
     // ---- OVER: the chronicle -----------------------------------------------

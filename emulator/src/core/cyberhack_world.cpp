@@ -117,7 +117,7 @@ void Sim::gen_world(const Legends* prior) {
             nd.type = roll < 30 ? N_VAULT : roll < 50 ? N_GANG : roll < 70 ? N_PUBLIC
                      : roll < 88 ? N_ABANDONED : N_SHRINE;
         }
-        int base_sec = 1 + depth + (nd.type == N_VAULT ? 2 : nd.type == N_GANG ? 1 : 0);
+        int base_sec = 1 + depth + run_.depth + (nd.type == N_VAULT ? 2 : nd.type == N_GANG ? 1 : 0);
         nd.security = (uint8_t)std::min(9, base_sec + (int)cnet.range(2));
         if (nd.type == N_PUBLIC || nd.type == N_SHRINE) nd.faction = (depth == 0) ? (uint8_t)F_SWITCHBOARD : nd.faction;
     }
@@ -177,11 +177,13 @@ void Sim::place_content() {
             default:          n.guard_ice = I_WATCHDOG; break;
         }
         if (n.guard_ice == I_COUNT) n.flags |= NF_GUARD_DONE;  // unguarded
+        n.guard_count = 1;
         if (n.type == N_VAULT || n.type == N_GANG || n.type == N_SHRINE)
             n.shards = (int16_t)(n.security * r.between(5, 15));
     }
-    // the objective node is always boss-guarded
+    // the objective node is the climax boss
     if (w.nodes[best].guard_ice == I_COUNT) { w.nodes[best].guard_ice = I_BLACK; w.nodes[best].flags &= ~NF_GUARD_DONE; }
+    w.nodes[best].guard_count = 1;
 
     // --- the gauntlet: escalating named ICE placed ALONG the route to the
     // objective, so the run is a forced descent. Each kill earns the Tier the
@@ -381,9 +383,20 @@ void Sim::start(uint32_t citynet_seed, uint32_t run_seed, uint8_t personality, c
 }
 
 // ---- the step machine ------------------------------------------------------
+// If a combat round is pending and auto-combat is on, resolve ONE round via the
+// personality AI (no rng_ entropy consumed for the choice) and report a step so
+// the UI animates it; otherwise surface the decision to the caller.
+AdvanceResult Sim::decide_or_auto() {
+    if (auto_combat_ && pending_ && dec_.kind == DK_ENCOUNTER) {
+        choose(ai_decide(run_.personality, run_, dec_, rng_));
+        return AR_STEPPED;
+    }
+    return AR_DECISION;
+}
+
 AdvanceResult Sim::advance() {
     if (run_.outcome != O_RUNNING) return AR_ENDED;
-    if (pending_) return AR_DECISION;
+    if (pending_) return decide_or_auto();
     if (run_.step >= MAX_STEPS) {
         if (run_.objective_done) { run_.outcome = O_EXTRACTED; }
         else { run_.outcome = O_DIED; run_.death_cause = D_TIMEOUT; }
@@ -401,18 +414,20 @@ AdvanceResult Sim::advance() {
             uint8_t ice = named != NONE8 ? world_.named[named].archetype : I_BLACK;
             push_event(T_HUNT, run_.pos, ice, named, 0);
             begin_fight(run_.pos, ice, named, true);
-            return AR_DECISION;
+            return decide_or_auto();
         }
     }
 
     // 2) guard at this node: named ICE → a real multi-round fight; trivial ICE
     // the deck sweeps on its own (a small toll in buffer + integrity).
     if (!(here.flags & NF_GUARD_DONE) && here.guard_ice < I_COUNT) {
-        uint8_t ice = here.guard_ice;
-        if (here.guard_named != NONE8) { begin_fight(run_.pos, ice, here.guard_named, false); return AR_DECISION; }
-        auto_trivial(ice);
-        here.flags |= NF_GUARD_DONE;
-        return AR_STEPPED;
+        // a lone watchdog the deck sweeps; anything else is a break-in of one or
+        // more ICE fought in sequence (node_clears tracks progress here).
+        bool trivial = (here.guard_count <= 1 && here.guard_named == NONE8 && here.guard_ice == I_WATCHDOG);
+        if (trivial) { auto_trivial(here.guard_ice); here.flags |= NF_GUARD_DONE; return AR_STEPPED; }
+        bool boss = (run_.node_clears >= here.guard_count - 1) && here.guard_named != NONE8;
+        begin_fight(run_.pos, here.guard_ice, boss ? here.guard_named : NONE8, false);
+        return decide_or_auto();
     }
 
     // 3) objective reached
@@ -475,24 +490,14 @@ void Sim::accrue_and_move() {
         run_.buffer = (int16_t)std::min((int)run_.buffer_max, run_.buffer + 3);
     run_.step++;
 
-    uint8_t target = run_.exfil ? world_.entry : world_.objective.target;
-    if (run_.exfil && run_.pos == world_.entry) {
-        run_.outcome = O_EXTRACTED;
-        push_event(T_EXTRACT, run_.pos, I_COUNT, NONE8, 0);
-        logline("jacked out clean.");
-        return;
-    }
-    int hop = committed_branch_ != NONE8 ? committed_branch_ : next_hop_toward(target);
+    // descend toward this layer's objective (no exfil — you jack out by choice).
+    int hop = committed_branch_ != NONE8 ? committed_branch_ : next_hop_toward(world_.objective.target);
     committed_branch_ = NONE8;
-    if (hop < 0) {
-        if (run_.objective_done) { run_.exfil = true; hop = next_hop_toward(world_.entry); }
-        if (hop < 0) {
-            run_.outcome = run_.objective_done ? O_EXTRACTED : O_DIED;
-            if (run_.outcome == O_DIED) run_.death_cause = D_TRACE;
-            return;
-        }
+    if (hop < 0) {                       // boxed in (all routes locked) — the trace gets you
+        run_.outcome = O_DIED; run_.death_cause = D_TRACE; return;
     }
     run_.pos = (uint8_t)hop;
+    run_.node_clears = 0;                 // fresh node = fresh break-in
     world_.nodes[run_.pos].flags |= NF_VISITED;
 }
 
@@ -643,16 +648,16 @@ void Sim::finish_fight(bool won, bool escaped) {
     pending_ = false;
     uint8_t ice = run_.fight_ice, named = run_.fight_named;
     Node& node = world_.nodes[run_.fight_node];
-    node.flags |= NF_GUARD_DONE;
 
     if (escaped && !won) {
         run_.fork_active = false;
-        if (run_.is_hunter_fight) { /* hunter keeps the trail; not cleared */ }
+        node.flags |= NF_GUARD_DONE;     // slipped past — the whole node is bypassed (no loot)
         return;
     }
-    // won
+    // won this ICE
     run_.fork_active = false;
     run_.ice_killed++;
+    run_.node_clears++;
     if (named != NONE8) {
         run_.named_killed++;
         run_.tier = (uint8_t)std::min(9, run_.tier + 1);
@@ -665,11 +670,15 @@ void Sim::finish_fight(bool won, bool escaped) {
     } else {
         push_event(T_FIRST_BLOOD, run_.fight_node, ice, NONE8, 0);
     }
-    if (node.shards > 0 && !(node.flags & NF_LOOTED)) {
-        grant_loot(node); add_heat(5);
-        if (node.faction < F_COUNT) world_.factions[node.faction].grudge += 1;
-        push_event(T_BIG_SCORE, run_.fight_node, ice, named, (int8_t)run_.heat);
-        logline(std::string("cracked ") + node_label(world_, run_.fight_node) + " — payload's yours.");
+    // node cleared once all its ICE are down → loot + move on
+    if (run_.node_clears >= node.guard_count) {
+        node.flags |= NF_GUARD_DONE;
+        if (node.shards > 0 && !(node.flags & NF_LOOTED)) {
+            grant_loot(node); add_heat(5);
+            if (node.faction < F_COUNT) world_.factions[node.faction].grudge += 1;
+            push_event(T_BIG_SCORE, run_.fight_node, ice, named, (int8_t)run_.heat);
+            logline(std::string("cracked ") + node_label(world_, run_.fight_node) + " — payload's yours.");
+        }
     }
     if (run_.integrity * 100 / run_.integrity_max < 25)
         push_event(T_CLOSE_CALL, run_.fight_node, ice, named, 0);
@@ -736,6 +745,7 @@ void Sim::choose(int option_index) {
         case DK_BRANCH:    resolve_branch(option_index); break;
         case DK_SURVIVAL:  resolve_survival(option_index); break;
         case DK_EXTRACT:   resolve_extract(option_index); break;
+        case DK_DIVE:      resolve_dive(option_index); break;
         case DK_FACTION:   break;
     }
 }
@@ -761,10 +771,8 @@ void Sim::resolve_survival(int option) {
         add_heat(-20); add_corruption(4);
         logline("ghosted — heat bleeding off, corruption climbing.");
     } else {
-        // pull out: abandon the objective, run for the door with what you have
-        run_.exfil = true;
-        push_event(T_SACRIFICE, run_.pos, I_COUNT, NONE8, 0);
-        logline("called it — running for the door.");
+        // pull out NOW: bank the haul and end the run
+        jack_out();
     }
     survival_warned_ = true;
 }
@@ -773,7 +781,7 @@ void Sim::resolve_extract(int option) {
     uint8_t mod = dec_.opt_module[option];
     Node& node = world_.nodes[run_.pos];
     run_.objective_done = true;
-    run_.exfil = true;
+    run_.objectives_done++;
     run_.has_ghostkey = true;
     int haul = world_.objective.reward;
     if (mod == M_SPIKE) { haul = haul * 3 / 2; add_heat(25); }
@@ -782,20 +790,78 @@ void Sim::resolve_extract(int option) {
     run_.shards = (uint16_t)(run_.shards + haul);
     grant_loot(node);
     run_.tier = (uint8_t)std::min(9, run_.tier + 1);
-    // upgrade the module you used
     run_.mod_level[mod] = (uint8_t)std::min(9, run_.mod_level[mod] + 1);
     run_.buffer_max = (int16_t)(run_.buffer_max + 4);
     if (node.faction < F_COUNT) world_.factions[node.faction].grudge += 3;
     push_event(T_BIG_SCORE, run_.pos, I_COUNT, NONE8, (int8_t)run_.heat);
     push_event(T_REVENGE, run_.pos, I_COUNT, NONE8, 0);
-    logline(std::string("burned the core of ") + node_label(world_, run_.pos) + " — " + std::to_string(haul) + " shards. Now get out.");
+    logline(std::string("burned the core of ") + node_label(world_, run_.pos) + " — " + std::to_string(haul) + " shards.");
+    open_dive();   // the choice: jack out with the haul, or dive deeper for more
 }
 
-// ---- scoring ---------------------------------------------------------------
+// After an objective: bank and leave, or push into a harder layer.
+void Sim::open_dive() {
+    pending_ = true;
+    dec_ = Decision{};
+    dec_.kind = DK_DIVE; dec_.node = run_.pos;
+    char b[112];
+    std::snprintf(b, sizeof b, "Objective down (%d cracked). $%d rides on you. Jack out, or dive deeper?",
+                  (int)run_.objectives_done, (int)run_.shards);
+    dec_.prompt = b;
+    char j[40], d[40];
+    std::snprintf(j, sizeof j, "Jack out — bank $%d", (int)run_.shards);
+    std::snprintf(d, sizeof d, "Dive deeper (layer %d)", (int)run_.depth + 2);
+    dec_.options = { j, d };
+    dec_.opt_module = { M_COUNT, M_COUNT };
+    logline(dec_.prompt);
+}
+void Sim::resolve_dive(int option) {
+    if (option == 0) jack_out();
+    else dive_deeper();
+}
+void Sim::dive_deeper() {
+    pending_ = false;
+    // carry faction grudges into the deeper layer so the net stays hostile
+    Legends prior{};
+    for (int f = 0; f < F_COUNT; ++f) prior.grudge[f] = world_.factions[f].grudge;
+    uint32_t base = world_.citynet_seed, rs = world_.run_seed;
+    run_.depth++;
+    uint32_t newcnet = base ^ (uint32_t)(run_.depth * 0x9E3779B9u);
+    uint32_t newseed = (rs * 2654435761u) ^ (uint32_t)(run_.depth * 40503u) ^ 0xD1Eu;
+    world_ = World{};
+    world_.citynet_seed = newcnet; world_.run_seed = newseed;
+    rng_.seed(((uint64_t)newcnet << 21) ^ newseed ^ 0xC0FFEEuLL);
+    gen_world(&prior);                                  // escalates via run_.depth
+    // reset the layer position/state; the DECK (tier, modules, shards, int, corr) carries
+    run_.pos = world_.entry; run_.hunter_pos = world_.entry;
+    run_.objective_done = false; run_.node_clears = 0; run_.in_fight = false;
+    run_.hunt_active = false; run_.hunter_named = NONE8; run_.exfil = false;
+    // punching through buys a breather: you enter the new layer near-fit and
+    // recharged — but Corruption never washes out, and each push adds more. Deep
+    // dives end when the deck is too corrupted to fire straight, not at a wall.
+    int floor80 = run_.integrity_max * 4 / 5;
+    if (run_.integrity < floor80) run_.integrity = (int16_t)floor80;
+    run_.buffer = run_.buffer_max;
+    if (run_.heat > 12) add_heat(-12);                  // shook some heat changing systems
+    add_corruption(4);                                  // ...but the deck degrades each push
+    survival_warned_ = false; committed_branch_ = NONE8; branched_.clear();
+    world_.nodes[run_.pos].flags |= NF_VISITED;
+    push_event(T_JACKIN, run_.pos, I_COUNT, NONE8, 0);
+    logline(std::string("punched through — layer ") + std::to_string((int)run_.depth + 1) + ", deeper and meaner.");
+}
+
+void Sim::jack_out() {
+    if (run_.outcome != O_RUNNING || run_.in_fight) return;   // can't pull out mid-siege
+    pending_ = false;
+    run_.outcome = O_EXTRACTED;
+    push_event(T_EXTRACT, run_.pos, I_COUNT, NONE8, 0);
+    logline(std::string("jacked out — banked ") + std::to_string((int)run_.shards) + " shards.");
+}
+
+// ---- scoring: a haul only counts if you JACK OUT; death loses the unbanked data
 int Sim::score() const {
-    int s = run_.shards + run_.tier * 100 + run_.named_killed * 200 - run_.corruption * 3;
-    if (run_.objective_done) s += 500;
-    if (run_.outcome == O_EXTRACTED) s += 300;
+    int s = run_.tier * 100 + run_.named_killed * 200 + run_.objectives_done * 300 - run_.corruption * 3;
+    if (run_.outcome == O_EXTRACTED) s += run_.shards;     // banked
     return s < 0 ? 0 : s;
 }
 
@@ -1090,6 +1156,13 @@ int ai_decide(uint8_t pers, const RunState& r, const Decision& d, Rng& rng) {
             int mask = find_module_option(d, M_MASK);
             if (pers == P_RECKLESS || pers == P_OPPORTUNIST) return spike >= 0 ? spike : 0;
             return mask >= 0 ? mask : 0;
+        }
+        case DK_DIVE: {
+            // option 0 = jack out (bank), 1 = dive deeper (risk it for more)
+            int lowint = r.integrity_max ? r.integrity * 100 / r.integrity_max : 0;
+            if (pers == P_RECKLESS)    return (lowint < 25 || r.corruption > 70) ? 0 : 1;          // push hard
+            if (pers == P_OPPORTUNIST) return (lowint < 45 || r.heat >= g_tune.heat_t3 || r.depth >= 2) ? 0 : 1;
+            return 0;                                                                                 // cautious/loyalist: bank the first haul, don't push luck
         }
         default: return (int)rng.range((uint32_t)std::max<size_t>(1, d.options.size()));
     }

@@ -182,7 +182,7 @@ static void balance(uint32_t seeds, uint8_t pol) {
     int extracted = 0, died = 0;
     int death_cause[D_TIMEOUT + 1] = {0};
     long sum_steps = 0, sum_tier = 0, sum_shards = 0, sum_heat = 0, sum_corr = 0, sum_score = 0, sum_named = 0;
-    long obj_done = 0;
+    long obj_done = 0, sum_depth = 0, sum_objs = 0, max_depth = 0;
     // power-vs-threat gap, sampled at every decision point across all runs
     long gap_sum = 0; long gap_n = 0; int gap_min = 1 << 30, gap_max = -(1 << 30);
     for (uint32_t s = 1; s <= seeds; ++s) {
@@ -201,13 +201,16 @@ static void balance(uint32_t seeds, uint8_t pol) {
         }
         const RunState& r = sim.state();
         if (r.outcome == O_EXTRACTED) ++extracted; else { ++died; death_cause[r.death_cause]++; }
-        if (r.objective_done) ++obj_done;
+        if (r.objectives_done > 0) ++obj_done;
+        sum_depth += r.depth; sum_objs += r.objectives_done; if (r.depth > max_depth) max_depth = r.depth;
         sum_steps += r.step; sum_tier += r.tier; sum_shards += r.shards;
         sum_heat += r.heat; sum_corr += r.corruption; sum_score += sim.score(); sum_named += r.named_killed;
     }
     double n = seeds ? seeds : 1;
-    std::printf("extract  %5.1f%%   died %5.1f%%   objective cracked %5.1f%%\n",
+    std::printf("extract  %5.1f%%   died %5.1f%%   cracked>=1 obj %5.1f%%\n",
                 100.0 * extracted / n, 100.0 * died / n, 100.0 * obj_done / n);
+    std::printf("descent: avg layer %.2f (max %ld)   avg objectives %.2f\n",
+                sum_depth / n + 1.0, max_depth + 1, sum_objs / n);
     const char* dn[] = {"none", "ice", "corruption", "hunted", "trace", "timeout"};
     std::printf("deaths:");
     for (int i = 0; i <= D_TIMEOUT; ++i) if (death_cause[i]) std::printf("  %s=%.1f%%", dn[i], 100.0 * death_cause[i] / n);

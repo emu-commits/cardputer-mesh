@@ -30,10 +30,11 @@ static std::string state_json() {
     std::snprintf(b, sizeof b,
         "{\"r\":{\"int\":%d,\"intmax\":%d,\"buf\":%d,\"bufmax\":%d,\"heat\":%d,\"cor\":%d,"
         "\"tier\":%d,\"sh\":%d,\"pos\":%d,\"out\":%d,\"dc\":%d,\"fight\":%d,\"ihp\":%d,\"ihpmax\":%d,"
-        "\"objdone\":%d,\"hunt\":%d,\"hpos\":%d,\"score\":%d},",
+        "\"objdone\":%d,\"hunt\":%d,\"hpos\":%d,\"score\":%d,\"depth\":%d,\"objs\":%d},",
         r.integrity, r.integrity_max, r.buffer, r.buffer_max, r.heat, r.corruption,
         r.tier, r.shield, r.pos, r.outcome, r.death_cause, r.in_fight ? 1 : 0, r.ice_hp, r.ice_hp_max,
-        r.objective_done ? 1 : 0, r.hunt_active ? 1 : 0, r.hunt_active ? r.hunter_pos : -1, g_sim.score());
+        r.objective_done ? 1 : 0, r.hunt_active ? 1 : 0, r.hunt_active ? r.hunter_pos : -1, g_sim.score(),
+        r.depth, r.objectives_done);
     o += b;
     std::snprintf(b, sizeof b, "\"obj\":%d,\"entry\":%d,\"nc\":%d,", w.objective.target, w.entry, w.node_count);
     o += b;
@@ -42,8 +43,8 @@ static std::string state_json() {
     for (int i = 0; i < w.node_count; ++i) {
         const Node& n = w.nodes[i];
         int named = (n.guard_named != NONE8 && !(n.flags & NF_GUARD_DONE)) ? 1 : 0;
-        std::snprintf(b, sizeof b, "%s[%d,%d,%d,%d,%d]", i ? "," : "",
-                      n.x, n.y, n.type, (n.flags & NF_VISITED) ? 1 : 0, named);
+        std::snprintf(b, sizeof b, "%s[%d,%d,%d,%d,%d,%d]", i ? "," : "",
+                      n.x, n.y, n.type, (n.flags & NF_VISITED) ? 1 : 0, named, n.name_pre);
         o += b;
     }
     o += "],";
@@ -66,14 +67,16 @@ static std::string state_json() {
 
 extern "C" {
 
-EMSCRIPTEN_KEEPALIVE void ch_start(unsigned cnet, unsigned seed, const char* leg) {
+EMSCRIPTEN_KEEPALIVE void ch_start(unsigned cnet, unsigned seed, int pers, const char* leg) {
     g_leg = Legends{};
     bool have = false;
     if (leg && *leg) have = legends_deserialize(std::string(leg), g_leg);
-    g_sim.start((uint32_t)cnet, (uint32_t)seed, (uint8_t)P_CAUTIOUS, have ? &g_leg : nullptr);
+    if (pers < 0 || pers >= P_COUNT) pers = P_CAUTIOUS;
+    g_sim.start((uint32_t)cnet, (uint32_t)seed, (uint8_t)pers, have ? &g_leg : nullptr);
 }
 EMSCRIPTEN_KEEPALIVE int  ch_advance() { return (int)g_sim.advance(); }
 EMSCRIPTEN_KEEPALIVE void ch_choose(int i) { g_sim.choose(i); }
+EMSCRIPTEN_KEEPALIVE void ch_jack_out() { g_sim.jack_out(); }   // player pulls the plug
 EMSCRIPTEN_KEEPALIVE int  ch_running() { return g_sim.running() ? 1 : 0; }
 EMSCRIPTEN_KEEPALIVE const char* ch_state() { g_buf = state_json(); return g_buf.c_str(); }
 EMSCRIPTEN_KEEPALIVE const char* ch_chronicle() { g_buf = g_sim.chronicle(); return g_buf.c_str(); }

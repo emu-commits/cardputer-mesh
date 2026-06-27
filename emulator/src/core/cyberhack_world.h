@@ -22,7 +22,7 @@ static constexpr int MAX_NAMED   = 8;
 static constexpr int MAX_BURNED  = 16;
 static constexpr int MAX_MARKED  = 16;
 static constexpr int EVENT_RING  = 64;
-static constexpr int MAX_STEPS   = 240;   // hard bound → every run terminates
+static constexpr int MAX_STEPS   = 4000;  // high safety bound; runs end by jack-out or death
 static constexpr uint8_t NONE8   = 0xFF;
 
 // ---- enums -----------------------------------------------------------------
@@ -43,7 +43,7 @@ enum Tag : uint8_t {
 };
 
 // decision-spike kinds
-enum DecisionKind : uint8_t { DK_ENCOUNTER, DK_BRANCH, DK_FACTION, DK_SURVIVAL, DK_EXTRACT };
+enum DecisionKind : uint8_t { DK_ENCOUNTER, DK_BRANCH, DK_FACTION, DK_SURVIVAL, DK_EXTRACT, DK_DIVE };
 
 enum NamedStatus : uint8_t { NS_ALIVE, NS_CRIPPLED, NS_DEAD };
 
@@ -72,6 +72,7 @@ struct Node {
     uint8_t name_pre  = 0;        // index into NODE_PREFIX
     uint8_t guard_ice = I_WATCHDOG;
     uint8_t guard_named = NONE8;  // index into World.named, else NONE8
+    uint8_t guard_count = 1;      // ICE to clear here (a node is a few battles, then move on)
     uint8_t deg = 0;
     uint8_t nbr[5] = {NONE8, NONE8, NONE8, NONE8, NONE8};
     int16_t shards  = 0;          // loot payload
@@ -126,8 +127,11 @@ struct RunState {
     uint8_t outcome = O_RUNNING;
     uint8_t death_cause = D_NONE;
     uint16_t step = 0;
-    bool objective_done = false;
-    bool exfil = false;          // objective cracked → heading for the door
+    uint8_t depth = 0;           // how many layers deep this dive has gone
+    uint8_t objectives_done = 0; // objectives cracked this run (across layers)
+    uint8_t node_clears = 0;     // ICE cleared at the current node
+    bool objective_done = false; // current layer's objective cracked
+    bool exfil = false;          // (legacy, unused with the descent model)
     bool has_ghostkey = false;
     // hunter
     bool    hunt_active = false;
@@ -196,7 +200,7 @@ struct Tunables {
     int k_shield     = 2;   // power per shield
     int p_corruption = 4;   // power lost per (corruption/p)
     int sec_threat   = 5;   // threat per node security
-    int k_tier_threat = 3;  // threat scales with YOUR tier (the world keeps pace)
+    int k_tier_threat = 2;  // threat scales with YOUR tier (the world keeps pace)
     int k_heat       = 4;   // threat += heat / k_heat
     int k_grudge     = 2;   // threat per faction grudge
     int hunter_threat = 10;
@@ -217,6 +221,13 @@ public:
                const Legends* prior = nullptr);
 
     AdvanceResult advance();                 // one sim-step, or surface a decision
+    // Auto-play ICE fights via the personality AI (default on): combat resolves
+    // one round per advance() so it animates, and only strategic spikes (branch/
+    // extract/survival) surface as AR_DECISION. Off = the caller drives every round.
+    void set_auto_combat(bool b) { auto_combat_ = b; }
+    // Player pulls the plug: bank the haul and end the run (only out of combat).
+    // The descent otherwise continues deeper until the player jacks out or dies.
+    void jack_out();
     bool needs_decision() const { return pending_; }
     const Decision& decision() const { return dec_; }
     void choose(int option_index);           // resolve the pending decision
@@ -249,6 +260,7 @@ private:
     bool edge_usable(const Edge&) const;
     void logline(const std::string&);
     void push_event(uint8_t tag, uint8_t node, uint8_t ice, uint8_t named, int8_t heat_d);
+    AdvanceResult decide_or_auto();           // auto-resolve a combat round, or surface the decision
     void begin_fight(uint8_t node, uint8_t ice, uint8_t named, bool hunter);
     void open_fight_round();
     void resolve_round(int option);
@@ -256,6 +268,9 @@ private:
     void open_branch();
     void open_survival();
     void open_extract();
+    void open_dive();            // after an objective: jack out, or dive deeper
+    void resolve_dive(int option);
+    void dive_deeper();          // regenerate a harder layer, carry the deck
     void resolve_branch(int option);
     void resolve_survival(int option);
     void resolve_extract(int option);
@@ -269,6 +284,7 @@ private:
     void heal(int d);
     void grant_loot(Node&);
     uint8_t committed_branch_ = NONE8;        // chosen next hop awaiting the move
+    bool auto_combat_ = true;                  // deck auto-fights named ICE (watch, don't tap)
     bool survival_warned_ = false;            // suppress repeat survival spikes
     std::vector<uint8_t> branched_;           // nodes a branch was already offered at
     std::vector<uint8_t> branch_opts_;        // neighbor id per current branch option
