@@ -1530,20 +1530,33 @@ const char* B_FLATLINE[] = {
     "The deck died for a second against {enemy}; you came back leaving a piece of it behind.",
 };
 
-std::string subst(const std::string& tmpl, Rng& cr, const std::string& node,
-                  const std::string& faction, const std::string& enemy) {
+// pick a simile NOT already used in this chronicle, so the same image never lands
+// twice in one summary (resets only if every simile has been spent).
+const char* next_simile(Rng& cr, std::vector<uint8_t>& used) {
+    const int N = (int)(sizeof(SIMILES) / sizeof(SIMILES[0]));
+    if ((int)used.size() >= N) used.clear();
+    int idx = (int)cr.range(N), guard = 0;
+    while (std::find(used.begin(), used.end(), (uint8_t)idx) != used.end() && ++guard < 2 * N)
+        idx = (int)cr.range(N);
+    used.push_back((uint8_t)idx);
+    return SIMILES[idx];
+}
+
+std::string subst(const std::string& tmpl, Rng& cr, std::vector<uint8_t>& used_sim,
+                  const std::string& node, const std::string& faction, const std::string& enemy) {
     std::string s = tmpl;
     auto rep = [&](const char* key, const std::string& val) {
         size_t p; while ((p = s.find(key)) != std::string::npos) s.replace(p, std::strlen(key), val);
     };
     rep("{node}", node); rep("{faction}", faction); rep("{enemy}", enemy);
-    size_t p; while ((p = s.find("{simile}")) != std::string::npos) s.replace(p, 8, pick(cr, SIMILES));
+    size_t p; while ((p = s.find("{simile}")) != std::string::npos) s.replace(p, 8, next_simile(cr, used_sim));
     return s;
 }
 } // namespace
 
 std::string Sim::chronicle() const {
     Rng cr; cr.seed(((uint64_t)world_.run_seed << 7) ^ 0xC4807AB1EuLL);
+    std::vector<uint8_t> used_sim;   // similes already spent this chronicle (no repeats)
     std::string out = pick(cr, OPENERS);
     out += "\n";
 
@@ -1584,7 +1597,7 @@ std::string Sim::chronicle() const {
         }
         used[e.tag] = true;
         std::string t = pool[cr.range((uint32_t)pooln)];
-        out += subst(t, cr, ev_node(e), ev_faction(e), ev_enemy(e));
+        out += subst(t, cr, used_sim, ev_node(e), ev_faction(e), ev_enemy(e));
         out += " ";
         beats++;
     }
