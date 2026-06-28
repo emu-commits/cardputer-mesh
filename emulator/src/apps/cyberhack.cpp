@@ -342,12 +342,12 @@ private:
         // with corruption%; the pattern shifts a few times a second (seeded by a time
         // bucket so it's stable between buckets = no needless diff churn to the CYD).
         apply_glitch(c, play_top, play_top + AH - 1, ctx.now_ms, (int)r.corruption);
-        // exits + legend
+        // exits row sits right under the room; the glyph legend was dropped to hand
+        // those rows to the log (the exits are word-labelled, so the map stays legible)
         int exr = play_top + AH;
         draw_exits(c, exr);
-        c.text(exr + 1, 1, ui::fit("@you .grid >jack-deeper + port $data &cache  ICE:B/T/W/S/Y", c.width() - 2), ui::Gray, ui::Black);
-        // siege bar (auto-combat) then the log, down to the status line
-        int logtop = exr + 2;
+        // siege bar (auto-combat) then the log, filling everything down to the status line
+        int logtop = exr + 1;
         if (r.in_fight) {
             int barw = 16; int filled = r.ice_hp_max > 0 ? r.ice_hp * barw / r.ice_hp_max : 0;
             std::string bar = "breaking ICE [";
@@ -366,10 +366,11 @@ private:
     }
     void render_status(TextCanvas& c) {
         const cy::RunState& r = sim_.state();
-        // Compact one-glyph labels so the whole bar — including $shards — fits the
-        // 53-col CYD with every field visible (worst case ~49 cols).
+        // Short-but-legible labels sized to fill the 53-col CYD bar exactly at the
+        // worst case (Int255/255 Bf120/120 Ht255 Co100% T99 L99 Ob99 $65535 == 53),
+        // so every field — $shards included — always stays visible, none cut off.
         char b[112];
-        std::snprintf(b, sizeof b, " I%d/%d B%d/%d H%d C%d%% T%d L%d o%d $%d ",
+        std::snprintf(b, sizeof b, "Int%d/%d Bf%d/%d Ht%d Co%d%% T%d L%d Ob%d $%d",
                       (int)r.integrity, (int)r.integrity_max, (int)r.buffer, (int)r.buffer_max,
                       (int)r.heat, (int)r.corruption, (int)r.tier, (int)r.depth + 1,
                       (int)r.objectives_done, (int)r.shards);
@@ -411,7 +412,7 @@ private:
         // it whole so no half-drawn room peeks around the panel; the log/status/footer
         // that render_crawl already drew below band_bot are left untouched.
         const int topr = kPlayTop;                         // top of the play/graphics band
-        const int band_bot = kPlayTop + kAH + 1;           // last graphics row (legend), log starts below
+        const int band_bot = kPlayTop + kAH;               // exits row; the log starts just below it
         auto pl = ui::wrap_text(d.prompt, c.width() - 2);
         int pln = (int)pl.size(); if (pln > 3) pln = 3;
         c.fill_rect(topr, 0, band_bot - topr + 1, c.width(), U' ', ui::White, ui::Black);
@@ -472,10 +473,12 @@ private:
     }
 
     // shared layout constants: ui::header() consumes 2 rows, then a ribbon row, so
-    // the ASCII play/graphics band starts at row 3 and is kAH rows tall. The decision
-    // card docks over this band (top-middle) so the log below stays visible.
+    // the ASCII play/graphics band starts at row 3 and is kAH rows tall, with the
+    // exits row right below it. Everything under that is the LOG, so the band is kept
+    // as compact as still renders a room (kAH=8 -> a 6-row room) to hand the log the
+    // most rows. The decision card docks over this band so the log stays visible.
     static constexpr int kPlayTop = 3;
-    static constexpr int kAH = 10;
+    static constexpr int kAH = 8;
 
     cy::Sim sim_;
     cy::Legends legends_;
