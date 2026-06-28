@@ -225,9 +225,6 @@ void Sim::place_content() {
             if (n.faction == F_VULTURES || n.type == N_GANG) m.persona = PR_DAEMON;
             else if (n.faction == F_NULLSIGIL || n.type == N_ABANDONED) m.persona = PR_CONSTRUCT;
         }
-        // some non-boss entities are dead minds looped in the ICE — a memory construct
-        // you dive instead of fight (Dixie-Flatline flavor). Not on the objective.
-        if (!(n.flags & NF_OBJECTIVE) && arch != I_SYSOP && r.chance(28)) m.persona = PR_MEMORY;
         // disposition: how talkable it is. AIs are curious, sysops are walls.
         switch (m.persona) {
             case PR_AI:        m.disposition = (uint8_t)r.between(55, 85); break;
@@ -272,6 +269,36 @@ void Sim::place_content() {
     std::sort(cand.begin(), cand.end(), [&](uint8_t a, uint8_t b) { return w.nodes[a].security > w.nodes[b].security; });
     int off = 0;
     for (uint8_t ni : cand) { if (w.named_count >= MAX_NAMED) break; assign_named(ni, w.nodes[ni].security, 0x500u + ni, ARCH_CYCLE[off++ % 4]); }
+
+    // --- pick the few NEGOTIABLE personalities. Everything else — the gauntlet ICE
+    // and the boss — is a straight fight, so you can't appease your way past every
+    // wall. Sysops and the objective boss never negotiate. Cap keeps parley special. ---
+    uint8_t boss_named = w.nodes[best].guard_named;
+    std::vector<uint8_t> neg_cand;
+    for (int i = 0; i < w.named_count; ++i)
+        if (i != boss_named && w.named[i].persona != PR_SYSOP) neg_cand.push_back((uint8_t)i);
+    // a fresh name not used by another entity here nor already spoken-with this run
+    auto fresh_name = [&](uint8_t cur) -> uint8_t {
+        auto taken = [&](uint8_t id) {
+            for (int j = 0; j < w.named_count; ++j) if (w.named[j].name_id == id) return true;
+            return std::find(spoken_names_.begin(), spoken_names_.end(), id) != spoken_names_.end();
+        };
+        if (std::find(spoken_names_.begin(), spoken_names_.end(), cur) == spoken_names_.end()) return cur;
+        for (int t = 1; t <= NAMED_POOL_N; ++t) { uint8_t c = (uint8_t)((cur + t) % NAMED_POOL_N); if (!taken(c)) return c; }
+        return cur;
+    };
+    int neg_cap = 2, made = 0;
+    while (made < neg_cap && !neg_cand.empty()) {
+        int pick = (int)r.range((uint32_t)neg_cand.size());
+        uint8_t ni = neg_cand[pick];
+        neg_cand.erase(neg_cand.begin() + pick);
+        NamedIce& m = w.named[ni];
+        m.name_id = fresh_name(m.name_id);          // don't reuse a name you've parleyed this run
+        m.negotiable = 1;
+        if (r.chance(40)) m.persona = PR_MEMORY;    // some negotiables are dead minds (memory dives)
+        spoken_names_.push_back(m.name_id);
+        ++made;
+    }
 }
 
 void Sim::apply_legends(const Legends* prior) {
@@ -426,6 +453,7 @@ void Sim::start(uint32_t citynet_seed, uint32_t run_seed, uint8_t personality, c
     committed_branch_ = NONE8;
     survival_warned_ = false;
     branched_.clear();
+    spoken_names_.clear();
     gen_world(prior);
     run_.pos = world_.entry;
     run_.hunter_pos = world_.entry;
@@ -488,7 +516,9 @@ AdvanceResult Sim::advance() {
                 logline(std::string(named_name(m.name_id)) + " holds the gate open for you — an old debt repaid.");
                 return AR_STEPPED;
             }
-            if (!(here.flags & NF_PARLEYED)) {
+            // only the few recurring personalities can be talked to; gauntlet ICE and
+            // the boss are non-negotiable — you fight your way through them.
+            if (m.negotiable && !(here.flags & NF_PARLEYED)) {
                 if (m.persona == PR_MEMORY) open_memory(); else open_parley();
                 return AR_DECISION;
             }

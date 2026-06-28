@@ -96,6 +96,8 @@ struct NamedIce {
     int8_t  grudge   = 0;
     uint8_t persona  = PR_AI;     // kind of mind — drives dialogue + negotiation
     uint8_t disposition = 50;     // 0..100 openness to being talked down
+    uint8_t negotiable = 0;       // 1 = a recurring personality you can parley/dive;
+                                  // 0 = a straight fight (gauntlet ICE, the boss)
 };
 
 struct FactionState { uint8_t attitude = A_NEUTRAL; int8_t grudge = 0; };
@@ -316,6 +318,8 @@ private:
     int16_t flatline_dmg_ = 0;                // held killing blow during a flatline beat
     uint8_t flatline_cause_ = D_NONE;         // its death cause, applied if you don't survive
     bool    flatline_used_ = false;           // one do-or-die per fight
+    std::vector<uint8_t> spoken_names_;       // name_ids of negotiable NPCs met this run
+                                              // (across layers) — no repeats in a dive
 };
 
 // run a whole dive headless under an AI policy; returns the finished Sim.
