@@ -272,7 +272,7 @@ private:
     void build_topology();
     void place_content();
     void apply_legends(const Legends*);
-    int  next_hop_toward(uint8_t target) const;     // BFS first step, -1 if none
+    int  next_hop_toward(uint8_t target, bool ignore_locks = false) const;  // BFS first step, -1 if none
     bool edge_usable(const Edge&) const;
     void logline(const std::string&);
     void push_event(uint8_t tag, uint8_t node, uint8_t ice, uint8_t named, int8_t heat_d);

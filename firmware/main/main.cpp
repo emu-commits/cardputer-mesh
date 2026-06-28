@@ -65,8 +65,27 @@ static int bl_level_to_duty(int level) {
     return lut[level - 1];
 }
 
+// Decode the chip's last reset cause so an unexpected reboot leaves a labeled
+// trail (the mesh-chat-gets-wiped symptom). BROWNOUT => power/radio current sag;
+// TASK_WDT/INT_WDT => a stalled loop; PANIC => a crash with a backtrace above.
+static const char* reset_reason_str(esp_reset_reason_t r) {
+    switch (r) {
+        case ESP_RST_POWERON:   return "POWERON (cold boot)";
+        case ESP_RST_SW:        return "SW (esp_restart)";
+        case ESP_RST_PANIC:     return "PANIC (crash/abort)";
+        case ESP_RST_INT_WDT:   return "INT_WDT (interrupt watchdog)";
+        case ESP_RST_TASK_WDT:  return "TASK_WDT (task watchdog)";
+        case ESP_RST_WDT:       return "WDT (other watchdog)";
+        case ESP_RST_BROWNOUT:  return "BROWNOUT (supply sag)";
+        case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
+        case ESP_RST_USB:       return "USB (host reset)";
+        default:                return "OTHER";
+    }
+}
+
 extern "C" void app_main(void) {
     heap_caps_register_failed_alloc_callback(on_alloc_failed);
+    ESP_LOGW("boot", "reset reason: %s", reset_reason_str(esp_reset_reason()));
 
     static device::RadioMesh meshf;
     static mesh::RamMessageLog store;

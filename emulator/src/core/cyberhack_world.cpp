@@ -209,7 +209,7 @@ void Sim::place_content() {
         NamedIce& m = w.named[w.named_count];
         m.name_id = unique_name(salt);
         m.archetype = arch;
-        m.tier = (uint8_t)std::min(9, std::max(1, tier));
+        m.tier = (uint8_t)std::min(60, std::max(1, tier));   // no tier ceiling deep in the dive
         m.faction = n.faction;
         m.status = NS_ALIVE;
         // persona: who's behind the ICE. Archetype drives it (so the gauntlet's
@@ -260,7 +260,7 @@ void Sim::place_content() {
     Node& obj = w.nodes[best];
     uint8_t boss_arch = obj.security >= 8 ? I_SYSOP : I_BLACK;
     if (obj.guard_named == NONE8) assign_named(best, obj.security + 1, 0xB055u, boss_arch);
-    else { w.named[obj.guard_named].tier = (uint8_t)std::min(9, obj.security + 1); w.named[obj.guard_named].archetype = boss_arch; obj.guard_ice = boss_arch; }
+    else { w.named[obj.guard_named].tier = (uint8_t)std::min(60, obj.security + 1); w.named[obj.guard_named].archetype = boss_arch; obj.guard_ice = boss_arch; }
 
     // a couple of off-path named hubs for the legends to remember
     std::vector<uint8_t> cand;
@@ -318,7 +318,7 @@ void Sim::apply_legends(const Legends* prior) {
                     for (int n = 0; n < w.node_count; ++n)
                         if (w.nodes[n].guard_named == i) w.nodes[n].guard_named = NONE8;
                 } else if (prior->named[j].status == NS_CRIPPLED) {
-                    w.named[i].tier = (uint8_t)std::min(9, w.named[i].tier + 2);  // back, angrier
+                    w.named[i].tier = (uint8_t)std::min(60, w.named[i].tier + 2);  // back, angrier
                     w.named[i].grudge = prior->named[j].grudge;
                 } else if (prior->named[j].status == NS_ALLIED) {
                     // a friend from a past run — holds the gate open, no fight
@@ -347,7 +347,7 @@ void Sim::apply_legends(const Legends* prior) {
 // ---- pathfinding -----------------------------------------------------------
 bool Sim::edge_usable(const Edge& e) const { return !(e.flags & (EF_BURNED | EF_LOCKED)); }
 
-int Sim::next_hop_toward(uint8_t target) const {
+int Sim::next_hop_toward(uint8_t target, bool ignore_locks) const {
     const World& w = world_;
     if (run_.pos == target) return -1;
     int prev[MAX_NODES]; for (int i = 0; i < w.node_count; ++i) prev[i] = -2;
@@ -359,10 +359,14 @@ int Sim::next_hop_toward(uint8_t target) const {
         for (int k = 0; k < n.deg; ++k) {
             uint8_t nb = n.nbr[k];
             if (nb == NONE8 || prev[nb] != -2) continue;
-            // is the edge usable?
+            // is the edge usable? (ignore_locks lets us force a path through a
+            // temporary lockdown — locks are this-run; burns stay burned)
             bool ok = false;
-            for (int e = 0; e < w.edge_count; ++e)
-                if (((w.edges[e].a == cur && w.edges[e].b == nb) || (w.edges[e].a == nb && w.edges[e].b == cur)) && edge_usable(w.edges[e])) { ok = true; break; }
+            for (int e = 0; e < w.edge_count; ++e) {
+                const Edge& ed = w.edges[e];
+                if (((ed.a == cur && ed.b == nb) || (ed.a == nb && ed.b == cur)) &&
+                    (edge_usable(ed) || (ignore_locks && !(ed.flags & EF_BURNED)))) { ok = true; break; }
+            }
             if (!ok) continue;
             prev[nb] = cur;
             if (nb == target) {
@@ -429,11 +433,14 @@ void Sim::collect_current_node() {
 // integrity and buffer (and, every other tier, shielding), and tops them up so
 // the gain is felt immediately. Power growth (Tier/modules) is handled by callers.
 void Sim::apply_tier_growth() {
-    run_.integrity_max = (int16_t)std::min(255, run_.integrity_max + 6);
-    heal(6);
-    run_.buffer_max = (int16_t)std::min(120, run_.buffer_max + 3);
-    run_.buffer = (int16_t)std::min((int)run_.buffer_max, run_.buffer + 3);
-    if (run_.tier % 2 == 0 && run_.shield < 9) run_.shield++;
+    // Growth is real but deliberately SUB-linear vs. the dive's escalation: every
+    // named kill nudges the deck up a little, but the pool can't outrun how mean the
+    // deep layers get — so eventually you have to read the danger and jack out.
+    run_.integrity_max = (int16_t)std::min(255, run_.integrity_max + 3);
+    heal(3);
+    run_.buffer_max = (int16_t)std::min(120, run_.buffer_max + 2);
+    run_.buffer = (int16_t)std::min((int)run_.buffer_max, run_.buffer + 2);
+    if (run_.tier % 3 == 0 && run_.shield < 9) run_.shield++;
     logline(std::string("** GROWTH ** max integrity ") + std::to_string((int)run_.integrity_max) +
             ", max buffer " + std::to_string((int)run_.buffer_max) + ", shield " + std::to_string((int)run_.shield) + ".");
 }
@@ -607,8 +614,25 @@ void Sim::accrue_and_move() {
     // descend toward this layer's objective (no exfil — you jack out by choice).
     int hop = committed_branch_ != NONE8 ? committed_branch_ : next_hop_toward(world_.objective.target);
     committed_branch_ = NONE8;
-    if (hop < 0) {                       // boxed in (all routes locked) — the trace gets you
-        run_.outcome = O_DIED; run_.death_cause = D_TRACE; return;
+    // Boxed in: lockdowns/burns sealed every open route. There is no hard end here —
+    // you tear through a sealed route, and it costs you (the deeper you are, the more
+    // it bites). Only if even that is impossible (a true island) do you have to bail.
+    if (hop < 0) {
+        hop = next_hop_toward(world_.objective.target, /*ignore_locks=*/true);
+        if (hop < 0) { jack_out(); return; }   // genuinely isolated — pull out with the haul
+        int toll = 6 + run_.depth * 2;
+        if (run_.buffer >= 4) run_.buffer = (int16_t)(run_.buffer - 4); else add_corruption(4);
+        add_heat(6); add_corruption(3);
+        // mark the forced edge clear so we don't re-bash it every step
+        for (int e = 0; e < world_.edge_count; ++e) {
+            Edge& ed = world_.edges[e];
+            if (((ed.a == run_.pos && ed.b == (uint8_t)hop) || (ed.a == (uint8_t)hop && ed.b == run_.pos)) && (ed.flags & EF_LOCKED))
+                { ed.flags &= ~EF_LOCKED; break; }
+        }
+        logline(std::string("routes sealed — tore through the lockdown to ") + node_label(world_, (uint8_t)hop) +
+                ". it cost you (heat +6, corruption +3).");
+        hurt(toll, D_TRACE);                   // can flatline you if you're already on the brink
+        if (run_.outcome != O_RUNNING) return;
     }
     run_.pos = (uint8_t)hop;
     run_.node_clears = 0;                 // fresh node = fresh break-in
@@ -693,7 +717,9 @@ void Sim::begin_fight(uint8_t node, uint8_t ice, uint8_t named, bool hunter) {
     run_.is_hunter_fight = hunter;
     flatline_used_ = false;
     int tier = named != NONE8 ? world_.named[named].tier : (int)world_.nodes[node].security;
-    run_.ice_hp_max = (int16_t)(12 + tier * 3);
+    // ICE grows tougher the deeper you push — there is no floor on how mean a layer
+    // can get. Depth makes it tankier (longer sieges = more claw-back).
+    run_.ice_hp_max = (int16_t)std::min(800, 12 + tier * 3 + run_.depth * 6);
     run_.ice_hp = run_.ice_hp_max;
     std::string who = named != NONE8 ? std::string(named_name(world_.named[named].name_id)) + " [" + ice_name(ice) + "]"
                                      : std::string(ice_name(ice));
@@ -770,7 +796,9 @@ void Sim::resolve_round(int option) {
     // --- the ICE claws back ---
     if (run_.ice_hp > 0) {
         int tier = named != NONE8 ? world_.named[named].tier : (int)world_.nodes[run_.fight_node].security;
-        int atk = world_.nodes[run_.fight_node].security / 2 + tier / 2 + rng_.between(-1, 3);
+        // deeper layers hit harder, on top of the node's own security/tier — the
+        // dive escalates until you can't take the hits anymore.
+        int atk = world_.nodes[run_.fight_node].security / 2 + tier / 2 + run_.depth + rng_.between(-1, 3);
         if (mod == M_MASK) atk = atk / 3;                 // mask blunts the incoming hit
         if (mod == ice_punish(ice)) atk = atk * 2 + tier; // punished: raw aggression vs heavy ICE gets you mauled
         atk -= run_.shield;
@@ -828,7 +856,7 @@ void Sim::finish_fight(bool won, bool escaped) {
     if (named != NONE8) {
         run_.named_killed++;
         int old_power = player_power(run_);
-        run_.tier = (uint8_t)std::min(9, run_.tier + 1);
+        run_.tier = (uint8_t)std::min(99, run_.tier + 1);   // no cap on the dive — deck keeps climbing
         apply_tier_growth();
         bool boss = world_.named[named].tier >= 7;
         world_.named[named].status = boss ? NS_CRIPPLED : NS_DEAD;
@@ -1208,10 +1236,18 @@ void Sim::open_survival() {
     dec_ = Decision{};
     dec_.kind = DK_SURVIVAL; dec_.node = run_.pos;
     int pct = run_.integrity_max ? run_.integrity * 100 / run_.integrity_max : 0;
-    char b[64]; std::snprintf(b, sizeof b, "Integrity %d%%, Heat %d. The deck is screaming.", pct, (int)run_.heat);
+    char b[80]; std::snprintf(b, sizeof b, "Integrity %d%%, heat %d, corr %d%%. The deck is screaming.",
+                              pct, (int)run_.heat, (int)run_.corruption);
     dec_.prompt = b;
-    dec_.options = { "Patch up", "Ghost — shed the heat", "Pull out with the haul" };
-    dec_.opt_module = { M_PATCH, M_GHOST, M_COUNT };
+    // Every option here is a real trade — spell out the cost so the call is yours.
+    int heal_amt = run_.buffer >= 5 ? 12 + run_.mod_level[M_PATCH] * 3 : 5;
+    char pa[56], gh[56], pu[56], jo[56];
+    std::snprintf(pa, sizeof pa, "Patch — +%d intg, -5 buffer", heal_amt);
+    std::snprintf(gh, sizeof gh, "Ghost — heat -20, but corr +4");
+    std::snprintf(pu, sizeof pu, "Push on as-is — spend nothing, stay exposed");
+    std::snprintf(jo, sizeof jo, "Jack out — bank $%d, end the run", (int)run_.shards);
+    dec_.options = { pa, gh, pu, jo };
+    dec_.opt_module = { M_PATCH, M_GHOST, M_COUNT, M_COUNT };
     logline(dec_.prompt);
 }
 void Sim::open_extract() {
@@ -1273,9 +1309,10 @@ void Sim::resolve_survival(int option) {
     } else if (mod == M_GHOST) {
         add_heat(-20); add_corruption(4);
         logline("ghosted — heat -20, corruption +4.");
+    } else if (option == (int)dec_.options.size() - 1) {
+        jack_out();                                  // pull out NOW: bank the haul, end the run
     } else {
-        // pull out NOW: bank the haul and end the run
-        jack_out();
+        logline("held the line — spent nothing, still exposed.");   // push on as-is: gamble the resources
     }
     survival_warned_ = true;
 }
@@ -1293,7 +1330,7 @@ void Sim::resolve_extract(int option) {
     run_.shards = (uint16_t)(run_.shards + haul);
     grant_loot(node);
     int old_power = player_power(run_);
-    run_.tier = (uint8_t)std::min(9, run_.tier + 1);
+    run_.tier = (uint8_t)std::min(99, run_.tier + 1);   // no cap on the dive — deck keeps climbing
     run_.mod_level[mod] = (uint8_t)std::min(9, run_.mod_level[mod] + 1);
     apply_tier_growth();
     if (node.faction < F_COUNT) world_.factions[node.faction].grudge += 3;
