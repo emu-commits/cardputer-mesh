@@ -169,19 +169,32 @@ public:
         scroll_max_ = ctx.log->match_count(q) - rows; if (scroll_max_ < 0) scroll_max_ = 0;
         if (scroll_ > scroll_max_) scroll_ = scroll_max_;
         auto msgs = ctx.log->window(q, rows, scroll_); // only this window is materialized
-        int row = top;
+        // Expand each message into a sender header (short + long name) plus its body
+        // word-wrapped across as many lines as it needs, then show the bottom `rows`
+        // display lines so the newest message is always fully visible.
+        struct DL { std::string s; uint8_t fg; };
+        std::vector<DL> lines;
+        const int wrapw = c.width() - 4;               // body indent = 2, margins = 2
         for (auto& m : msgs) {
-            if (row > bottom) break;
-            if (!m.outgoing && ctx.mesh->is_ignored(m.from_id)) continue; // hide ignored senders (#2)
-            std::string who = m.outgoing ? ctx.mesh->our_short() : m.from_name;
+            if (!m.outgoing && ctx.mesh->is_ignored(m.from_id)) continue; // hide ignored senders
+            std::string sn, ln;
+            sender_names(ctx, m, sn, ln);
             std::string st = " ";
             if (m.outgoing) st = (m.ack == mesh::ACK_PENDING) ? "·" : (m.ack == mesh::ACK_OK) ? "✓"
                                 : (m.ack == mesh::ACK_FAIL) ? "x" : " ";
-            std::string line = "[" + hhmm(m.ts_ms) + "]" + st + who + ": " + m.text;
-            uint8_t fg = m.outgoing ? ui::BrightGreen : ui::White;
-            c.text(row, 1, ui::fit(line, c.width() - 2), fg, ui::Black);
-            ++row;
+            // header: [hh:mm]<ack> SHORT (Long Name)
+            std::string who = sn.empty() ? ln : sn;
+            if (!ln.empty() && ln != sn) who += " (" + ln + ")";
+            uint8_t hfg = m.outgoing ? ui::BrightGreen : ui::BrightCyan;
+            lines.push_back({ ui::fit("[" + hhmm(m.ts_ms) + "]" + st + who, c.width() - 2), hfg });
+            // body: word-wrapped, indented two spaces, no mid-word breaks
+            uint8_t bfg = m.outgoing ? ui::Green : ui::White;
+            for (auto& w : ui::wrap_text(m.text, wrapw)) lines.push_back({ "  " + w, bfg });
         }
+        int first = (int)lines.size() - rows; if (first < 0) first = 0;   // bottom-align newest
+        int row = top;
+        for (int i = first; i < (int)lines.size() && row <= bottom; ++i, ++row)
+            c.text(row, 1, lines[i].s, lines[i].fg, ui::Black);
         ui::input_line(c, c.height() - 2, 1, "> ", compose_);
         ui::footer(c, " enter:send  tab:win  /help  esc:back ");
         if (win_open_) render_windows(ctx, c);
@@ -277,6 +290,15 @@ private:
     std::string name_for(AppContext& ctx, uint32_t id) {
         for (auto& n : ctx.mesh->nodes()) if (n.id == id) return n.short_name.empty() ? n.long_name : n.short_name;
         char b[12]; std::snprintf(b, sizeof b, "!%08x", id); return b;
+    }
+    // Resolve a message's sender to BOTH names (short + long), authoritative from the
+    // node DB, falling back to the message's embedded from_name / a node id stamp.
+    void sender_names(AppContext& ctx, const mesh::Message& m, std::string& shortn, std::string& longn) {
+        if (m.outgoing) { shortn = ctx.mesh->our_short(); longn = ctx.mesh->our_long(); return; }
+        for (auto& n : ctx.mesh->nodes())
+            if (n.id == m.from_id) { shortn = n.short_name; longn = n.long_name; return; }
+        shortn = m.from_name; longn.clear();
+        if (shortn.empty()) { char b[12]; std::snprintf(b, sizeof b, "!%08x", m.from_id); shortn = b; }
     }
     std::vector<std::string> chans(AppContext& ctx) {
         std::vector<std::string> out;
