@@ -290,7 +290,7 @@ private:
           c.text(top, c.width() - 1 - (int)ob.size(), ob, ui::BrightYellow, ui::Black); }
         // (re)generate the room layout + path when we cross into a new node, or when
         // the guard clears / a fight starts — @ then re-routes from where it stands.
-        const int play_top = top + 1, AH = 10;               // play area: rows play_top..play_top+9
+        const int play_top = top + 1, AH = kAH;              // play area: rows play_top..play_top+9
         bool guarded = !(here.flags & cy::NF_GUARD_DONE) && here.guard_ice < cy::I_COUNT;
         bool named   = here.guard_named != cy::NONE8 && !(here.flags & cy::NF_GUARD_DONE);
         uint32_t sig = ((uint32_t)r.pos << 2) | (guarded ? 2u : 0u) | (r.in_fight ? 1u : 0u);
@@ -366,8 +366,10 @@ private:
     }
     void render_status(TextCanvas& c) {
         const cy::RunState& r = sim_.state();
+        // Compact one-glyph labels so the whole bar — including $shards — fits the
+        // 53-col CYD with every field visible (worst case ~49 cols).
         char b[112];
-        std::snprintf(b, sizeof b, " Intg %d/%d Buf %d/%d Heat %d Cor %d%% T%d L%d obj%d $%d ",
+        std::snprintf(b, sizeof b, " I%d/%d B%d/%d H%d C%d%% T%d L%d o%d $%d ",
                       (int)r.integrity, (int)r.integrity_max, (int)r.buffer, (int)r.buffer_max,
                       (int)r.heat, (int)r.corruption, (int)r.tier, (int)r.depth + 1,
                       (int)r.objectives_done, (int)r.shards);
@@ -394,8 +396,8 @@ private:
         else { view_ = CRAWL; last_step_ = ctx.now_ms; }
     }
     // A decision (route / extraction / survival — combat auto-resolves and never
-    // reaches here). Docked as a panel ABOVE the status line so the map + status
-    // stay visible the whole time; never a full-screen modal.
+    // reaches here). Docked as a panel over the ASCII graphics band (top-middle) so
+    // the LOG below it stays visible the whole time; never a full-screen modal.
     void render_card(TextCanvas& c) {
         const cy::Decision& d = sim_.decision();
         int n = (int)d.options.size();
@@ -405,23 +407,26 @@ private:
         uint8_t accent = d.kind == cy::DK_SURVIVAL ? ui::BrightRed : d.kind == cy::DK_DIVE ? ui::BrightGreen
                        : d.kind == cy::DK_PARLEY ? ui::BrightCyan : d.kind == cy::DK_MEMORY ? ui::BrightMagenta
                        : d.kind == cy::DK_FLATLINE ? ui::BrightRed : ui::BrightYellow;
-        int bottom = c.height() - 3;                       // leave status (h-2) + footer (h-1)
+        // The graphics band: rows kPlayTop .. band_bot (the row above the log). Clear
+        // it whole so no half-drawn room peeks around the panel; the log/status/footer
+        // that render_crawl already drew below band_bot are left untouched.
+        const int topr = kPlayTop;                         // top of the play/graphics band
+        const int band_bot = kPlayTop + kAH + 1;           // last graphics row (legend), log starts below
         auto pl = ui::wrap_text(d.prompt, c.width() - 2);
-        int pln = (int)pl.size(); if (pln > 2) pln = 2;
-        int h = 1 + pln + n;                               // title + prompt + options
-        int topr = bottom - h + 1; if (topr < 3) topr = 3;
-        c.fill_rect(topr - 1, 0, h + 1, c.width(), U' ', ui::White, ui::Black);
-        c.hline(topr - 1, 0, c.width(), U'=', accent, ui::Black);
-        c.text(topr - 1, 2, title, accent, ui::Black, ui::ATTR_BOLD);
-        int row = topr;
-        for (int i = 0; i < pln; ++i) c.text(row++, 1, ui::fit(pl[i], c.width() - 2), ui::White, ui::Black);
-        for (int i = 0; i < n && row <= bottom; ++i, ++row) {
+        int pln = (int)pl.size(); if (pln > 3) pln = 3;
+        c.fill_rect(topr, 0, band_bot - topr + 1, c.width(), U' ', ui::White, ui::Black);
+        c.hline(topr, 0, c.width(), U'=', accent, ui::Black);
+        c.text(topr, 2, title, accent, ui::Black, ui::ATTR_BOLD);
+        int row = topr + 1;
+        for (int i = 0; i < pln && row <= band_bot; ++i, ++row)
+            c.text(row, 1, ui::fit(pl[i], c.width() - 2), ui::White, ui::Black);
+        for (int i = 0; i < n && row <= band_bot; ++i, ++row) {
             bool s = (i == sel_);
             char line[72]; std::snprintf(line, sizeof line, "%d %s", i + 1, d.options[i].c_str());
             c.text(row, 1, ui::fit(line, c.width() - 2), s ? ui::BrightWhite : ui::White, ui::Black, s ? ui::ATTR_INVERSE : ui::ATTR_NONE);
         }
-        render_status(c);                                  // keep status visible under the panel
-        ui::footer(c, " up/dn pick   enter/1-5 choose   esc:leave ");
+        if (row <= band_bot) c.hline(row, 0, c.width(), U'=', accent, ui::Black);  // close the panel
+        ui::footer(c, " up/dn pick   enter/1-5 choose   esc:leave ");             // override the crawl footer
     }
 
     // ---- OVER: the chronicle -----------------------------------------------
@@ -465,6 +470,12 @@ private:
         std::string s; cy::legends_serialize(legends_, s);
         ctx.state->set("cyberhack.legends", s); ctx.state->flush();
     }
+
+    // shared layout constants: ui::header() consumes 2 rows, then a ribbon row, so
+    // the ASCII play/graphics band starts at row 3 and is kAH rows tall. The decision
+    // card docks over this band (top-middle) so the log below stays visible.
+    static constexpr int kPlayTop = 3;
+    static constexpr int kAH = 10;
 
     cy::Sim sim_;
     cy::Legends legends_;
