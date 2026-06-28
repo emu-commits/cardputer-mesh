@@ -347,7 +347,7 @@ void Sim::apply_legends(const Legends* prior) {
 // ---- pathfinding -----------------------------------------------------------
 bool Sim::edge_usable(const Edge& e) const { return !(e.flags & (EF_BURNED | EF_LOCKED)); }
 
-int Sim::next_hop_toward(uint8_t target, bool ignore_locks) const {
+int Sim::next_hop_toward(uint8_t target, bool ignore_locks, bool ignore_burns) const {
     const World& w = world_;
     if (run_.pos == target) return -1;
     int prev[MAX_NODES]; for (int i = 0; i < w.node_count; ++i) prev[i] = -2;
@@ -365,7 +365,7 @@ int Sim::next_hop_toward(uint8_t target, bool ignore_locks) const {
             for (int e = 0; e < w.edge_count; ++e) {
                 const Edge& ed = w.edges[e];
                 if (((ed.a == cur && ed.b == nb) || (ed.a == nb && ed.b == cur)) &&
-                    (edge_usable(ed) || (ignore_locks && !(ed.flags & EF_BURNED)))) { ok = true; break; }
+                    (edge_usable(ed) || (ignore_locks && !(ed.flags & EF_BURNED)) || ignore_burns)) { ok = true; break; }
             }
             if (!ok) continue;
             prev[nb] = cur;
@@ -614,23 +614,37 @@ void Sim::accrue_and_move() {
     // descend toward this layer's objective (no exfil — you jack out by choice).
     int hop = committed_branch_ != NONE8 ? committed_branch_ : next_hop_toward(world_.objective.target);
     committed_branch_ = NONE8;
-    // Boxed in: lockdowns/burns sealed every open route. There is no hard end here —
-    // you tear through a sealed route, and it costs you (the deeper you are, the more
-    // it bites). Only if even that is impossible (a true island) do you have to bail.
+    // Boxed in: lockdowns/burns sealed every open route. There is NO auto-jack here —
+    // the run only ends on death or the player's own choice. You tear through whatever
+    // is in the way (first a this-run lockdown, then, if need be, a burned route), and
+    // it costs you (the deeper you are, the more it bites).
     if (hop < 0) {
         hop = next_hop_toward(world_.objective.target, /*ignore_locks=*/true);
-        if (hop < 0) { jack_out(); return; }   // genuinely isolated — pull out with the haul
-        int toll = 6 + run_.depth * 2;
+        bool through_burn = false;
+        if (hop < 0) {                          // even ignoring locks, only burned routes remain
+            hop = next_hop_toward(world_.objective.target, /*ignore_locks=*/true, /*ignore_burns=*/true);
+            through_burn = true;
+        }
+        if (hop < 0) {
+            // The graph is genuinely disconnected (entry can't reach the objective at
+            // all). This shouldn't happen, but never strand the player: punch through
+            // to a deeper layer instead of jacking out.
+            dive_deeper();
+            return;
+        }
+        int toll = 6 + run_.depth * 2 + (through_burn ? 4 : 0);
         if (run_.buffer >= 4) run_.buffer = (int16_t)(run_.buffer - 4); else add_corruption(4);
-        add_heat(6); add_corruption(3);
-        // mark the forced edge clear so we don't re-bash it every step
+        add_heat(6); add_corruption(through_burn ? 5 : 3);
+        // clear the forced edge (lock OR burn) so we don't re-bash it every step
         for (int e = 0; e < world_.edge_count; ++e) {
             Edge& ed = world_.edges[e];
-            if (((ed.a == run_.pos && ed.b == (uint8_t)hop) || (ed.a == (uint8_t)hop && ed.b == run_.pos)) && (ed.flags & EF_LOCKED))
-                { ed.flags &= ~EF_LOCKED; break; }
+            if (((ed.a == run_.pos && ed.b == (uint8_t)hop) || (ed.a == (uint8_t)hop && ed.b == run_.pos)) &&
+                (ed.flags & (EF_LOCKED | EF_BURNED)))
+                { ed.flags &= ~(EF_LOCKED | EF_BURNED); break; }
         }
-        logline(std::string("routes sealed — tore through the lockdown to ") + node_label(world_, (uint8_t)hop) +
-                ". it cost you (heat +6, corruption +3).");
+        logline(std::string("routes sealed — tore through ") + (through_burn ? "a dead route" : "the lockdown") +
+                " to " + node_label(world_, (uint8_t)hop) + ". it cost you (heat +6, corruption +" +
+                std::to_string(through_burn ? 5 : 3) + ").");
         hurt(toll, D_TRACE);                   // can flatline you if you're already on the brink
         if (run_.outcome != O_RUNNING) return;
     }
@@ -1435,9 +1449,12 @@ void Sim::update_legends(Legends& L) const {
             L.named[slot].grudge = (int8_t)std::min(9, world_.named[i].grudge + 1);
         }
     }
-    // burned/locked routes persist
+    // Genuine BURNED routes persist (the world remembers a torn route). LOCKED
+    // edges are this-run lockdowns only (see next_hop_toward) — never persist them,
+    // or they accumulate across runs until the entry is sealed off from the
+    // objective and the deck has nowhere to descend.
     for (int e = 0; e < world_.edge_count && L.burned_count < MAX_BURNED; ++e)
-        if (world_.edges[e].flags & (EF_BURNED | EF_LOCKED)) {
+        if (world_.edges[e].flags & EF_BURNED) {
             bool have = false;
             for (int b = 0; b < L.burned_count; ++b)
                 if ((L.burned[b].a == world_.edges[e].a && L.burned[b].b == world_.edges[e].b)) have = true;
