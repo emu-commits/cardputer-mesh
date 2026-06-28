@@ -899,12 +899,12 @@ void Sim::open_flatline() {
     int hi = 0; for (int i = 1; i < M_COUNT; ++i) if (run_.mod_level[i] > run_.mod_level[hi]) hi = i;
     bool can_burn = run_.mod_level[hi] >= 2;
     dec_.options.clear(); dec_.opt_module.clear();
-    dec_.options.push_back("Jack the cord - live, lose part of the haul"); dec_.opt_module.push_back(M_COUNT);
+    dec_.options.push_back("Jack the cord - live, lose 40% of the haul"); dec_.opt_module.push_back(M_COUNT);
     if (can_burn) {
-        char mb[48]; std::snprintf(mb, sizeof mb, "Burn %s - survive, cripple it for the run", module_name(hi));
+        char mb[56]; std::snprintf(mb, sizeof mb, "Burn %s - live at 1 intg, halve it for the run", module_name(hi));
         dec_.options.push_back(mb); dec_.opt_module.push_back((uint8_t)hi);
     }
-    dec_.options.push_back("Ride it - gamble: scrape through, or flatline"); dec_.opt_module.push_back(M_COUNT);
+    dec_.options.push_back("Ride it - 45%: scrape to 1 intg, else flatline"); dec_.opt_module.push_back(M_COUNT);
     logline(dec_.prompt);
 }
 void Sim::resolve_flatline(int option) {
@@ -1009,11 +1009,12 @@ void Sim::open_parley() {
     }
     dec_.prompt = std::string(named_name(m.name_id)) + " [" + ice_name(m.archetype) + "], a " +
                   persona_name(m.persona) + " (tier " + std::to_string((int)m.tier) + "), " + line;
-    char bribe[40], appe[40], fight[48];
-    std::snprintf(bribe, sizeof bribe, "Bribe (%d shards)", parley_bribe_);
-    std::snprintf(appe,  sizeof appe,  "Appease (tribute %d)", parley_tribute_);
-    std::snprintf(fight, sizeof fight, "Fight it (counter: %s)", module_name(ice_weakness(m.archetype)));
-    dec_.options   = { "Parley - talk it down", bribe, "Threaten (heat +10)", appe, fight };
+    char bribe[56], appe[56], threat[56], fight[56];
+    std::snprintf(bribe, sizeof bribe, "Bribe -%d sh - buy a clean pass", parley_bribe_);
+    std::snprintf(appe,  sizeof appe,  "Appease -%d sh - cool grudge (may fail)", parley_tribute_);
+    std::snprintf(threat,sizeof threat,"Threaten +10 heat - extort, or enrage it");
+    std::snprintf(fight, sizeof fight, "Fight - break it (counter: %s)", module_name(ice_weakness(m.archetype)));
+    dec_.options   = { "Parley - talk past free (may anger it)", bribe, threat, appe, fight };
     dec_.opt_module = { M_COUNT, M_COUNT, M_COUNT, M_COUNT, M_COUNT };
     logline(dec_.prompt);
 }
@@ -1161,9 +1162,9 @@ void Sim::open_memory() {
     dec_.persona = m.persona; dec_.disposition = m.disposition;
     dec_.prompt = std::string(named_name(m.name_id)) + ", a memory construct looped in the ICE at " +
                   node_label(world_, run_.pos) + " — a dead mind, still dreaming. What do you do with it?";
-    char ex[48];
-    std::snprintf(ex, sizeof ex, "Extract - %d shards, corr+10 (rip it)", parley_bribe_);
-    dec_.options    = { "Dive - lore + a permanent edge", ex, "Stabilize - clean your corruption", "Release - make a friend or a foe" };
+    char ex[56];
+    std::snprintf(ex, sizeof ex, "Extract +%d sh, corr +10 - rip it", parley_bribe_);
+    dec_.options    = { "Dive - lore + a permanent edge, corr +2", ex, "Stabilize - corr -14, eases grudge", "Release - gamble: future ally or foe" };
     dec_.opt_module = { M_COUNT, M_COUNT, M_COUNT, M_COUNT };
     logline(dec_.prompt);
 }
@@ -1242,10 +1243,10 @@ void Sim::open_survival() {
     // Every option here is a real trade — spell out the cost so the call is yours.
     int heal_amt = run_.buffer >= 5 ? 12 + run_.mod_level[M_PATCH] * 3 : 5;
     char pa[56], gh[56], pu[56], jo[56];
-    std::snprintf(pa, sizeof pa, "Patch — +%d intg, -5 buffer", heal_amt);
-    std::snprintf(gh, sizeof gh, "Ghost — heat -20, but corr +4");
-    std::snprintf(pu, sizeof pu, "Push on as-is — spend nothing, stay exposed");
-    std::snprintf(jo, sizeof jo, "Jack out — bank $%d, end the run", (int)run_.shards);
+    std::snprintf(pa, sizeof pa, "Patch +%d intg, -5 buffer", heal_amt);
+    std::snprintf(gh, sizeof gh, "Ghost - heat -20, but corr +4");
+    std::snprintf(pu, sizeof pu, "Push on as-is - spend nothing, stay exposed");
+    std::snprintf(jo, sizeof jo, "Jack out - bank $%d, end the run", (int)run_.shards);
     dec_.options = { pa, gh, pu, jo };
     dec_.opt_module = { M_PATCH, M_GHOST, M_COUNT, M_COUNT };
     logline(dec_.prompt);
@@ -1353,9 +1354,9 @@ void Sim::open_dive() {
     std::snprintf(b, sizeof b, "Objective down (%d cracked). $%d rides on you. Jack out, or dive deeper?",
                   (int)run_.objectives_done, (int)run_.shards);
     dec_.prompt = b;
-    char j[40], d[40];
-    std::snprintf(j, sizeof j, "Jack out — bank $%d", (int)run_.shards);
-    std::snprintf(d, sizeof d, "Dive deeper (layer %d)", (int)run_.depth + 2);
+    char j[56], d[56];
+    std::snprintf(j, sizeof j, "Jack out - bank $%d, walk away safe", (int)run_.shards);
+    std::snprintf(d, sizeof d, "Dive deeper (L%d) - more $, ICE gets meaner", (int)run_.depth + 2);
     dec_.options = { j, d };
     dec_.opt_module = { M_COUNT, M_COUNT };
     logline(dec_.prompt);

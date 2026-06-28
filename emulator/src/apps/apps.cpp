@@ -166,35 +166,47 @@ public:
         int bottom = c.height() - 3;
         int rows = bottom - top + 1;
         mesh::LogQuery q = cur_query(ctx);
-        scroll_max_ = ctx.log->match_count(q) - rows; if (scroll_max_ < 0) scroll_max_ = 0;
-        if (scroll_ > scroll_max_) scroll_ = scroll_max_;
-        auto msgs = ctx.log->window(q, rows, scroll_); // only this window is materialized
-        // Expand each message into a sender header (short + long name) plus its body
-        // word-wrapped across as many lines as it needs, then show the bottom `rows`
-        // display lines so the newest message is always fully visible.
-        struct DL { std::string s; uint8_t fg; };
-        std::vector<DL> lines;
-        const int wrapw = c.width() - 4;               // body indent = 2, margins = 2
-        for (auto& m : msgs) {
-            if (!m.outgoing && ctx.mesh->is_ignored(m.from_id)) continue; // hide ignored senders
-            std::string sn, ln;
-            sender_names(ctx, m, sn, ln);
-            std::string st = " ";
-            if (m.outgoing) st = (m.ack == mesh::ACK_PENDING) ? "·" : (m.ack == mesh::ACK_OK) ? "✓"
-                                : (m.ack == mesh::ACK_FAIL) ? "x" : " ";
-            // header: [hh:mm]<ack> SHORT (Long Name)
-            std::string who = sn.empty() ? ln : sn;
-            if (!ln.empty() && ln != sn) who += " (" + ln + ")";
-            uint8_t hfg = m.outgoing ? ui::BrightGreen : ui::BrightCyan;
-            lines.push_back({ ui::fit("[" + hhmm(m.ts_ms) + "]" + st + who, c.width() - 2), hfg });
-            // body: word-wrapped, indented two spaces, no mid-word breaks
-            uint8_t bfg = m.outgoing ? ui::Green : ui::White;
-            for (auto& w : ui::wrap_text(m.text, wrapw)) lines.push_back({ "  " + w, bfg });
+        // Rebuild the expanded display-line list only when the conversation changes
+        // (window, message count, or the newest ack state) — not every frame.
+        int mc = ctx.log->match_count(q);
+        auto tail = ctx.log->window(q, 1, 0);                 // newest message (for ack/ts in the sig)
+        char sigb[80];
+        std::snprintf(sigb, sizeof sigb, "%s|%d|%u|%d", win_key().c_str(), mc,
+                      tail.empty() ? 0u : (unsigned)tail.back().ts_ms,
+                      tail.empty() ? 0 : (int)tail.back().ack);
+        if (line_sig_ != sigb) {
+            line_sig_ = sigb;
+            line_cache_.clear();
+            const int wrapw = c.width() - 4;                 // body indent = 2, margins = 2
+            auto msgs = ctx.log->window(q, 200, 0);          // all resident matches, oldest -> newest
+            for (auto& m : msgs) {
+                if (!m.outgoing && ctx.mesh->is_ignored(m.from_id)) continue; // hide ignored senders
+                std::string sn, ln;
+                sender_names(ctx, m, sn, ln);
+                std::string st = " ";
+                if (m.outgoing) st = (m.ack == mesh::ACK_PENDING) ? "·" : (m.ack == mesh::ACK_OK) ? "✓"
+                                    : (m.ack == mesh::ACK_FAIL) ? "x" : " ";
+                // header: [hh:mm]<ack> SHORT (Long Name)
+                std::string who = sn.empty() ? ln : sn;
+                if (!ln.empty() && ln != sn) who += " (" + ln + ")";
+                uint8_t hfg = m.outgoing ? ui::BrightGreen : ui::BrightCyan;
+                line_cache_.push_back({ ui::fit("[" + hhmm(m.ts_ms) + "]" + st + who, c.width() - 2), hfg });
+                // body: word-wrapped, indented two spaces, no mid-word breaks
+                uint8_t bfg = m.outgoing ? ui::Green : ui::White;
+                for (auto& w : ui::wrap_text(m.text, wrapw)) line_cache_.push_back({ "  " + w, bfg });
+            }
         }
-        int first = (int)lines.size() - rows; if (first < 0) first = 0;   // bottom-align newest
+        // scroll_ counts display lines back from the newest; clamp to the overflow.
+        scroll_max_ = (int)line_cache_.size() - rows; if (scroll_max_ < 0) scroll_max_ = 0;
+        if (scroll_ > scroll_max_) scroll_ = scroll_max_;
+        if (scroll_ < 0) scroll_ = 0;
+        int first = (int)line_cache_.size() - rows - scroll_; if (first < 0) first = 0;
         int row = top;
-        for (int i = first; i < (int)lines.size() && row <= bottom; ++i, ++row)
-            c.text(row, 1, lines[i].s, lines[i].fg, ui::Black);
+        for (int i = first; i < (int)line_cache_.size() && row <= bottom; ++i, ++row)
+            c.text(row, 1, line_cache_[i].s, line_cache_[i].fg, ui::Black);
+        // a small "more above/below" hint when there's hidden scrollback
+        if (scroll_ < scroll_max_) c.text(top, c.width() - 1, "^", ui::Gray, ui::Black);
+        if (scroll_ > 0)           c.text(bottom, c.width() - 1, "v", ui::Gray, ui::Black);
         ui::input_line(c, c.height() - 2, 1, "> ", compose_);
         ui::footer(c, " enter:send  tab:win  /help  esc:back ");
         if (win_open_) render_windows(ctx, c);
@@ -370,6 +382,14 @@ private:
         return s;
     }
 
+    // Scrolling is line-based (each message expands to a sender header + wrapped
+    // body lines), so scroll_ counts DISPLAY LINES back from the newest, not
+    // messages — otherwise a screen full of wrapped text won't scroll. The line
+    // list is cached and only rebuilt when the conversation changes (rebuilding
+    // every frame would churn the no-PSRAM heap hard).
+    struct DL { std::string s; uint8_t fg; };
+    std::vector<DL> line_cache_;
+    std::string line_sig_;
     std::string compose_;
     int scroll_ = 0, scroll_max_ = 0;
     bool dm_ = false;

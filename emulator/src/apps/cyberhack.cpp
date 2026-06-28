@@ -417,7 +417,7 @@ private:
         for (int i = 0; i < pln; ++i) c.text(row++, 1, ui::fit(pl[i], c.width() - 2), ui::White, ui::Black);
         for (int i = 0; i < n && row <= bottom; ++i, ++row) {
             bool s = (i == sel_);
-            char line[48]; std::snprintf(line, sizeof line, "%d %s", i + 1, d.options[i].c_str());
+            char line[72]; std::snprintf(line, sizeof line, "%d %s", i + 1, d.options[i].c_str());
             c.text(row, 1, ui::fit(line, c.width() - 2), s ? ui::BrightWhite : ui::White, ui::Black, s ? ui::ATTR_INVERSE : ui::ATTR_NONE);
         }
         render_status(c);                                  // keep status visible under the panel
