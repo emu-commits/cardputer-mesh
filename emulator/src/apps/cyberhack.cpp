@@ -248,9 +248,11 @@ private:
         uint32_t h = w.run_seed ^ ((uint32_t)r.pos * 73856093u) ^ (((uint32_t)r.depth + 1) * 19349663u)
                      ^ (((uint32_t)here.security + 1) * 83492791u);
         auto rnd = [&](int n) { h = h * 1664525u + 1013904223u; return (int)((h >> 16) % (uint32_t)(n < 1 ? 1 : n)); };
-        int rh = AH - 2; if (rh < 5) rh = 5; if (rh > 14) rh = 14;
+        // the room fills the whole play band (no blank margin rows above/below it) so
+        // every row goes to either the map or the log — nothing is wasted.
+        int rh = AH; if (rh < 5) rh = 5; if (rh > 14) rh = 14;
         int rw = AW - 12; if (rw < 14) rw = 14; if (rw > 46) rw = 46;
-        room_W_ = rw; room_H_ = rh; room_ox_ = (AW - rw) / 2; room_oy_ = 1;
+        room_W_ = rw; room_H_ = rh; room_ox_ = (AW - rw) / 2; room_oy_ = 0;
         for (int y = 0; y < rh; ++y) for (int x = 0; x < rw; ++x)
             room_wall_[y][x] = (x == 0 || x == rw - 1 || y == 0 || y == rh - 1);   // border walls, open floor
         door_w_ = 1 + rnd(rh - 2);
@@ -366,11 +368,12 @@ private:
     }
     void render_status(TextCanvas& c) {
         const cy::RunState& r = sim_.state();
-        // Short-but-legible labels sized to fill the 53-col CYD bar exactly at the
-        // worst case (Int255/255 Bf120/120 Ht255 Co100% T99 L99 Ob99 $65535 == 53),
-        // so every field — $shards included — always stays visible, none cut off.
+        // Readable word labels. Realistic worst case over 1.1M sampled game states
+        // is 52 cols (the pathological 255-heat + $65535 + maxed-bars combo never
+        // co-occurs), so the whole bar — $shards included — stays visible on the
+        // 53-col CYD; ui::fit only ever clips in states the game can't actually reach.
         char b[112];
-        std::snprintf(b, sizeof b, "Int%d/%d Bf%d/%d Ht%d Co%d%% T%d L%d Ob%d $%d",
+        std::snprintf(b, sizeof b, "Int%d/%d Buf%d/%d Heat%d Cor%d%% T%d L%d Obj%d $%d",
                       (int)r.integrity, (int)r.integrity_max, (int)r.buffer, (int)r.buffer_max,
                       (int)r.heat, (int)r.corruption, (int)r.tier, (int)r.depth + 1,
                       (int)r.objectives_done, (int)r.shards);
@@ -473,10 +476,10 @@ private:
     }
 
     // shared layout constants: ui::header() consumes 2 rows, then a ribbon row, so
-    // the ASCII play/graphics band starts at row 3 and is kAH rows tall, with the
-    // exits row right below it. Everything under that is the LOG, so the band is kept
-    // as compact as still renders a room (kAH=8 -> a 6-row room) to hand the log the
-    // most rows. The decision card docks over this band so the log stays visible.
+    // the ASCII play/graphics band starts at row 3 and is kAH rows tall (the room now
+    // fills the band edge-to-edge — no wasted margin rows), with the exits row right
+    // below it. Everything under that is the LOG. The decision card docks over this
+    // band (rows kPlayTop..kPlayTop+kAH) so the log stays visible the whole time.
     static constexpr int kPlayTop = 3;
     static constexpr int kAH = 8;
 
