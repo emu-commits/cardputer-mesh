@@ -304,9 +304,9 @@ function drawRoom(){
     // dense fast strobe when the deck is rotting. period 900ms -> 120ms.
     const GC="#%&*?/\\=+~^@$01", dens=Math.min(25,(corr/5)|0), period=Math.max(120,900-corr*8), bucket=Math.floor(performance.now()/period);
     for(let y=0;y<AH;y++)for(let x=0;x<AW;x++){
-      let h=(bucket*2654435761>>>0)^Math.imul(y,73856093)^Math.imul(x,19349663); h^=h>>>13; h=Math.imul(h,0x5bd1e995)>>>0; h^=h>>>15;
+      let h=(bucket*2654435761>>>0)^Math.imul(y,73856093)^Math.imul(x,19349663); h^=h>>>13; h=Math.imul(h,0x5bd1e995)>>>0; h^=h>>>15; h>>>=0;  // force unsigned: signed % gives negative idx -> GC[neg]==="undefined"
       if((h%100)>=dens) continue;
-      const cell=g[y][x]; if(cell.c===" ") continue;
+      const cell=g[y][x]; if(!cell||cell.c===" ") continue;
       g[y][x]={c:GC[h%GC.length],k:"glitch"};
     }
   }
