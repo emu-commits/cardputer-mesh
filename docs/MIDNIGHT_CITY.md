@@ -550,6 +550,14 @@ jack-ins may optionally be played live** — same app, flip CyberHack to interac
 and hand control over, then return the result to Midnight City. (Decision left to
 playtest: always-live vs. offer-auto for the player.)
 
+**Cyberspace is pivotal to arcs — not a side errand.** A jack-in folds its result
+back as *events* on the shared stream (`EV_JACKIN`, `EV_HEIST`, `EV_FLATLINE`,
+`EV_NETALLY`, plus the `EV_DEATH`/`EV_BOUNTY`/grudge it triggers), so a matrix run
+becomes an *ingredient* in the same emergent web as everything else (§3, §7): a
+flatline → a revenge feud; a big heist → a corp bounty → faction warfare (the
+**cyber-fallout** arc); an ally forged in the matrix → a meatspace contact. What
+happens in cyberspace can be the turn of a story, not a detour from it.
+
 ---
 
 ## 6. UI / rendering (CYD 53×20, embark view)

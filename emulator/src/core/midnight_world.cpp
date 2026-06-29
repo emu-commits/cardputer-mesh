@@ -652,7 +652,8 @@ const char* event_name(uint8_t k) {
     static const char* n[EV_COUNT] = {
         "-", "combat", "death", "turf flip", "raid", "threat spawn", "threat defeat",
         "refugee", "extortion", "bounty", "recruit", "market day", "rumor", "collapse",
-        "shortage", "heatwave", "lockdown", "riot"
+        "shortage", "heatwave", "lockdown", "riot",
+        "jack-in", "heist", "flatline", "net-ally"
     };
     return k < EV_COUNT ? n[k] : "?";
 }
@@ -989,6 +990,103 @@ static void unrest_step(World& w) {
     }
 }
 
+// ---- Phase 6: cyberspace = a headless CyberHack run (§5.2) ------------------
+static uint8_t pick_persona(const Agent& a) {
+    bool desperate   = (a.status & AF_IN_DEBT) || a.need[ND_HUNGER] > 180 ||
+                       a.need[ND_THIRST] > 180 || a.money < 30;
+    bool comfortable = a.money > 1000;
+    bool greedy      = a.trait[TR_GREED] > 160;
+    if (desperate)   return cyber::P_RECKLESS;
+    if (comfortable) return cyber::P_CAUTIOUS;
+    if (greedy)      return cyber::P_OPPORTUNIST;
+    return cyber::P_LOYALIST;
+}
+int net_target_count(const World& w) {
+    int n = 0;
+    for (int i = 0; i < w.district_count; ++i) if (w.districts[i].services & SV_DATAVAULT) ++n;
+    return n;
+}
+const char* outcome_name(uint8_t o) {
+    return o == cyber::O_EXTRACTED ? "extracted" : o == cyber::O_DIED ? "flatlined" : "running";
+}
+static int count_allies(const cyber::Legends& L) {
+    int n = 0;
+    for (int k = 0; k < L.named_count && k < cyber::MAX_NAMED; ++k)
+        if (L.named[k].status == cyber::NS_ALLIED) ++n;
+    return n;
+}
+
+JackResult jack_in(World& w, int ai) {
+    JackResult res;
+    if (ai < 0 || ai >= w.agent_count) return res;
+    Agent& a = w.agents[ai];
+    if (!(a.status & AF_ALIVE) || !(a.status & AF_HAS_DECK)) return res;
+
+    // pick a data target (a datacenter); remote — no travel needed to jack in
+    uint8_t targets[MAX_DISTRICTS]; int nt = 0;
+    for (int i = 0; i < w.district_count; ++i)
+        if (w.districts[i].services & SV_DATAVAULT) targets[nt++] = (uint8_t)i;
+    if (nt == 0) return res;
+    uint8_t target = targets[w.rng.range((uint32_t)nt)];
+    res.ran = true; res.target = target;
+
+    // the matrix remembers this target across jack-ins (persistent legends)
+    int slot = target % MAX_NET;
+    if (w.net_target[slot] != target) {
+        w.net_legends[slot] = cyber::Legends{};
+        w.net_target[slot] = target;
+        if (slot + 1 > w.net_count) w.net_count = (uint8_t)(slot + 1);
+    }
+    cyber::Legends& leg = w.net_legends[slot];
+    int allies_before = count_allies(leg);
+
+    // run the dive headless: the personality reflects the jacker's situation,
+    // and ai_decide drives every spike (NPC jacks are invisible background runs).
+    uint8_t persona = pick_persona(a);
+    cyber::Sim run;
+    run.start(w.districts[target].seed, w.rng.next(), persona, &leg);
+    run.set_auto_combat(true);
+    cyber::Rng pr; pr.seed(w.rng.next());
+    int guard = 0;
+    while (run.running() && guard++ < 8000) {
+        if (run.advance() == cyber::AR_DECISION)
+            run.choose(cyber::ai_decide(persona, run.state(), run.decision(), pr));
+    }
+    run.update_legends(leg);
+    const cyber::RunState& r = run.state();
+    res.shards = r.shards; res.outcome = r.outcome; res.corruption = r.corruption;
+
+    // ---- feed results back as EVENTS so cyberspace drives meatspace arcs ----
+    a.money += r.shards;
+    bump_need(a.need[ND_STRESS], r.corruption / 4);
+    push_event(w, EV_JACKIN, target, (uint8_t)ai, r.outcome);
+    uint8_t owner = w.districts[target].owner;
+    if (owner < F_COUNT) {                                   // you robbed their ice
+        int gi = (a.faction < F_COUNT) ? (int)a.faction : (int)F_COUNT;
+        int8_t& g = w.factions[owner].grudge[gi]; if (g < 120) g = (int8_t)(g + 3);
+    }
+    if (r.outcome == cyber::O_DIED) {                        // flatline
+        res.flatlined = true;
+        a.status |= AF_INJURED;
+        bump_need(a.need[ND_CYBERWARE], 40);
+        bump_need(a.need[ND_STRESS], 30);
+        push_event(w, EV_FLATLINE, a.loc, (uint8_t)ai, 0);
+        if (w.rng.chance(g_mtune.flatline_death_pct)) {
+            a.status &= (uint8_t)~AF_ALIVE; res.killed = true;
+            push_event(w, EV_DEATH, a.loc, (uint8_t)ai, /*flatline*/4);
+        }
+    }
+    if (r.shards >= (uint32_t)g_mtune.heist_score) {         // a big score
+        push_event(w, EV_HEIST, target, (uint8_t)ai, 0);
+        push_event(w, EV_BOUNTY, target, NONE8, owner);      // the corp wants the runner
+    }
+    if (count_allies(leg) > allies_before) {                 // a contact made in the matrix
+        res.net_ally = true;
+        push_event(w, EV_NETALLY, a.loc, (uint8_t)ai, 0);
+    }
+    return res;
+}
+
 void tick_world(World& w) {
     const MidTunables& T = g_mtune;
 
@@ -1076,6 +1174,10 @@ void tick_world(World& w) {
         unrest_step(w);
         decay_step(w);
         pulse_step(w);
+        // background deckers jack the net (invisible runs that feed the world)
+        for (int i = 0; i < w.agent_count; ++i)
+            if ((w.agents[i].status & (AF_ALIVE | AF_HAS_DECK)) == (AF_ALIVE | AF_HAS_DECK) && w.rng.chance(T.jack_pct))
+                jack_in(w, i);
         company_step(w);
     }
 
@@ -1120,6 +1222,34 @@ void get_district(Reader& rd, District& d) {
     d.population = rd.u8(); d.prosperity = rd.u8(); d.danger = rd.u8(); d.danger_base = rd.u8();
     d.services = rd.u16(); d.deg = rd.u8();
     for (int k = 0; k < MAXDEG; ++k) d.adj[k] = rd.u8();
+}
+// cyber::Legends is a fixed-size POD-ish struct; dump it field-wise for a
+// byte-exact mid save (independent of CyberHack's own serializer).
+void put_legends(Writer& wr, const cyber::Legends& L) {
+    wr.u32(L.citynet_seed); wr.u16(L.run_count); wr.u32(L.best_score);
+    for (int f = 0; f < cyber::F_COUNT; ++f) wr.i8(L.grudge[f]);
+    wr.u8(L.named_count);
+    for (int k = 0; k < cyber::MAX_NAMED; ++k) {
+        wr.u8(L.named[k].name_id); wr.u8(L.named[k].archetype);
+        wr.u8(L.named[k].status); wr.i8(L.named[k].grudge);
+    }
+    wr.u8(L.burned_count);
+    for (int k = 0; k < cyber::MAX_BURNED; ++k) { wr.u8(L.burned[k].a); wr.u8(L.burned[k].b); }
+    wr.u8(L.marked_count);
+    for (int k = 0; k < cyber::MAX_MARKED; ++k) wr.u8(L.marked[k]);
+}
+void get_legends(Reader& rd, cyber::Legends& L) {
+    L.citynet_seed = rd.u32(); L.run_count = rd.u16(); L.best_score = rd.u32();
+    for (int f = 0; f < cyber::F_COUNT; ++f) L.grudge[f] = rd.i8();
+    L.named_count = rd.u8();
+    for (int k = 0; k < cyber::MAX_NAMED; ++k) {
+        L.named[k].name_id = rd.u8(); L.named[k].archetype = rd.u8();
+        L.named[k].status = rd.u8(); L.named[k].grudge = rd.i8();
+    }
+    L.burned_count = rd.u8();
+    for (int k = 0; k < cyber::MAX_BURNED; ++k) { L.burned[k].a = rd.u8(); L.burned[k].b = rd.u8(); }
+    L.marked_count = rd.u8();
+    for (int k = 0; k < cyber::MAX_MARKED; ++k) L.marked[k] = rd.u8();
 }
 void put_agent(Writer& wr, const Agent& a) {
     wr.u8(a.name_id); wr.u8(a.loc); wr.u8(a.faction);
@@ -1175,6 +1305,8 @@ void serialize(const World& w, std::string& out) {
         const Threat& t = w.threats[i];
         wr.u8(t.kind); wr.u8(t.power); wr.u8(t.district); wr.u8(t.behavior); wr.u8(t.hp); wr.u8(t.active);
     }
+    wr.u8(w.net_count);
+    for (int i = 0; i < MAX_NET; ++i) { wr.u8(w.net_target[i]); put_legends(wr, w.net_legends[i]); }
     wr.u8(w.event_count); wr.u8(w.event_head);
     for (int i = 0; i < EVMAX; ++i) {
         const Event& e = w.events[i];
@@ -1210,6 +1342,8 @@ bool deserialize(const std::string& in, World& w) {
         Threat& t = w.threats[i];
         t.kind = rd.u8(); t.power = rd.u8(); t.district = rd.u8(); t.behavior = rd.u8(); t.hp = rd.u8(); t.active = rd.u8();
     }
+    w.net_count = rd.u8();
+    for (int i = 0; i < MAX_NET; ++i) { w.net_target[i] = rd.u8(); get_legends(rd, w.net_legends[i]); }
     w.event_count = rd.u8(); w.event_head = rd.u8();
     for (int i = 0; i < EVMAX; ++i) {
         Event& e = w.events[i];

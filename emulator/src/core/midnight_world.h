@@ -16,6 +16,7 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include "core/cyberhack_world.h"   // cyberspace = a headless CyberHack run (§5.2)
 
 namespace mid {
 
@@ -28,6 +29,7 @@ static constexpr int SCARMAX       = 3;    // memory scars per agent
 static constexpr int EMPMAX        = 8;    // company employees (early cap)
 static constexpr int EVMAX         = 32;   // bounded event ring
 static constexpr int MAX_THREATS   = 8;    // drones + megathreats (§5.1)
+static constexpr int MAX_NET       = 6;    // remembered cyberspace targets (§5.2)
 static constexpr uint8_t NONE8     = 0xFF;
 
 static constexpr uint16_t MID_MAGIC   = 0x434D; // 'M','C' little-endian
@@ -83,7 +85,8 @@ enum ThreatBehavior : uint8_t { TB_DORMANT, TB_TERRITORIAL, TB_AGGRESSIVE };
 enum EventKind : uint8_t {
     EV_NONE, EV_COMBAT, EV_DEATH, EV_TURF_FLIP, EV_RAID, EV_THREAT_SPAWN,
     EV_THREAT_DEFEAT, EV_REFUGEE, EV_EXTORT, EV_BOUNTY, EV_RECRUIT, EV_MARKET_DAY,
-    EV_RUMOR, EV_COLLAPSE, EV_SHORTAGE, EV_HEATWAVE, EV_LOCKDOWN, EV_RIOT, EV_COUNT
+    EV_RUMOR, EV_COLLAPSE, EV_SHORTAGE, EV_HEATWAVE, EV_LOCKDOWN, EV_RIOT,
+    EV_JACKIN, EV_HEIST, EV_FLATLINE, EV_NETALLY, EV_COUNT
 };
 
 // what an agent did this tick (also drives the embark-view animation, Phase 8)
@@ -213,6 +216,10 @@ struct World {
     uint8_t  weather = 0;                  // heatwave/drought days remaining (#33)
     uint8_t  threat_count = 0;             // active threats in threats[]
     Threat   threats[MAX_THREATS];
+    // remembered cyberspace targets — the matrix remembers across jack-ins (§5.2)
+    uint8_t  net_count = 0;
+    uint8_t  net_target[MAX_NET] = { NONE8, NONE8, NONE8, NONE8, NONE8, NONE8 };
+    cyber::Legends net_legends[MAX_NET];
     uint8_t  event_count = 0;              // events held in the ring
     uint8_t  event_head  = 0;              // ring write cursor
     Event    events[EVMAX];
@@ -275,6 +282,10 @@ struct MidTunables {
     int threat_cap = 3;            // max concurrent active threats
     int threat_hp_mult = 5;        // spawn hp = power * this
     int megathreat_min_power = 5;  // power >= this = a megathreat (DF megabeast)
+    // --- Phase 6: cyberspace bridge (§5.2) -------------------------------
+    int jack_pct = 2;              // per-day chance a decker jacks a data target
+    int flatline_death_pct = 16;   // chance a cyberspace flatline kills in meatspace
+    int heist_score = 200;         // shards extracted that count as a "big heist"
 };
 extern MidTunables g_mtune;
 
@@ -299,6 +310,23 @@ const char* threat_name(uint8_t kind);
 const char* event_name(uint8_t kind);
 // would a fight against `foe_power` make the avatar interrupt the player? (agency §1)
 bool        avatar_fight_escalates(const World& w, int foe_power);
+
+// ---- Phase 6: cyberspace bridge (§5.2) -------------------------------------
+struct JackResult {
+    bool     ran      = false;   // did a run happen (agent had a deck + a target)
+    uint8_t  target   = NONE8;   // data-target district
+    uint32_t shards   = 0;       // extracted -> agent.money
+    uint8_t  outcome  = 0;       // cyber::Outcome (O_EXTRACTED / O_DIED)
+    uint8_t  corruption = 0;
+    bool     flatlined  = false; // cyberspace death (may kill in meatspace)
+    bool     killed     = false; // it killed the agent in meatspace
+    bool     net_ally   = false; // forged a NS_ALLIED contact in the matrix
+};
+// run a headless CyberHack dive for agent `ai` and fold the results back into
+// the world (shards, flatline injury/cyberpsychosis, faction grudge, events).
+JackResult jack_in(World& w, int ai);
+int  net_target_count(const World& w);   // # of data targets (datacenters)
+const char* outcome_name(uint8_t cyber_outcome);
 
 // ---- save format (byte-exact, fixed-width) ---------------------------------
 void serialize(const World& w, std::string& out);

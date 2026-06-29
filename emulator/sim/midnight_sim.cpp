@@ -372,14 +372,14 @@ static bool is_mega_kind(uint8_t k) {
 // Watches the event stream and recognizes multi-event chain-reactions on a
 // district within a window — proving the §3.1 arcs emerge from the base rules.
 // (This logic is what the Phase 7 in-engine narrator will reuse.)
-enum Arc { ARC_NONE, ARC_DEBT_CASCADE, ARC_WATER_RIOT, ARC_MEGA_RAMPAGE, ARC_FEUD };
+enum Arc { ARC_NONE, ARC_DEBT_CASCADE, ARC_WATER_RIOT, ARC_MEGA_RAMPAGE, ARC_FEUD, ARC_CYBER_FALLOUT };
 struct ArcDetector {
     int shortage_t[MAX_DISTRICTS], gang_t[MAX_DISTRICTS], riot_t[MAX_DISTRICTS];
-    int mega_t[MAX_DISTRICTS], death_t[MAX_DISTRICTS];
+    int mega_t[MAX_DISTRICTS], death_t[MAX_DISTRICTS], heist_t[MAX_DISTRICTS];
     int heat_until, W;
     explicit ArcDetector(int w) : heat_until(-(1 << 28)), W(w) {
         for (int i = 0; i < MAX_DISTRICTS; ++i)
-            shortage_t[i] = gang_t[i] = riot_t[i] = mega_t[i] = death_t[i] = -(1 << 28);
+            shortage_t[i] = gang_t[i] = riot_t[i] = mega_t[i] = death_t[i] = heist_t[i] = -(1 << 28);
     }
     int ingest(uint8_t kind, uint8_t d, uint8_t data, int t) {
         if (kind == EV_HEATWAVE) { heat_until = t + W; return ARC_NONE; }
@@ -391,7 +391,12 @@ struct ArcDetector {
         if ((kind == EV_EXTORT || kind == EV_RAID || kind == EV_TURF_FLIP) && recent(shortage_t[d])) gang_t[d] = t;
         if (kind == EV_RIOT && (recent(shortage_t[d]) || t < heat_until)) riot_t[d] = t;
         if (kind == EV_DEATH && data == 1) death_t[d] = t;   // a combat death
+        if (kind == EV_HEIST) heist_t[d] = t;                // a big cyberspace score
         // --- completions (check in priority order; reset to avoid recount) ---
+        // cyberspace pivotal: a heist's corp fallout erupts into meatspace violence
+        if ((kind == EV_RAID || kind == EV_TURF_FLIP || kind == EV_DEATH) && recent(heist_t[d])) {
+            heist_t[d] = -(1 << 28); return ARC_CYBER_FALLOUT;
+        }
         if ((kind == EV_LOCKDOWN || kind == EV_COMBAT) && recent(gang_t[d])) {
             gang_t[d] = shortage_t[d] = -(1 << 28); return ARC_DEBT_CASCADE;
         }
@@ -411,7 +416,7 @@ struct ArcDetector {
 static void test_emergence() {
     std::printf("[arcs] the named chain-reactions fire from the base rules (§3.1)\n");
     const int SEEDS = 60; const uint32_t TICKS = 30000; const int W = 720; // 30-day window
-    long arc[5] = {0};
+    long arc[6] = {0};
     long raw[EV_COUNT] = {0};
     for (uint32_t s = 1; s <= (uint32_t)SEEDS; ++s) {
         World w; gen_world(w, s);
@@ -431,12 +436,14 @@ static void test_emergence() {
     std::printf("       raw: shortage=%ld heatwave=%ld lockdown=%ld riot=%ld turf=%ld refugee=%ld death=%ld\n",
                 raw[EV_SHORTAGE], raw[EV_HEATWAVE], raw[EV_LOCKDOWN], raw[EV_RIOT],
                 raw[EV_TURF_FLIP], raw[EV_REFUGEE], raw[EV_DEATH]);
-    std::printf("       arcs: debt-cascade=%ld  water-riot=%ld  megathreat-rampage=%ld  feud=%ld  (over %d worlds)\n",
-                arc[ARC_DEBT_CASCADE], arc[ARC_WATER_RIOT], arc[ARC_MEGA_RAMPAGE], arc[ARC_FEUD], SEEDS);
+    std::printf("       arcs: debt-cascade=%ld  water-riot=%ld  mega-rampage=%ld  feud=%ld  cyber-fallout=%ld  (over %d worlds)\n",
+                arc[ARC_DEBT_CASCADE], arc[ARC_WATER_RIOT], arc[ARC_MEGA_RAMPAGE], arc[ARC_FEUD],
+                arc[ARC_CYBER_FALLOUT], SEEDS);
     CHECK(arc[ARC_DEBT_CASCADE] > 0, "black-clinic debt-cascade arcs emerge (§3.1)");
     CHECK(arc[ARC_WATER_RIOT] > 0, "water-ration riot arcs emerge (§3.1)");
     CHECK(arc[ARC_MEGA_RAMPAGE] > 0, "megathreat-rampage arcs emerge");
     CHECK(arc[ARC_FEUD] > 0, "revenge-feud arcs emerge");
+    CHECK(arc[ARC_CYBER_FALLOUT] > 0, "cyberspace heists spill into meatspace arcs (pivotal)");
 }
 
 // ---- Phase 4: combat mechanics + escalation classifier ---------------------
@@ -454,6 +461,48 @@ static void test_combat_mechanics() {
     // agency model: a trivial foe is auto-resolved; a deadly one interrupts (§1)
     CHECK(!avatar_fight_escalates(w, 1), "a trivial foe does not interrupt the avatar");
     CHECK(avatar_fight_escalates(w, 999), "a deadly foe interrupts the avatar");
+}
+
+// ---- Phase 6: CyberHack bridge (the gate) ----------------------------------
+static void test_cyberhack_bridge() {
+    std::printf("[cyber] headless jack-ins resolve, feed back, and the matrix remembers\n");
+    // determinism: same seed + same agent -> identical jack outcome
+    {
+        World a, b; gen_world(a, 5); gen_world(b, 5);
+        a.agents[3].status |= AF_HAS_DECK; b.agents[3].status |= AF_HAS_DECK;
+        JackResult ra = jack_in(a, 3), rb = jack_in(b, 3);
+        CHECK(ra.ran && rb.ran, "a deck-equipped agent can jack a data target");
+        CHECK(ra.shards == rb.shards && ra.outcome == rb.outcome && ra.killed == rb.killed,
+              "jack-ins are deterministic for a fixed seed");
+    }
+    // resolution + feedback + memory over many runs
+    World w; gen_world(w, 9);
+    CHECK(net_target_count(w) > 0, "world has a data target to hack");
+    int ai = 4; int ran = 0, extracted = 0, flatlined = 0, allies = 0, heists = 0;
+    int hanging = 0, money_fed = 0;
+    for (int j = 0; j < 600; ++j) {
+        Agent& p = w.agents[ai];
+        p.status |= AF_ALIVE | AF_HAS_DECK;        // keep the test subject in play
+        p.money = 0; p.status &= (uint8_t)~AF_INJURED;
+        JackResult r = jack_in(w, ai);
+        if (!r.ran) continue;
+        ++ran;
+        if (r.outcome != cyber::O_EXTRACTED && r.outcome != cyber::O_DIED) ++hanging;
+        if (r.outcome == cyber::O_EXTRACTED) ++extracted;
+        if (r.flatlined) { ++flatlined; if (!r.killed) CHECK(w.agents[ai].status & AF_INJURED, "a flatline injures in meatspace"); }
+        if (r.net_ally) ++allies;
+        if (r.shards >= (uint32_t)g_mtune.heist_score) ++heists;
+        if (w.agents[ai].money == r.shards) ++money_fed;
+    }
+    int max_runcount = 0;
+    for (int i = 0; i < MAX_NET; ++i) if (w.net_legends[i].run_count > max_runcount) max_runcount = w.net_legends[i].run_count;
+    std::printf("       ran=%d extracted=%d flatlined=%d heists=%d net-allies=%d  matrix run_count(max)=%d\n",
+                ran, extracted, flatlined, heists, allies, max_runcount);
+    CHECK(ran > 0, "jacks run");
+    CHECK(hanging == 0, "every jack-in resolves (extract or flatline, never left running)");
+    CHECK(extracted > 0, "some jack-ins extract shards");
+    CHECK(money_fed == ran, "extracted shards feed back to the agent's money");
+    CHECK(max_runcount > 1, "the matrix remembers a target across jack-ins (legends persist)");
 }
 
 // ---- Phase 4: the systems fire & feed back (the gate) -----------------------
@@ -644,6 +693,7 @@ int main(int argc, char** argv) {
     test_directive_steering();
     test_combat_mechanics();
     test_phase4_systems();
+    test_cyberhack_bridge();
     test_emergence();
     std::printf("\n%d checks, %d failures\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
