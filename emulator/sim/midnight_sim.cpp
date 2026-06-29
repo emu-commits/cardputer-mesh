@@ -145,6 +145,97 @@ static void test_roundtrip() {
     CHECK(!ok, "truncated blob rejected (reader underrun)");
 }
 
+// ---- Phase 2: tick determinism ---------------------------------------------
+static void test_tick_determinism() {
+    std::printf("[tick] same seed + same ticks -> identical world\n");
+    for (uint32_t s = 1; s <= 300; ++s) {
+        World a; gen_world(a, s);
+        World b; gen_world(b, s);
+        for (int t = 0; t < 500; ++t) { tick_world(a); tick_world(b); }
+        std::string sa, sb; serialize(a, sa); serialize(b, sb);
+        CHECK(sa == sb, "tick_world is deterministic");
+    }
+    // ticking then saving/restoring resumes the same future
+    World x; gen_world(x, 77);
+    for (int t = 0; t < 200; ++t) tick_world(x);
+    std::string mid; serialize(x, mid);
+    World y; CHECK(deserialize(mid, y), "restore mid-run");
+    for (int t = 0; t < 200; ++t) { tick_world(x); tick_world(y); }
+    std::string sx, sy; serialize(x, sx); serialize(y, sy);
+    CHECK(sx == sy, "save/restore mid-run resumes identical future");
+}
+
+// ---- Phase 2: economy soak (the gate) --------------------------------------
+// Run many worlds for 10k ticks; assert no extinction, no runaway inflation,
+// no deadlock. Tracks aggregate stats; prints a digest.
+static void test_economy_soak() {
+    const int SEEDS = 80, TICKS = 10000;
+    std::printf("[soak] %d worlds x %d ticks: extinction / inflation / deadlock\n", SEEDS, TICKS);
+
+    int worst_survival_pct = 100;
+    int global_max_price = 0;
+    double sum_late_avg_price = 0; int late_price_samples = 0;
+    long total_buys = 0, total_works = 0;
+    int frozen_worlds = 0;
+
+    for (uint32_t s = 1; s <= (uint32_t)SEEDS; ++s) {
+        World w; gen_world(w, s);
+        int start_alive = alive_count(w);
+
+        long buys = 0, works = 0, moves = 0;
+        long last_quarter_activity = 0;
+
+        for (int t = 0; t < TICKS; ++t) {
+            tick_world(w);
+
+            // sample prices + activity
+            for (int i = 0; i < w.agent_count; ++i) {
+                uint8_t act = w.agents[i].activity;
+                if (act == ACT_BUY) ++buys;
+                else if (act == ACT_WORK) ++works;
+                else if (act == ACT_MOVE) ++moves;
+                if (t >= TICKS * 3 / 4 && (act == ACT_BUY || act == ACT_WORK || act == ACT_MOVE))
+                    ++last_quarter_activity;
+            }
+            if (t == TICKS - 1 || (t % 1000) == 0) {
+                int mx = 0; long psum = 0; int pn = 0;
+                for (int d = 0; d < w.district_count; ++d) {
+                    for (int c = 0; c < C_COUNT; ++c) {
+                        int p = price_of(w, (uint8_t)d, (uint8_t)c);
+                        if (p > mx) mx = p;
+                        psum += p; ++pn;
+                    }
+                }
+                if (mx > global_max_price) global_max_price = mx;
+                if (t >= TICKS * 3 / 4 && pn) { sum_late_avg_price += (double)psum / pn; ++late_price_samples; }
+            }
+        }
+
+        int end_alive = alive_count(w);
+        int survival = start_alive ? end_alive * 100 / start_alive : 100;
+        if (survival < worst_survival_pct) worst_survival_pct = survival;
+        total_buys += buys; total_works += works;
+
+        // --- per-world gate assertions --------------------------------------
+        CHECK(end_alive >= start_alive / 2, "no extinction (>=50% survive the soak)");
+        CHECK(buys > 0, "economy moves: agents buy");
+        CHECK(works > 0, "economy moves: agents work");
+        CHECK(last_quarter_activity > 0, "no deadlock: still active in the final quarter");
+        if (last_quarter_activity == 0) ++frozen_worlds;
+        (void)moves;
+    }
+
+    // --- global gate assertions --------------------------------------------
+    double late_avg = late_price_samples ? sum_late_avg_price / late_price_samples : 0;
+    CHECK(global_max_price <= g_mtune.price_max, "no runaway inflation: price is hard-bounded");
+    CHECK(late_avg < g_mtune.price_max * 0.85, "prices not pinned at the cap (economy clears)");
+    CHECK(frozen_worlds == 0, "no world deadlocked");
+
+    std::printf("       worst survival=%d%%  max price=%d (cap %d)  late avg price=%.1f\n",
+                worst_survival_pct, global_max_price, g_mtune.price_max, late_avg);
+    std::printf("       total buys=%ld  works=%ld\n", total_buys, total_works);
+}
+
 // ---- a readable world dump for eyeballing -----------------------------------
 static void dump_world(uint32_t seed) {
     World w; gen_world(w, seed);
@@ -183,9 +274,46 @@ static void dump_world(uint32_t seed) {
     }
 }
 
+// ---- economy health curve for one world (tuning aid) -----------------------
+static void econ_curve(uint32_t seed) {
+    World w; gen_world(w, seed);
+    int start = alive_count(w);
+    std::printf("seed=%u  agents=%d districts=%d\n", seed, w.agent_count, w.district_count);
+    std::printf("  tick   alive  emp%%  debt%%  avgPrice  maxPrice  totMoney\n");
+    auto snap = [&](int t) {
+        int al = 0, emp = 0, debt = 0; long money = 0;
+        for (int i = 0; i < w.agent_count; ++i) {
+            const Agent& a = w.agents[i];
+            if (!(a.status & AF_ALIVE)) continue;
+            ++al; money += a.money;
+            if (a.status & AF_EMPLOYED) ++emp;
+            if (a.status & AF_IN_DEBT) ++debt;
+        }
+        long psum = 0; int pn = 0, mx = 0;
+        for (int d = 0; d < w.district_count; ++d) for (int c = 0; c < C_COUNT; ++c) {
+            int p = price_of(w, (uint8_t)d, (uint8_t)c); psum += p; ++pn; if (p > mx) mx = p;
+        }
+        std::printf("  %5d  %4d   %3d   %4d   %7.1f   %7d   %8ld\n",
+                    t, al, al ? emp * 100 / al : 0, al ? debt * 100 / al : 0,
+                    pn ? (double)psum / pn : 0, mx, money);
+    };
+    int marks[] = {0, 100, 500, 1000, 2000, 5000, 10000};
+    int mi = 0;
+    for (int t = 0; t <= 10000; ++t) {
+        if (mi < (int)(sizeof(marks)/sizeof(marks[0])) && t == marks[mi]) { snap(t); ++mi; }
+        if (t < 10000) tick_world(w);
+    }
+    std::printf("  start_alive=%d end_alive=%d (%d%%)\n", start, alive_count(w),
+                start ? alive_count(w) * 100 / start : 100);
+}
+
 int main(int argc, char** argv) {
     if (argc >= 2 && !std::strcmp(argv[1], "world")) {
         dump_world(argc >= 3 ? (uint32_t)std::strtoul(argv[2], nullptr, 10) : 1);
+        return 0;
+    }
+    if (argc >= 2 && !std::strcmp(argv[1], "econ")) {
+        econ_curve(argc >= 3 ? (uint32_t)std::strtoul(argv[2], nullptr, 10) : 1);
         return 0;
     }
     std::printf("Midnight City — Phase 1 substrate tests\n\n");
@@ -193,6 +321,8 @@ int main(int argc, char** argv) {
     test_determinism();
     test_worldgen_invariants();
     test_roundtrip();
+    test_tick_determinism();
+    test_economy_soak();
     std::printf("\n%d checks, %d failures\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

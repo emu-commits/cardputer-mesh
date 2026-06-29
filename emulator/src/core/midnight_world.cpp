@@ -319,6 +319,175 @@ void gen_world(World& w, uint32_t seed) {
     w.event_head = 0;
 }
 
+// ---- Phase 2: economy + needs + basic behavior ------------------------------
+MidTunables g_mtune;
+
+static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+int price_of(const World& w, uint8_t district, uint8_t commodity) {
+    if (district >= w.district_count || commodity >= C_COUNT) return g_mtune.price_max;
+    const MidTunables& T = g_mtune;
+    int supply = w.districts[district].supply[commodity];
+    // scarcity pricing: low supply -> high price; clamped so it can never run away
+    int p = T.base_price[commodity] * T.demand_ref / (supply + 1);
+    return clampi(p, T.price_min, T.price_max);
+}
+
+int wage_of(const World& w, uint8_t district, const Agent& a) {
+    if (district >= w.district_count) return g_mtune.wage_base;
+    const District& d = w.districts[district];
+    int skill = a.job < J_COUNT ? a.skill[a.job] : 0;
+    // base + skill bonus + local prosperity; modest spread, always positive
+    return g_mtune.wage_base + skill / 8 + d.prosperity / 16;
+}
+
+int alive_count(const World& w) {
+    int n = 0;
+    for (int i = 0; i < w.agent_count; ++i) if (w.agents[i].status & AF_ALIVE) ++n;
+    return n;
+}
+
+// BFS first hop from `from` toward the nearest district offering `service`.
+// Returns the adjacent district to step to, or `from` if none / already there.
+static uint8_t hop_to_service(const World& w, uint8_t from, uint16_t service) {
+    if (from >= w.district_count) return from;
+    if (w.districts[from].services & service) return from;
+    uint8_t parent[MAX_DISTRICTS];
+    for (int i = 0; i < MAX_DISTRICTS; ++i) parent[i] = NONE8;
+    uint8_t q[MAX_DISTRICTS]; int head = 0, tail = 0;
+    q[tail++] = from; parent[from] = from;
+    uint8_t found = NONE8;
+    while (head < tail && found == NONE8) {
+        uint8_t cur = q[head++];
+        const District& d = w.districts[cur];
+        for (int k = 0; k < d.deg; ++k) {
+            uint8_t nb = d.adj[k];
+            if (nb == NONE8 || nb >= w.district_count || parent[nb] != NONE8) continue;
+            parent[nb] = cur; q[tail++] = nb;
+            if (w.districts[nb].services & service) { found = nb; break; }
+        }
+    }
+    if (found == NONE8) return from;
+    // walk back to the first hop out of `from`
+    uint8_t cur = found;
+    while (parent[cur] != from) cur = parent[cur];
+    return cur;
+}
+
+// the commodity that satisfies a vital need
+static uint8_t need_commodity(uint8_t need) {
+    return need == ND_THIRST ? C_WATER : C_FOOD;
+}
+
+static void bump_need(uint8_t& n, int delta) {
+    int v = (int)n + delta;
+    n = (uint8_t)clampi(v, 0, 255);
+}
+
+// one agent's action this tick (deterministic; uses w.rng for ties/job pick)
+static void agent_step(World& w, int idx) {
+    const MidTunables& T = g_mtune;
+    Agent& a = w.agents[idx];
+    if (!(a.status & AF_ALIVE)) return;
+
+    District& here = w.districts[a.loc];
+
+    // --- needs decay --------------------------------------------------------
+    bump_need(a.need[ND_HUNGER], T.hunger_rate);
+    bump_need(a.need[ND_THIRST], T.thirst_rate);
+    bump_need(a.need[ND_SOCIAL], T.social_rate);
+    // safety pressure tracks local danger; stress eases when safe
+    bump_need(a.need[ND_SAFETY], here.danger > 40 ? 2 : -2);
+    bump_need(a.need[ND_STRESS], here.danger / 16 - T.stress_relief);
+
+    // --- pick the most urgent vital ----------------------------------------
+    uint8_t vital = a.need[ND_THIRST] >= a.need[ND_HUNGER] ? ND_THIRST : ND_HUNGER;
+    uint8_t vcom  = need_commodity(vital);
+
+    uint8_t action = ACT_REST;
+
+    if (a.need[vital] > T.buy_thresh) {
+        int price = price_of(w, a.loc, vcom);
+        bool market_here = (here.services & SV_MARKET) != 0;
+        bool stocked     = here.supply[vcom] > 0;
+        if (market_here && stocked && (int)a.money >= price) {
+            // CONSUME: pressure down, money + supply down, a little local prosperity up
+            a.money -= (uint32_t)price;
+            bump_need(a.need[vital], -T.consume_relief);
+            int s = here.supply[vcom] - T.consume_supply;
+            here.supply[vcom] = (uint8_t)(s < 0 ? 0 : s);
+            if (here.prosperity < 100) here.prosperity++;
+            action = ACT_BUY;
+        } else if ((int)a.money < price) {
+            // can't afford -> need income
+            if (a.status & AF_EMPLOYED) { a.money += (uint32_t)wage_of(w, a.loc, a); bump_need(a.need[ND_FATIGUE], T.fatigue_work); action = ACT_WORK; }
+            else if (here.services & SV_JOB_BOARD) { a.job = (uint8_t)w.rng.between(J_CONSTRUCTION, J_INFRA); a.status |= AF_EMPLOYED; action = ACT_SEEKJOB; }
+            else { uint8_t nx = hop_to_service(w, a.loc, SV_JOB_BOARD); if (nx != a.loc) { a.loc = nx; action = ACT_MOVE; } else { action = ACT_REST; } }
+        } else {
+            // have money but no stocked market here -> go find one
+            uint8_t nx = hop_to_service(w, a.loc, SV_MARKET);
+            if (nx != a.loc) { a.loc = nx; action = ACT_MOVE; }
+            else { action = ACT_REST; } // market here but out of stock; wait for regen
+        }
+    } else if ((int)a.money < T.reserve) {
+        // build a buffer for the next purchases
+        if (a.status & AF_EMPLOYED) { a.money += (uint32_t)wage_of(w, a.loc, a); bump_need(a.need[ND_FATIGUE], T.fatigue_work); if (a.job < J_COUNT && a.skill[a.job] < 255) a.skill[a.job]++; action = ACT_WORK; }
+        else if (here.services & SV_JOB_BOARD) { a.job = (uint8_t)w.rng.between(J_CONSTRUCTION, J_INFRA); a.status |= AF_EMPLOYED; action = ACT_SEEKJOB; }
+        else { uint8_t nx = hop_to_service(w, a.loc, SV_JOB_BOARD); if (nx != a.loc) { a.loc = nx; action = ACT_MOVE; } else { action = ACT_REST; } }
+    } else {
+        action = ACT_REST;
+    }
+
+    if (action == ACT_REST) { bump_need(a.need[ND_FATIGUE], -T.fatigue_rest); bump_need(a.need[ND_SOCIAL], -4); }
+
+    // --- starvation: a maxed vital hurts; sustained -> injury -> death -------
+    if (a.need[ND_HUNGER] >= T.starve || a.need[ND_THIRST] >= T.starve) {
+        bump_need(a.need[ND_STRESS], 8);
+        if (a.status & AF_INJURED) { if (w.rng.chance(8)) a.status &= (uint8_t)~AF_ALIVE; }
+        else if (w.rng.chance(20)) a.status |= AF_INJURED;
+    } else if (a.status & AF_INJURED) {
+        if (w.rng.chance(10)) a.status &= (uint8_t)~AF_INJURED; // recover when fed
+    }
+
+    // --- mood = inverse of worst pressures ---------------------------------
+    int worst = a.need[ND_HUNGER];
+    for (int nd = 0; nd < ND_COUNT; ++nd) if (a.need[nd] > worst) worst = a.need[nd];
+    a.mood = (uint8_t)clampi(255 - worst, 0, 255);
+
+    a.activity = action;
+}
+
+void tick_world(World& w) {
+    const MidTunables& T = g_mtune;
+
+    // supply regeneration (the scarcity/opportunity cycle)
+    if (T.regen_period > 0 && (w.tick % (uint32_t)T.regen_period) == 0) {
+        for (int i = 0; i < w.district_count; ++i) {
+            District& d = w.districts[i];
+            for (int c = 0; c < C_COUNT; ++c) {
+                int s = d.supply[c] + w.rng.between(T.regen_min, T.regen_max);
+                d.supply[c] = (uint8_t)(s > T.supply_cap ? T.supply_cap : s);
+            }
+        }
+    }
+
+    // agents act (index order = deterministic)
+    for (int i = 0; i < w.agent_count; ++i) agent_step(w, i);
+
+    // rent: the money sink that keeps wealth from running away
+    if (T.rent_period > 0 && (w.tick % (uint32_t)T.rent_period) == 0 && w.tick > 0) {
+        for (int i = 0; i < w.agent_count; ++i) {
+            Agent& a = w.agents[i];
+            if (!(a.status & AF_ALIVE)) continue;
+            int rent = T.rent_base + w.districts[a.loc].prosperity / 8;
+            if ((int)a.money >= rent) { a.money -= (uint32_t)rent; a.status &= (uint8_t)~AF_IN_DEBT; }
+            else { a.money = 0; a.status |= AF_IN_DEBT; bump_need(a.need[ND_STRESS], 6); }
+        }
+    }
+
+    w.tick++;
+}
+
 // ---- serialization (byte-exact, little-endian, fixed-width) -----------------
 namespace {
 struct Writer {

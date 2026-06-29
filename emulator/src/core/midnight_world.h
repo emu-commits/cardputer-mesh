@@ -65,6 +65,11 @@ enum CompanyTier : uint8_t {
 // packed personality: each trait 0..255, biases the DecisionPolicy (Phase 3)
 enum Trait : uint8_t { TR_GREED, TR_CAUTION, TR_LOYALTY, TR_AGGRESSION, TR_COUNT };
 
+// what an agent did this tick (also drives the embark-view animation, Phase 8)
+enum Activity : uint8_t {
+    ACT_IDLE, ACT_WORK, ACT_BUY, ACT_MOVE, ACT_REST, ACT_SEEKJOB, ACT_COUNT
+};
+
 enum AgentFlags : uint8_t {
     AF_INJURED = 1, AF_ADDICTED = 2, AF_IN_DEBT = 4, AF_EMPLOYED = 8,
     AF_FLEEING = 16, AF_HAS_DECK = 32, AF_PLAYER = 64, AF_ALIVE = 128
@@ -171,6 +176,31 @@ void gen_world(World& w, uint32_t seed);
 bool world_connected(const World& w);     // BFS over the district graph
 bool districts_adjacent(const World& w, uint8_t a, uint8_t b);
 int  district_distance(const World& w, uint8_t from, uint8_t to); // hops, -1 if unreachable
+
+// ---- Phase 2: economy + needs + basic behavior -----------------------------
+// Balance knobs (overridable by the harness for sweeps), like CyberHack's Tunables.
+struct MidTunables {
+    // need decay per tick
+    int hunger_rate = 3, thirst_rate = 4, fatigue_work = 5, fatigue_rest = 8;
+    int social_rate = 1, stress_relief = 3;
+    int buy_thresh   = 120;   // consume a vital when its pressure exceeds this
+    int consume_relief = 150; // pressure removed by one purchase
+    int consume_supply = 2;   // district supply drawn down per purchase
+    // prices: price = base * demand_ref / (supply + 1), clamped
+    int base_price[C_COUNT] = { 6, 4, 5, 12, 14, 9, 16, 20 };
+    int demand_ref = 31, price_min = 2, price_max = 40;
+    // wages + money sinks
+    int wage_base = 12, reserve = 60;
+    int regen_period = 4, regen_min = 1, regen_max = 4, supply_cap = 100;
+    int rent_period = 24, rent_base = 8;
+    int starve = 235;         // vital pressure that starts hurting
+};
+extern MidTunables g_mtune;
+
+int  price_of(const World& w, uint8_t district, uint8_t commodity);
+int  wage_of(const World& w, uint8_t district, const Agent& a);
+void tick_world(World& w);                 // advance one tick (deterministic via w.rng)
+int  alive_count(const World& w);
 
 // ---- save format (byte-exact, fixed-width) ---------------------------------
 void serialize(const World& w, std::string& out);
