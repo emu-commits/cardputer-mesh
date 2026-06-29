@@ -324,6 +324,7 @@ void gen_world(World& w, uint32_t seed) {
 MidTunables g_mtune;
 
 static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+static void push_event(World& w, uint8_t kind, uint8_t node, uint8_t agent, uint8_t data); // fwd
 
 int price_of(const World& w, uint8_t district, uint8_t commodity) {
     if (district >= w.district_count || commodity >= C_COUNT) return g_mtune.price_max;
@@ -610,7 +611,7 @@ static void agent_step(World& w, int idx) {
 
     // --- needs decay --------------------------------------------------------
     bump_need(a.need[ND_HUNGER], T.hunger_rate);
-    bump_need(a.need[ND_THIRST], T.thirst_rate);
+    bump_need(a.need[ND_THIRST], T.thirst_rate + (w.weather > 0 ? 2 : 0)); // heatwave (#33)
     bump_need(a.need[ND_SOCIAL], T.social_rate);
     bump_need(a.need[ND_SAFETY], here.danger > 40 ? 2 : -2);
     bump_need(a.need[ND_STRESS], here.danger / 16 - T.stress_relief);
@@ -622,7 +623,7 @@ static void agent_step(World& w, int idx) {
     // --- starvation: a maxed vital hurts; sustained -> injury -> death -------
     if (a.need[ND_HUNGER] >= T.starve || a.need[ND_THIRST] >= T.starve) {
         bump_need(a.need[ND_STRESS], 8);
-        if (a.status & AF_INJURED) { if (w.rng.chance(8)) a.status &= (uint8_t)~AF_ALIVE; }
+        if (a.status & AF_INJURED) { if (w.rng.chance(8)) { a.status &= (uint8_t)~AF_ALIVE; push_event(w, EV_DEATH, a.loc, (uint8_t)idx, /*starvation*/0); } }
         else if (w.rng.chance(20)) a.status |= AF_INJURED;
     } else if (a.status & AF_INJURED) {
         if (w.rng.chance(10)) a.status &= (uint8_t)~AF_INJURED; // recover when fed
@@ -650,7 +651,8 @@ const char* threat_name(uint8_t k) {
 const char* event_name(uint8_t k) {
     static const char* n[EV_COUNT] = {
         "-", "combat", "death", "turf flip", "raid", "threat spawn", "threat defeat",
-        "refugee", "extortion", "bounty", "recruit", "market day", "rumor", "collapse"
+        "refugee", "extortion", "bounty", "recruit", "market day", "rumor", "collapse",
+        "shortage", "heatwave", "lockdown", "riot"
     };
     return k < EV_COUNT ? n[k] : "?";
 }
@@ -863,7 +865,7 @@ static void territory_step(World& w) {
             push_event(w, EV_TURF_FLIP, (uint8_t)i, NONE8, newowner);
         }
         // extortion: a gang-owned, prosperous block is taxed
-        if (d.owner < F_COUNT && d.prosperity > 20 && w.rng.chance(25)) {
+        if (d.owner < F_COUNT && d.prosperity > 20 && w.rng.chance(8)) {
             d.prosperity = (uint8_t)(d.prosperity - 1);
             w.factions[d.owner].treasury += 50;
             push_event(w, EV_EXTORT, (uint8_t)i, NONE8, d.owner);
@@ -960,6 +962,33 @@ static void pulse_step(World& w) {
     if (w.rng.chance(20)) push_event(w, EV_RUMOR, (uint8_t)w.rng.range(w.district_count), NONE8, 0);
 }
 
+// ---- unrest: shortages, lockdowns, riots (the §3.1 chain ingredients) ------
+static void unrest_step(World& w) {
+    for (int i = 0; i < w.district_count; ++i) {
+        District& d = w.districts[i];
+        // shortage: a vital commodity has run dry (biogel/water/food/chems)
+        static const uint8_t vital_c[4] = { C_WATER, C_FOOD, C_BIOTECH, C_CHEMS };
+        for (int vc = 0; vc < 4; ++vc)
+            if (d.supply[vital_c[vc]] == 0 && w.rng.chance(50))
+                push_event(w, EV_SHORTAGE, (uint8_t)i, NONE8, vital_c[vc]);
+        // lockdown: a heavily-alarmed block gets sealed (clinic-lockdown beat)
+        if (d.hazard[HZ_ALARM] > 85 && w.rng.chance(12)) {
+            d.danger = (uint8_t)clampi(d.danger + 4, 0, 255);
+            push_event(w, EV_LOCKDOWN, (uint8_t)i, NONE8, 0);
+        }
+        // riot: a dry, crowded, tense block boils over -> spikes danger +
+        // destabilizes the owner (the water-ration riot beat). Localized, so it
+        // doesn't torch the whole city.
+        bool dry = (d.supply[C_WATER] == 0 || d.supply[C_FOOD] == 0);
+        if (dry && d.population > 14 && d.danger > 25 && w.rng.chance(22)) {
+            d.danger = (uint8_t)clampi(d.danger + 8, 0, 255);
+            if (d.owner < F_COUNT)
+                d.influence[d.owner] = (uint8_t)clampi(d.influence[d.owner] - 12, 0, 100);
+            push_event(w, EV_RIOT, (uint8_t)i, NONE8, d.population);
+        }
+    }
+}
+
 void tick_world(World& w) {
     const MidTunables& T = g_mtune;
 
@@ -1019,17 +1048,32 @@ void tick_world(World& w) {
                 dc = secure ? 0 : T.incident_lethal_pct;
             }
             if (a.status & AF_INJURED) dc = dc * 3 / 2;      // already bleeding
-            if (dc > 0 && w.rng.chance(dc)) a.status &= (uint8_t)~AF_ALIVE;
+            if (dc > 0 && w.rng.chance(dc)) { a.status &= (uint8_t)~AF_ALIVE; push_event(w, EV_DEATH, a.loc, (uint8_t)i, /*mugging*/3); }
             else a.status |= AF_INJURED;
         }
     }
 
     // once-per-day world systems (territory / hazards / threats / decay / pulses)
     if (T.rent_period > 0 && (w.tick % (uint32_t)T.rent_period) == 0 && w.tick > 0) {
+        // weather drift (#33): heatwave drought hits the POOR blocks hardest
+        // (the §3.1 "megacorp throttles water in low-income districts" beat) ->
+        // localized water scarcity -> unrest, while richer blocks ride it out.
+        if (w.weather > 0) {
+            w.weather--;
+            for (int i = 0; i < w.district_count; ++i) {
+                if (w.districts[i].prosperity >= 40) continue;     // rich blocks buy through it
+                int s = w.districts[i].supply[C_WATER] - 15;
+                w.districts[i].supply[C_WATER] = (uint8_t)(s < 0 ? 0 : s);
+            }
+        } else if (w.rng.chance(2)) {
+            w.weather = (uint8_t)w.rng.between(2, 6);
+            push_event(w, EV_HEATWAVE, NONE8, NONE8, w.weather);
+        }
         territory_step(w);
         hazard_step(w);
         if (w.rng.chance(T.threat_spawn_pct)) spawn_threat(w);
         threats_step(w);
+        unrest_step(w);
         decay_step(w);
         pulse_step(w);
         company_step(w);
@@ -1125,6 +1169,7 @@ void serialize(const World& w, std::string& out) {
     wr.u8(w.company.asset_count); wr.u16(w.company.assets); wr.u8(w.company.reputation);
     wr.u8(w.directive.ambition); wr.u8(w.directive.target);
     wr.u8(w.directive.risk); wr.u8(w.directive.thrift);
+    wr.u8(w.weather);
     wr.u8(w.threat_count);
     for (int i = 0; i < MAX_THREATS; ++i) {
         const Threat& t = w.threats[i];
@@ -1159,6 +1204,7 @@ bool deserialize(const std::string& in, World& w) {
     w.company.asset_count = rd.u8(); w.company.assets = rd.u16(); w.company.reputation = rd.u8();
     w.directive.ambition = rd.u8(); w.directive.target = rd.u8();
     w.directive.risk = rd.u8(); w.directive.thrift = rd.u8();
+    w.weather = rd.u8();
     w.threat_count = rd.u8();
     for (int i = 0; i < MAX_THREATS; ++i) {
         Threat& t = w.threats[i];

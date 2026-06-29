@@ -83,7 +83,7 @@ enum ThreatBehavior : uint8_t { TB_DORMANT, TB_TERRITORIAL, TB_AGGRESSIVE };
 enum EventKind : uint8_t {
     EV_NONE, EV_COMBAT, EV_DEATH, EV_TURF_FLIP, EV_RAID, EV_THREAT_SPAWN,
     EV_THREAT_DEFEAT, EV_REFUGEE, EV_EXTORT, EV_BOUNTY, EV_RECRUIT, EV_MARKET_DAY,
-    EV_RUMOR, EV_COLLAPSE, EV_COUNT
+    EV_RUMOR, EV_COLLAPSE, EV_SHORTAGE, EV_HEATWAVE, EV_LOCKDOWN, EV_RIOT, EV_COUNT
 };
 
 // what an agent did this tick (also drives the embark-view animation, Phase 8)
@@ -210,6 +210,7 @@ struct World {
     FactionState factions[F_COUNT];
     Company  company;
     Directive directive;                   // the protagonist's standing orders (§4.1)
+    uint8_t  weather = 0;                  // heatwave/drought days remaining (#33)
     uint8_t  threat_count = 0;             // active threats in threats[]
     Threat   threats[MAX_THREATS];
     uint8_t  event_count = 0;              // events held in the ring
