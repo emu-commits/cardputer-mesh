@@ -357,6 +357,70 @@ static void test_directive_steering() {
     CHECK(m_master_tgt > w_master_tgt, "MASTERY masters the chosen profession far more than WEALTH");
 }
 
+// ---- Phase 4: combat mechanics + escalation classifier ---------------------
+static void test_combat_mechanics() {
+    std::printf("[combat] gear/aggression drive atk/def; escalation classifier\n");
+    World w; gen_world(w, 1);
+    Agent armed = w.agents[1];
+    armed.inv[IT_WEAPONS] = 5; armed.inv[IT_ARMOR] = 5; armed.inv[IT_IMPLANTS] = 2;
+    armed.trait[TR_AGGRESSION] = 220; armed.status &= (uint8_t)~AF_INJURED; armed.mood = 200;
+    Agent meek = w.agents[2];
+    for (int i = 0; i < IT_COUNT; ++i) meek.inv[i] = 0;
+    meek.trait[TR_AGGRESSION] = 20; meek.status &= (uint8_t)~AF_INJURED; meek.mood = 80;
+    CHECK(combat_atk(w, armed) > combat_atk(w, meek) * 2, "weapons + aggression raise attack");
+    CHECK(combat_def(w, armed) > combat_def(w, meek), "armor raises defense");
+    // agency model: a trivial foe is auto-resolved; a deadly one interrupts (§1)
+    CHECK(!avatar_fight_escalates(w, 1), "a trivial foe does not interrupt the avatar");
+    CHECK(avatar_fight_escalates(w, 999), "a deadly foe interrupts the avatar");
+}
+
+// ---- Phase 4: the systems fire & feed back (the gate) -----------------------
+static void test_phase4_systems() {
+    std::printf("[world4] territory/threats/combat fire and feed the consequence layer\n");
+    const int SEEDS = 40; const uint32_t TICKS = 20000;
+    long ev[EV_COUNT] = {0};
+    int mega_spawn = 0, mega_defeat = 0;
+    int combat_scars = 0, grudge_peak = 0;
+    auto is_mega = [](uint8_t k){ return k == TK_CONSTRUCT_MECH || k == TK_SEWER_LEVIATHAN ||
+                                          k == TK_ROGUE_AI_BODY || k == TK_MUTANT_COLONY; };
+    for (uint32_t s = 1; s <= (uint32_t)SEEDS; ++s) {
+        World w; gen_world(w, s);
+        for (uint32_t t = 0; t < TICKS; ++t) {
+            tick_world(w);
+            uint16_t tk = (uint16_t)(w.tick - 1);
+            for (int i = 0; i < EVMAX; ++i) {
+                const Event& e = w.events[i];
+                if (e.kind != EV_NONE && e.tick == tk) {
+                    ev[e.kind]++;
+                    if (e.kind == EV_THREAT_SPAWN && is_mega(e.data)) ++mega_spawn;
+                    if (e.kind == EV_THREAT_DEFEAT && is_mega(e.data)) ++mega_defeat;
+                }
+            }
+        }
+        // feedback: combat leaves scars and grudges
+        for (int i = 0; i < w.agent_count; ++i)
+            for (int k = 0; k < SCARMAX; ++k)
+                if (w.agents[i].scar[k].kind == 1) { ++combat_scars; break; }
+        for (int f = 0; f < F_COUNT; ++f)
+            for (int g = 0; g <= F_COUNT; ++g)
+                if (w.factions[f].grudge[g] > grudge_peak) grudge_peak = w.factions[f].grudge[g];
+    }
+    std::printf("       combat=%ld turf=%ld raid=%ld spawn=%ld defeat=%ld (mega %d/%d) refugee=%ld death=%ld extort=%ld\n",
+                ev[EV_COMBAT], ev[EV_TURF_FLIP], ev[EV_RAID], ev[EV_THREAT_SPAWN],
+                ev[EV_THREAT_DEFEAT], mega_spawn, mega_defeat, ev[EV_REFUGEE], ev[EV_DEATH], ev[EV_EXTORT]);
+    std::printf("       combat-scarred agents=%d  peak faction grudge=%d\n", combat_scars, grudge_peak);
+    CHECK(ev[EV_COMBAT] > 0, "combat resolves (raids/fights)");
+    CHECK(ev[EV_TURF_FLIP] > 0, "turf wars flip district ownership");
+    CHECK(ev[EV_THREAT_SPAWN] > 0, "threats spawn");
+    CHECK(ev[EV_THREAT_DEFEAT] > 0, "threats get driven off");
+    CHECK(mega_spawn > 0, "megathreats (DF megabeasts) appear");
+    CHECK(mega_defeat > 0, "a megathreat can be driven off");
+    CHECK(ev[EV_REFUGEE] > 0, "violence displaces people (refugees)");
+    CHECK(ev[EV_DEATH] > 0, "combat/threats are lethal");
+    CHECK(combat_scars > 0, "combat leaves memory scars");
+    CHECK(grudge_peak > 10, "combat/turf builds faction grudges");
+}
+
 // ---- Phase 3: distribution scan (calibration aid) --------------------------
 static void scan_outcomes(uint8_t ambition, uint32_t horizon) {
     const int SEEDS = 120;
@@ -496,6 +560,8 @@ int main(int argc, char** argv) {
     test_career_determinism();
     test_career_outcomes();
     test_directive_steering();
+    test_combat_mechanics();
+    test_phase4_systems();
     std::printf("\n%d checks, %d failures\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

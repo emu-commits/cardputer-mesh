@@ -196,6 +196,7 @@ void gen_world(World& w, uint32_t seed) {
         d.population = (uint8_t)r.between(4, 40);
         d.prosperity = (uint8_t)r.between(5, 90);
         d.danger     = (uint8_t)r.between(0, 60);
+        d.danger_base = d.danger;            // intrinsic danger; spikes decay back to it
         d.services   = base_services(d.type, r);
         for (int c = 0; c < C_COUNT; ++c) d.supply[c] = (uint8_t)r.between(10, 80);
         for (int h = 0; h < HZ_COUNT; ++h) d.hazard[h] = (uint8_t)(r.chance(25) ? r.between(1, 50) : 0);
@@ -635,6 +636,330 @@ static void agent_step(World& w, int idx) {
     a.activity = action;
 }
 
+// ============================================================================
+// Phase 4: territory, hazards, decay, pulses, combat & threats
+// ============================================================================
+
+const char* threat_name(uint8_t k) {
+    static const char* n[TK_COUNT] = {
+        "feral drone", "security drone", "kill-drone swarm", "construction mech",
+        "sewer leviathan", "rogue AI", "mutant colony", "black-ops team"
+    };
+    return k < TK_COUNT ? n[k] : "?";
+}
+const char* event_name(uint8_t k) {
+    static const char* n[EV_COUNT] = {
+        "-", "combat", "death", "turf flip", "raid", "threat spawn", "threat defeat",
+        "refugee", "extortion", "bounty", "recruit", "market day", "rumor", "collapse"
+    };
+    return k < EV_COUNT ? n[k] : "?";
+}
+
+static void push_event(World& w, uint8_t kind, uint8_t node, uint8_t agent, uint8_t data) {
+    Event& e = w.events[w.event_head];
+    e.kind = kind; e.node = node; e.agent = agent; e.data = data; e.tick = (uint16_t)w.tick;
+    w.event_head = (uint8_t)((w.event_head + 1) % EVMAX);
+    if (w.event_count < EVMAX) w.event_count++;
+}
+
+static void add_scar(Agent& a, uint8_t node, uint8_t kind, int8_t val) {
+    for (int k = SCARMAX - 1; k > 0; --k) a.scar[k] = a.scar[k - 1];
+    a.scar[0].node = node; a.scar[0].kind = kind; a.scar[0].valence = val;
+}
+
+// move an agent to the adjacent district with the lowest danger (flee)
+static bool flee_to_safer(World& w, Agent& a) {
+    const District& d = w.districts[a.loc];
+    int best = -1, bestdanger = w.districts[a.loc].danger;
+    for (int k = 0; k < d.deg; ++k) {
+        uint8_t nb = d.adj[k];
+        if (nb == NONE8 || nb >= w.district_count) continue;
+        if (w.districts[nb].danger < bestdanger) { bestdanger = w.districts[nb].danger; best = nb; }
+    }
+    if (best < 0) return false;
+    a.loc = (uint8_t)best; a.status |= AF_FLEEING;
+    return true;
+}
+
+// ---- combat (§5.1) — abstract, stat-based ----------------------------------
+int combat_atk(const World& w, const Agent& a) {
+    (void)w;
+    int v = 10 + a.trait[TR_AGGRESSION] / 16;                 // 10..25 temperament
+    v += a.inv[IT_WEAPONS] * g_mtune.weapon_grade;            // gear is the proficiency
+    v += a.inv[IT_IMPLANTS] * g_mtune.implant_grade;
+    v += a.mood / 64;
+    if (a.status & AF_INJURED) v = v * 2 / 3;
+    return v;
+}
+int combat_def(const World& w, const Agent& a) {
+    (void)w;
+    int v = 8 + a.trait[TR_AGGRESSION] / 32;
+    v += a.inv[IT_ARMOR] * g_mtune.armor_grade;
+    v += a.inv[IT_IMPLANTS] * g_mtune.implant_grade / 2;
+    if (a.status & AF_INJURED) v = v * 2 / 3;
+    return v;
+}
+
+bool avatar_fight_escalates(const World& w, int foe_power) {
+    const Agent& p = w.agents[0];
+    int mine = combat_atk(w, p);
+    if (p.status & AF_INJURED) return foe_power * 3 >= mine * 2; // hurt -> wary sooner
+    return foe_power * 4 >= mine * 5;                            // foe >= ~1.25x our power
+}
+
+// resolve a fight between two agents; applies loot, grudge, scar, danger, events
+static void resolve_combat(World& w, int ai, int di) {
+    Agent& A = w.agents[ai]; Agent& D = w.agents[di];
+    if (!(A.status & AF_ALIVE) || !(D.status & AF_ALIVE)) return;
+    int sa = combat_atk(w, A) + (int)w.rng.range(8) - combat_def(w, D);
+    int sd = combat_atk(w, D) + (int)w.rng.range(8) - combat_def(w, A);
+    int wi = (sa >= sd) ? ai : di;
+    int li = (sa >= sd) ? di : ai;
+    int margin = sa >= sd ? sa - sd : sd - sa;
+    Agent& W = w.agents[wi]; Agent& L = w.agents[li];
+
+    uint32_t loot = L.money / 2; L.money -= loot; W.money += loot;
+    if (L.faction < F_COUNT) {
+        int gi = (W.faction < F_COUNT) ? (int)W.faction : (int)F_COUNT;
+        int8_t& g = w.factions[L.faction].grudge[gi]; if (g < 120) g = (int8_t)(g + 2);
+    }
+    add_scar(L, L.loc, /*kind=combat*/1, -20);
+    District& d = w.districts[L.loc];
+    d.danger = (uint8_t)clampi(d.danger + 3, 0, 255);
+    d.hazard[HZ_ALARM] = (uint8_t)clampi(d.hazard[HZ_ALARM] + 5, 0, 255);
+    push_event(w, EV_COMBAT, L.loc, (uint8_t)li, 0);
+
+    int dc = clampi(g_mtune.combat_death_pct * (margin + 4) / 20, 2, 90);
+    bool vulnerable = (L.status & AF_INJURED) || margin > 18;
+    if (vulnerable && w.rng.chance(dc)) {
+        L.status &= (uint8_t)~AF_ALIVE;
+        if (W.inv[IT_WEAPONS] < 250) W.inv[IT_WEAPONS]++;   // strip the body for gear
+        push_event(w, EV_DEATH, L.loc, (uint8_t)li, /*by combat*/1);
+    } else {
+        L.status |= AF_INJURED;
+    }
+}
+
+// ---- threats: spawn, terrorize, be driven off (§5.1) -----------------------
+static int threat_atk(const Threat& t) { return 8 + t.power * 4; }
+static int threat_def(const Threat& t) { return 6 + t.power * 3; }
+
+static void spawn_threat(World& w) {
+    if (w.threat_count >= g_mtune.threat_cap) return;   // don't overrun the city
+    // prefer a dangerous / contested district
+    uint8_t best = (uint8_t)w.rng.range(w.district_count);
+    for (int tries = 0; tries < 3; ++tries) {
+        uint8_t c = (uint8_t)w.rng.range(w.district_count);
+        if (w.districts[c].danger > w.districts[best].danger) best = c;
+    }
+    Threat& t = w.threats[w.threat_count];
+    t.power = (uint8_t)w.rng.between(1, 10);
+    uint8_t kind;   // kind roughly tracks power; high power = a megabeast
+    if (t.power >= 8)      kind = w.rng.chance(50) ? TK_ROGUE_AI_BODY : TK_CONSTRUCT_MECH;
+    else if (t.power >= 5) kind = w.rng.chance(50) ? TK_SEWER_LEVIATHAN : TK_MUTANT_COLONY;
+    else if (t.power >= 3) kind = TK_KILLDRONE_SWARM;
+    else                   kind = w.rng.chance(50) ? TK_FERAL_DRONE : TK_SEC_DRONE;
+    t.kind = kind;
+    t.district = best;
+    t.behavior = (uint8_t)(t.power >= g_mtune.megathreat_min_power ? TB_AGGRESSIVE : TB_TERRITORIAL);
+    t.hp = (uint8_t)clampi(t.power * g_mtune.threat_hp_mult, 1, 255);
+    t.active = 1;
+    w.threat_count++;
+    w.districts[best].danger = (uint8_t)clampi(w.districts[best].danger + t.power * 4, 0, 255);
+    push_event(w, EV_THREAT_SPAWN, best, NONE8, t.kind);
+}
+
+static void threats_step(World& w) {
+    for (int ti = 0; ti < w.threat_count; ++ti) {
+        Threat& t = w.threats[ti];
+        if (!t.active) continue;
+        uint8_t dist = t.district;
+
+        // 1) it mauls a few locals — mostly injuries + displacement, rarely death
+        int defenders_dmg = 0, scanned = 0, mauled = 0;
+        for (int i = 0; i < w.agent_count && scanned < 16; ++i) {
+            Agent& a = w.agents[i];
+            if (!(a.status & AF_ALIVE) || a.loc != dist) continue;
+            ++scanned;
+            // the brave (or the avatar) fight back
+            bool fights = (a.status & AF_PLAYER) || a.trait[TR_AGGRESSION] > 150 || a.faction == w.districts[dist].owner;
+            if (fights) defenders_dmg += clampi(combat_atk(w, a) - threat_def(t), 0, 60);
+            // only a handful get caught each day
+            if (mauled >= 6) continue;
+            int hit = threat_atk(t) + (int)w.rng.range(6) - combat_def(w, a);
+            if (hit <= 0) continue;
+            ++mauled;
+            bool wasInjured = (a.status & AF_INJURED) != 0;
+            a.status |= AF_INJURED;
+            if (wasInjured && !(a.status & AF_PLAYER) && w.rng.chance(clampi(t.power * 2, 2, 28))) {
+                a.status &= (uint8_t)~AF_ALIVE;
+                push_event(w, EV_DEATH, dist, (uint8_t)i, /*by threat*/2);
+            } else if (flee_to_safer(w, a)) {
+                push_event(w, EV_REFUGEE, dist, (uint8_t)i, t.kind);
+            }
+        }
+
+        // 3) driven off? defenders chip it AND it runs out of steam (always transient)
+        int attrition = defenders_dmg + clampi(t.power / 2 + 1, 1, 12);
+        t.hp = (uint8_t)clampi((int)t.hp - attrition, 0, 255);
+        if (t.hp == 0) {
+            t.active = 0;
+            w.districts[dist].danger = (uint8_t)clampi(w.districts[dist].danger - t.power * 4, 0, 255);
+            push_event(w, EV_THREAT_DEFEAT, dist, NONE8, t.kind);     // a street-legend beat
+            continue;
+        }
+        // 4) aggressive megathreats roam to a neighbor
+        if (t.behavior == TB_AGGRESSIVE && w.rng.chance(30)) {
+            const District& d = w.districts[dist];
+            if (d.deg > 0) {
+                uint8_t nb = d.adj[w.rng.range(d.deg)];
+                if (nb != NONE8 && nb < w.district_count) {
+                    w.districts[dist].danger = (uint8_t)clampi(w.districts[dist].danger - t.power * 2, 0, 255);
+                    t.district = nb;
+                    w.districts[nb].danger = (uint8_t)clampi(w.districts[nb].danger + t.power * 4, 0, 255);
+                }
+            }
+        }
+    }
+    // compact dead threats
+    int n = 0;
+    for (int i = 0; i < w.threat_count; ++i) if (w.threats[i].active) { if (n != i) w.threats[n] = w.threats[i]; ++n; }
+    w.threat_count = (uint8_t)n;
+}
+
+// ---- territory & factions (§3.C) -------------------------------------------
+static void territory_step(World& w) {
+    const MidTunables& T = g_mtune;
+    // influence diffusion toward neighbour average, then decay
+    for (int i = 0; i < w.district_count; ++i) {
+        District& d = w.districts[i];
+        for (int f = 0; f < F_COUNT; ++f) {
+            int sum = 0, cnt = 0;
+            for (int k = 0; k < d.deg; ++k) {
+                uint8_t nb = d.adj[k];
+                if (nb == NONE8 || nb >= w.district_count) continue;
+                sum += w.districts[nb].influence[f]; ++cnt;
+            }
+            int avg = cnt ? sum / cnt : d.influence[f];
+            int v = d.influence[f] + (avg - d.influence[f]) * T.influence_decay / 16;
+            if (d.owner == f && v < 100) v += 1;                 // owners entrench
+            d.influence[f] = (uint8_t)clampi(v, 0, 100);
+        }
+        // owner recompute + flip
+        int best = -1, bestf = F_COUNT, second = -1;
+        for (int f = 0; f < F_COUNT; ++f) {
+            int v = d.influence[f];
+            if (v > best) { second = best; best = v; bestf = f; }
+            else if (v > second) second = v;
+        }
+        uint8_t newowner = (best >= 40 && best - second >= T.turf_lead) ? (uint8_t)bestf : (uint8_t)F_COUNT;
+        if (newowner != d.owner) {
+            uint8_t old = d.owner;
+            d.owner = newowner;
+            d.danger = (uint8_t)clampi(d.danger + 8, 0, 255);
+            if (old < F_COUNT && newowner < F_COUNT) {           // a real takeover -> grudge
+                int8_t& g = w.factions[old].grudge[newowner]; if (g < 120) g = (int8_t)(g + 6);
+            }
+            push_event(w, EV_TURF_FLIP, (uint8_t)i, NONE8, newowner);
+        }
+        // extortion: a gang-owned, prosperous block is taxed
+        if (d.owner < F_COUNT && d.prosperity > 20 && w.rng.chance(25)) {
+            d.prosperity = (uint8_t)(d.prosperity - 1);
+            w.factions[d.owner].treasury += 50;
+            push_event(w, EV_EXTORT, (uint8_t)i, NONE8, d.owner);
+        }
+        // raids: a contested district sometimes erupts (two rival members brawl)
+        if (d.owner < F_COUNT && w.rng.chance(T.raid_pct)) {
+            int agg = -1, def = -1;
+            for (int j = 0; j < w.agent_count; ++j) {
+                Agent& a = w.agents[j];
+                if (!(a.status & AF_ALIVE) || a.loc != (uint8_t)i) continue;
+                if (a.faction < F_COUNT && a.faction != d.owner && agg < 0) agg = j;
+                else if (a.faction == d.owner && def < 0) def = j;
+            }
+            if (agg >= 0 && def >= 0) { resolve_combat(w, agg, def); push_event(w, EV_RAID, (uint8_t)i, NONE8, d.owner); }
+        }
+    }
+}
+
+// ---- hazards (§3.D) --------------------------------------------------------
+static void hazard_step(World& w) {
+    const MidTunables& T = g_mtune;
+    for (int i = 0; i < w.district_count; ++i) {
+        District& d = w.districts[i];
+        for (int h = 0; h < HZ_COUNT; ++h) {
+            // diffuse a little to neighbours
+            if (d.hazard[h] > T.hazard_spread) {
+                for (int k = 0; k < d.deg; ++k) {
+                    uint8_t nb = d.adj[k];
+                    if (nb == NONE8 || nb >= w.district_count) continue;
+                    w.districts[nb].hazard[h] = (uint8_t)clampi(w.districts[nb].hazard[h] + T.hazard_spread / 2, 0, 255);
+                }
+            }
+            d.hazard[h] = (uint8_t)clampi(d.hazard[h] - T.hazard_decay, 0, 255);
+        }
+        // danger mean-reverts toward the district's intrinsic level (spikes from
+        // combat/threats fade, but a slum stays a slum) — keeps the warzone transient
+        if (d.danger > d.danger_base)
+            d.danger = (uint8_t)clampi(d.danger - T.danger_decay, d.danger_base, 255);
+        // disease in the crowded + sick: nudges danger; structural collapse is rare
+        if (d.population > 30 && d.hazard[HZ_DISEASE] > 30 && w.rng.chance(10))
+            d.danger = (uint8_t)clampi(d.danger + 2, 0, 255);
+        if ((d.type == DT_METRO || d.type == DT_TOXIC || d.type == DT_UNDERCITY) && d.hazard[HZ_COLLAPSE] > 60 && w.rng.chance(3)) {
+            d.danger = (uint8_t)clampi(d.danger + 10, 0, 255);
+            push_event(w, EV_COLLAPSE, (uint8_t)i, NONE8, 0);
+        }
+        // a heavily-alarmed district can spawn a security drone (rare)
+        if (d.hazard[HZ_ALARM] > 80 && w.threat_count < T.threat_cap && w.rng.chance(2)) {
+            Threat& t = w.threats[w.threat_count++];
+            t.kind = TK_SEC_DRONE; t.power = (uint8_t)w.rng.between(1, 3); t.district = (uint8_t)i;
+            t.behavior = TB_TERRITORIAL; t.hp = (uint8_t)(t.power * T.threat_hp_mult); t.active = 1;
+            push_event(w, EV_THREAT_SPAWN, (uint8_t)i, NONE8, t.kind);
+        }
+    }
+}
+
+// ---- decay (§3.E) ----------------------------------------------------------
+static void decay_step(World& w) {
+    for (int i = 0; i < w.agent_count; ++i) {
+        Agent& a = w.agents[i];
+        if (!(a.status & AF_ALIVE)) continue;
+        // gear wears, food spoils, implants denature — small chance per class
+        if (a.inv[IT_FOOD] > 0 && w.rng.chance(20)) a.inv[IT_FOOD]--;
+        if (a.inv[IT_WEAPONS] > 0 && w.rng.chance(4)) a.inv[IT_WEAPONS]--;
+        if (a.inv[IT_IMPLANTS] > 0 && w.rng.chance(2)) { a.inv[IT_IMPLANTS]--; bump_need(a.need[ND_CYBERWARE], 20); }
+    }
+}
+
+// ---- opportunity pulses (§3.G) ---------------------------------------------
+static void pulse_step(World& w) {
+    // market day: a random district booms (prosperity up, residents relieved)
+    if (w.rng.chance(30)) {
+        uint8_t c = (uint8_t)w.rng.range(w.district_count);
+        if (w.districts[c].services & SV_MARKET) {
+            w.districts[c].prosperity = (uint8_t)clampi(w.districts[c].prosperity + 4, 0, 100);
+            for (int i = 0; i < w.agent_count; ++i) if ((w.agents[i].status & AF_ALIVE) && w.agents[i].loc == c)
+                bump_need(w.agents[i].need[ND_SOCIAL], -20);
+            push_event(w, EV_MARKET_DAY, c, NONE8, 0);
+        }
+    }
+    // corp bounty posting
+    if (w.rng.chance(12)) push_event(w, EV_BOUNTY, (uint8_t)w.rng.range(w.district_count), NONE8, 0);
+    // recruiter: an unaffiliated agent is pulled into a faction
+    if (w.rng.chance(15)) {
+        for (int tries = 0; tries < 4; ++tries) {
+            int j = (int)w.rng.range(w.agent_count);
+            Agent& a = w.agents[j];
+            if (j != 0 && (a.status & AF_ALIVE) && a.faction == F_COUNT) {
+                a.faction = (uint8_t)w.rng.range(F_COUNT);
+                push_event(w, EV_RECRUIT, a.loc, (uint8_t)j, a.faction);
+                break;
+            }
+        }
+    }
+    if (w.rng.chance(20)) push_event(w, EV_RUMOR, (uint8_t)w.rng.range(w.district_count), NONE8, 0);
+}
+
 void tick_world(World& w) {
     const MidTunables& T = g_mtune;
 
@@ -699,8 +1024,16 @@ void tick_world(World& w) {
         }
     }
 
-    // company compounding (once per in-game day)
-    if (T.rent_period > 0 && (w.tick % (uint32_t)T.rent_period) == 0 && w.tick > 0) company_step(w);
+    // once-per-day world systems (territory / hazards / threats / decay / pulses)
+    if (T.rent_period > 0 && (w.tick % (uint32_t)T.rent_period) == 0 && w.tick > 0) {
+        territory_step(w);
+        hazard_step(w);
+        if (w.rng.chance(T.threat_spawn_pct)) spawn_threat(w);
+        threats_step(w);
+        decay_step(w);
+        pulse_step(w);
+        company_step(w);
+    }
 
     w.tick++;
 }
@@ -731,7 +1064,7 @@ void put_district(Writer& wr, const District& d) {
     for (int f = 0; f < F_COUNT; ++f) wr.u8(d.influence[f]);
     for (int c = 0; c < C_COUNT; ++c) wr.u8(d.supply[c]);
     for (int h = 0; h < HZ_COUNT; ++h) wr.u8(d.hazard[h]);
-    wr.u8(d.population); wr.u8(d.prosperity); wr.u8(d.danger);
+    wr.u8(d.population); wr.u8(d.prosperity); wr.u8(d.danger); wr.u8(d.danger_base);
     wr.u16(d.services); wr.u8(d.deg);
     for (int k = 0; k < MAXDEG; ++k) wr.u8(d.adj[k]);
 }
@@ -740,7 +1073,7 @@ void get_district(Reader& rd, District& d) {
     for (int f = 0; f < F_COUNT; ++f) d.influence[f] = rd.u8();
     for (int c = 0; c < C_COUNT; ++c) d.supply[c] = rd.u8();
     for (int h = 0; h < HZ_COUNT; ++h) d.hazard[h] = rd.u8();
-    d.population = rd.u8(); d.prosperity = rd.u8(); d.danger = rd.u8();
+    d.population = rd.u8(); d.prosperity = rd.u8(); d.danger = rd.u8(); d.danger_base = rd.u8();
     d.services = rd.u16(); d.deg = rd.u8();
     for (int k = 0; k < MAXDEG; ++k) d.adj[k] = rd.u8();
 }
@@ -792,6 +1125,11 @@ void serialize(const World& w, std::string& out) {
     wr.u8(w.company.asset_count); wr.u16(w.company.assets); wr.u8(w.company.reputation);
     wr.u8(w.directive.ambition); wr.u8(w.directive.target);
     wr.u8(w.directive.risk); wr.u8(w.directive.thrift);
+    wr.u8(w.threat_count);
+    for (int i = 0; i < MAX_THREATS; ++i) {
+        const Threat& t = w.threats[i];
+        wr.u8(t.kind); wr.u8(t.power); wr.u8(t.district); wr.u8(t.behavior); wr.u8(t.hp); wr.u8(t.active);
+    }
     wr.u8(w.event_count); wr.u8(w.event_head);
     for (int i = 0; i < EVMAX; ++i) {
         const Event& e = w.events[i];
@@ -821,6 +1159,11 @@ bool deserialize(const std::string& in, World& w) {
     w.company.asset_count = rd.u8(); w.company.assets = rd.u16(); w.company.reputation = rd.u8();
     w.directive.ambition = rd.u8(); w.directive.target = rd.u8();
     w.directive.risk = rd.u8(); w.directive.thrift = rd.u8();
+    w.threat_count = rd.u8();
+    for (int i = 0; i < MAX_THREATS; ++i) {
+        Threat& t = w.threats[i];
+        t.kind = rd.u8(); t.power = rd.u8(); t.district = rd.u8(); t.behavior = rd.u8(); t.hp = rd.u8(); t.active = rd.u8();
+    }
     w.event_count = rd.u8(); w.event_head = rd.u8();
     for (int i = 0; i < EVMAX; ++i) {
         Event& e = w.events[i];

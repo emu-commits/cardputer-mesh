@@ -27,6 +27,7 @@ static constexpr int RELMAX        = 4;    // sparse top-K relationships per age
 static constexpr int SCARMAX       = 3;    // memory scars per agent
 static constexpr int EMPMAX        = 8;    // company employees (early cap)
 static constexpr int EVMAX         = 32;   // bounded event ring
+static constexpr int MAX_THREATS   = 8;    // drones + megathreats (§5.1)
 static constexpr uint8_t NONE8     = 0xFF;
 
 static constexpr uint16_t MID_MAGIC   = 0x434D; // 'M','C' little-endian
@@ -71,6 +72,20 @@ enum SkillTier : uint8_t { ST_NOVICE, ST_SKILLED, ST_EXPERT, ST_MASTER, ST_COUNT
 // standing-orders ambitions (§4.1) — the avatar's long arc
 enum Ambition : uint8_t { AMB_SURVIVE, AMB_WEALTH, AMB_MASTERY, AMB_TERRITORY, AMB_COUNT };
 
+// in-world threats (§5.1): drones + DF-megabeast-scale megathreats
+enum ThreatKind : uint8_t {
+    TK_FERAL_DRONE, TK_SEC_DRONE, TK_KILLDRONE_SWARM, TK_CONSTRUCT_MECH,
+    TK_SEWER_LEVIATHAN, TK_ROGUE_AI_BODY, TK_MUTANT_COLONY, TK_BLACKOPS_TEAM, TK_COUNT
+};
+enum ThreatBehavior : uint8_t { TB_DORMANT, TB_TERRITORIAL, TB_AGGRESSIVE };
+
+// event-ring kinds — drive surfacing (§6) + the Gibson narrator (§7)
+enum EventKind : uint8_t {
+    EV_NONE, EV_COMBAT, EV_DEATH, EV_TURF_FLIP, EV_RAID, EV_THREAT_SPAWN,
+    EV_THREAT_DEFEAT, EV_REFUGEE, EV_EXTORT, EV_BOUNTY, EV_RECRUIT, EV_MARKET_DAY,
+    EV_RUMOR, EV_COLLAPSE, EV_COUNT
+};
+
 // what an agent did this tick (also drives the embark-view animation, Phase 8)
 enum Activity : uint8_t {
     ACT_IDLE, ACT_WORK, ACT_BUY, ACT_MOVE, ACT_REST, ACT_SEEKJOB, ACT_COUNT
@@ -111,7 +126,8 @@ struct District {
     uint8_t  hazard[HZ_COUNT]   = {0};
     uint8_t  population = 0;
     uint8_t  prosperity = 0;
-    uint8_t  danger     = 0;
+    uint8_t  danger     = 0;                // current (spikes with combat/threats)
+    uint8_t  danger_base = 0;               // intrinsic level; danger mean-reverts to it
     uint16_t services   = 0;
     uint8_t  deg        = 0;
     uint8_t  adj[MAXDEG] = {NONE8, NONE8, NONE8, NONE8, NONE8};
@@ -171,6 +187,17 @@ struct Event {
     uint16_t tick  = 0;
 };
 
+// a non-agent combatant: feral/security drones, kill-drone swarms, and the
+// DF-megabeast-scale megathreats (rogue mechs, leviathans, rogue-AI bodies…)
+struct Threat {
+    uint8_t kind     = 0;     // ThreatKind
+    uint8_t power    = 0;     // 1..10 (megabeast scale)
+    uint8_t district = NONE8;
+    uint8_t behavior = TB_TERRITORIAL;
+    uint8_t hp       = 0;     // driven off when it hits 0
+    uint8_t active   = 0;
+};
+
 struct World {
     uint32_t world_seed = 0;
     uint32_t tick       = 0;
@@ -183,6 +210,8 @@ struct World {
     FactionState factions[F_COUNT];
     Company  company;
     Directive directive;                   // the protagonist's standing orders (§4.1)
+    uint8_t  threat_count = 0;             // active threats in threats[]
+    Threat   threats[MAX_THREATS];
     uint8_t  event_count = 0;              // events held in the ring
     uint8_t  event_head  = 0;              // ring write cursor
     Event    events[EVMAX];
@@ -231,6 +260,20 @@ struct MidTunables {
     int incident_div = 7;          // per-day mugging chance = danger / incident_div (%)
     int incident_lethal_pct = 16;  // base lethality vs an injured victim (scaled by risk/tier)
     int safe_money = 120;          // cash above this buys care -> halves lethality
+    // --- Phase 4: territory / hazards / combat / threats -----------------
+    int weapon_grade = 6, armor_grade = 5, implant_grade = 4; // gear -> atk/def
+    int combat_death_pct = 18;     // chance a beaten combatant dies (scaled by margin)
+    int influence_decay = 2;       // per-day pull of each district's influence toward neighbors'
+    int turf_lead = 15;            // influence lead needed to (re)claim ownership
+    int raid_pct = 8;              // per-day chance a contested district sees a raid
+    int hazard_spread = 3;         // per-day hazard diffusion to neighbors
+    int hazard_decay = 2;          // per-day hazard self-decay
+    int danger_decay = 2;          // per-day mean-reversion of district danger
+    int refugee_danger = 70;       // district danger that drives residents to flee
+    int threat_spawn_pct = 2;      // per-day chance a new threat emerges
+    int threat_cap = 3;            // max concurrent active threats
+    int threat_hp_mult = 5;        // spawn hp = power * this
+    int megathreat_min_power = 5;  // power >= this = a megathreat (DF megabeast)
 };
 extern MidTunables g_mtune;
 
@@ -247,6 +290,14 @@ const char* company_tier_name(uint8_t t);
 int         production_value(const World& w, const Agent& a); // value/tick when operating
 uint8_t     top_skill_tier(const Agent& a);                   // best tier across professions
 void        company_step(World& w);                          // per-day compounding (no-op if empty)
+
+// ---- Phase 4 queries -------------------------------------------------------
+int         combat_atk(const World& w, const Agent& a);
+int         combat_def(const World& w, const Agent& a);
+const char* threat_name(uint8_t kind);
+const char* event_name(uint8_t kind);
+// would a fight against `foe_power` make the avatar interrupt the player? (agency §1)
+bool        avatar_fight_escalates(const World& w, int foe_power);
 
 // ---- save format (byte-exact, fixed-width) ---------------------------------
 void serialize(const World& w, std::string& out);
