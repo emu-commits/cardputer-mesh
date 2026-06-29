@@ -4,7 +4,7 @@ A Dwarf-Fortress-style emergent simulation re-skinned into a Neuromancer /
 Chiba-City cyberpunk setting, living as a normal app inside the Cardputer Deck
 firmware. You play **one** protagonist — a nobody who starts with nothing and
 claws toward an unstoppable megacorp. The world is a small graph of districts
-full of algorithmically-driven NPCs. The payoff is **emergence**: ~50 tiny
+full of algorithmically-driven NPCs. The payoff is **emergence**: ~65 tiny
 interacting micro-systems that continuously manufacture scarcity, conflict, and
 opportunity, colliding into unpredictable chain-reaction story arcs.
 
@@ -14,7 +14,7 @@ opportunity, colliding into unpredictable chain-reaction story arcs.
 >
 > 1. **Simulation layer — abstract district graph.** A graph of ~32 district
 >    nodes (not a global tile world), ~40 agents, abstract recipe tables. This is
->    where all ~60 micro-systems live. No digging, z-levels, fluids, or hundreds
+>    where all ~65 micro-systems live. No digging, z-levels, fluids, or hundreds
 >    of agents — the things that blow up RAM/CPU. Cheap: rules are code (~1.8 MB
 >    flash free); the live state substrate is a few KB.
 > 2. **View layer — realized local embark map.** The *one* district the
@@ -53,7 +53,7 @@ opportunity, colliding into unpredictable chain-reaction story arcs.
 
 ```
         ┌─────────────────────────────────────────────────────────┐
-        │  world ticks (hours) — ~50 micro-systems update the      │
+        │  world ticks (hours) — ~65 micro-systems update the      │
         │  shared substrate; pressure/scarcity/opportunity build   │
         └─────────────┬───────────────────────────────────────────┘
                       │  a system raises an event that needs you
@@ -101,7 +101,7 @@ tier, which keeps playing.
 ## 2. State substrate (the thing that costs RAM)
 
 Everything below is fixed-size arrays — no per-tick allocation, IDs + flash
-string tables instead of `std::string` for names. The ~50 systems all read and
+string tables instead of `std::string` for names. The ~65 systems all read and
 write *these same fields*; that shared substrate is what makes chains possible.
 
 ### 2.1 Districts (nodes) — `N ≈ 32`
@@ -202,7 +202,7 @@ tiles; the District's abstract `services` bitmask (§2.1) decides which exist. T
 the chop shop" order (within-district pathfinding, §6).
 
 > **Layering principle (what "tile-aware" means precisely).** The **abstract
-> simulation layer** — all ~60 micro-systems (§3) and every agent's
+> simulation layer** — all ~65 micro-systems (§3) and every agent's
 > *decision-making* — never reads a tile coordinate. It works in district IDs and
 > POI IDs: the order is "be at POI = chop_shop," never "walk to (x,y)." Only the
 > **view layer's single resident `LocalMap`** is tile-aware, and it is *derived
@@ -221,7 +221,7 @@ a rounding error — confirming system *count* is not the constraint.
 
 ---
 
-## 3. The micro-system catalog (~55 systems)
+## 3. The micro-system catalog (~65 systems)
 
 Each system is a small update function over the shared substrate. Most are 5–20
 lines. They are grouped only for readability — at runtime they form one
@@ -319,13 +319,22 @@ another system *reads*.
 | 57 | Reputation | completed contracts | Company.reputation, faction standing |
 | 58 | Company growth | treasury, assets, rep | Company.tier transitions |
 
+### J. Combat & threats (meatspace — see §5.1)
+| # | System | Reads | Writes |
+|---|---|---|---|
+| 61 | Combat resolution | atk/def (skill, inv weapons/armor/implants, mood, injury) | injury/death, loot transfer, danger/heat, scar, grudge |
+| 62 | Threat spawn | district danger, faction tech, alarm | seeds drones / megathreats into `threats[]` |
+| 63 | Faction warfare | `#23` raid / `#24` turf-war triggers | resolves combat between faction war-parties |
+| 64 | Bounty & retaliation | grudge (`#25`), revenge arc (`#41`) | spawns a hunter who seeks + fights the target |
+| 65 | Megathreat behavior | `threats[]`, behavior | roam/occupy/attack; driven off → loot + legend + `#26` refugees |
+
 ### I. Surfacing
 | # | System | Reads | Writes |
 |---|---|---|---|
 | 59 | Micro-quest generator | needs + environment | emits goals for player & NPCs |
 | 60 | Arc narrator | event stream | Gibson-voice chronicle lines (§7) |
 
-That's **60** — many are one-liners. We can ship a first cut at ~40 and grow the
+That's **65** — many are one-liners. We can ship a first cut at ~40 and grow the
 rest, but the architecture (shared substrate + scheduler) treats them uniformly.
 
 ### 3.1 Worked chains (these must *emerge*, not be scripted)
@@ -421,7 +430,83 @@ obsoleted) likewise surfaces for re-targeting.
 
 ---
 
-## 5. CyberHack bridge
+## 5. Combat — two arenas
+
+Violence is not optional in this world: gangers, muggers, faction raids, security
+drones, and "rogue AIs in robot bodies" all fight. Combat happens in **two
+arenas**, each with its own resolver but one shared consequence layer:
+
+- **Meatspace (§5.1)** — street fights, raids, drones, megathreats. Resolved by
+  *this* engine, abstract and stat-based.
+- **Cyberspace (§5.2)** — jacking a hostile data target. Deferred to a headless
+  **CyberHack** run; no new combat code.
+
+Both obey the same two rules already established: combat is **auto-resolved and
+watched** (watch-it-crawl), and the **agency model (§1)** decides when it
+interrupts you — a fight the avatar can clearly handle is resolved on its own as a
+ticker line; a life-risking one stops the crawl for your call. And both feed the
+*same* consequence layer: injury/death, grudges (`#25`), revenge arcs (`#41`),
+memory scars (`#40`), district danger/heat (`#30`), loot/economy, refugees
+(`#26`), and reputation (`#57`). Combat is woven into the emergence web, not a
+side minigame.
+
+### 5.1 In-world (meatspace) combat
+
+**Abstract & stat-based — mirrors CyberHack's ethos, no tiles.** Each combatant's
+power is *derived* from existing substrate (no heavy new state), like CyberHack's
+`player_power`/`threat_level`:
+```
+atk = base + combat_skill + weapon_grade(inv[IT_WEAPONS]) + aggression/k
+            + implant_bonus(inv[IT_IMPLANTS]) + mood_factor
+def = base + armor_grade(inv[IT_ARMOR]) + combat_skill/2
+            + implant_bonus - injury_penalty(status & AF_INJURED)
+```
+`combat_skill` is derived (aggression trait + weapon inventory + a generic
+proficiency that grows by surviving fights), so we don't bloat `skill[J_COUNT]`.
+**The crafting tree pays off here:** weapons/armor/implants from §4 directly raise
+atk/def, giving a Gunsmith/Armor-Tech/Ripperdoc career real combat weight — and
+implants trade power for cyberpsychosis (`#9`), a risk/reward dial.
+
+**Resolution** is a short auto-exchange (a single opposed roll for cheap NPC-vs-
+NPC; a few animated rounds when the avatar is involved and it's worth watching).
+Outcomes: decisive win → loser killed or routed (flees), winner loots (inv
+transfer); close → both `AF_INJURED`, one flees; loss → injury or death. Every
+result writes the shared consequence layer above.
+
+**Avatar combat & the flatline spike.** Per §1: a fight the avatar's policy is
+confident in resolves autonomously (ticker line); a life-risking one **interrupts**
+with a combat decision spike — *Fight / Flee / Use item (medkit·stim·weapon) /
+Negotiate / Call allies*. And the **do-or-die "flatline" beat is reused verbatim
+from CyberHack**: when a blow would drop the avatar, pause *once* for a survival
+choice (burn a medkit, desperate swing, flee at a cost) — same pattern as
+`DK_FLATLINE`.
+
+**Threats array (megabeasts included).** A small fixed array carries non-agent
+combatants so we don't inflate the agent budget:
+```c
+#define MAX_THREATS 8
+struct Threat {                  // ~6 B; drones + megathreats
+  uint8_t kind;                  // FERAL_DRONE, SEC_DRONE, KILLDRONE_SWARM,
+                                 // CONSTRUCT_MECH, SEWER_LEVIATHAN, ROGUE_AI_BODY,
+                                 // MUTANT_COLONY, BLACKOPS_TEAM
+  uint8_t power;                 // 1..10 (DF megabeast scale)
+  uint8_t district;
+  uint8_t behavior;              // AGGRESSIVE / TERRITORIAL / DORMANT
+  uint8_t hp;
+};
+Threat threats[MAX_THREATS];
+```
+**Megathreats are the DF megabeasts.** A rogue construction mech or a kill-drone
+swarm occupies a district, mauls agents and factions, spikes danger/heat, drives
+**refugee flows (`#26`)**, and *can only be driven off by combat* — player
+heroics, hired muscle, or a faction war-party. Surviving one is a reputation and
+**legends** beat (reuse CyberHack's legends ethos: a slain megabeast becomes a
+street-legend chronicle line), and it drops rare tech/implants/data → an
+**opportunity pulse**. This is the watch-it-crawl spectacle the design wants: you
+can watch a leviathan tear through the undercity and decide whether to run, profit,
+or be a hero.
+
+### 5.2 Cyberspace combat — the CyberHack bridge
 
 CyberHack's engine already runs headless with personality AI and returns
 shards/death/relationship deltas. We call it directly — no new combat code.
@@ -585,8 +670,9 @@ Mirrors CyberHack exactly so it shares the proven pipeline:
   Non-negotiables, same as the firmware's standing RAM rules: fixed-size arrays,
   no per-tick allocation, IDs + flash string pools instead of `std::string`,
   stream the day-log/chronicle to SD.
-- **CPU:** ~60 systems × (≤40 agents + ≤32 nodes) per full sweep ≈ a few thousand
-  ops; at watch-it-crawl tick rate on a 240 MHz S3 it's trivial. The scheduler
+- **CPU:** ~65 systems × (≤40 agents + ≤32 nodes + ≤8 threats) per full sweep ≈ a
+  few thousand ops; at watch-it-crawl tick rate on a 240 MHz S3 it's trivial. The
+  scheduler
   (§11) still staggers systems to keep any single tick cheap.
 
 ---
@@ -616,7 +702,7 @@ seeded worlds *before* any rendering. Each phase is gated by the harness.
 | 1 | Substrate + worldgen (districts/agents/factions) | serialize/deserialize round-trips; deterministic per seed |
 | 2 | Economy + needs + basic agent behavior | 10 k-tick soak: no runaway inflation, no extinction, no deadlock |
 | 3 | Job/skill/career tree + crafting + company ladder + **standing-orders directives** (§4.1) | headless auto-career sometimes reaches MEGACORP, sometimes stalls/dies (no dominant line); a set ambition demonstrably steers the auto-career, different ambitions → different traces |
-| 4 | Territory + hazards + decay + pulses (rest of ~60) | full interaction matrix wired; stable under soak |
+| 4 | Territory + hazards + decay + pulses + **combat (§5.1: resolver, threats/megathreats, flatline spike)** | full interaction matrix wired; stable under soak; raids/turf-wars resolve via combat; a megathreat can appear, terrorize, and be driven off; life-risking avatar fights interrupt while routine ones auto-resolve; combat deaths feed grudges/scars/refugees |
 | 5 | **Emergence harness** | the named chain classes (§3.1) actually *fire* from base rules; tune frequency |
 | 6 | CyberHack bridge + feedback | headless jack-ins resolve & feed back; optional live player handoff |
 | 7 | Arc narrator (Gibson voice) | arcs detected & narrated deterministically |
@@ -628,7 +714,7 @@ seeded worlds *before* any rendering. Each phase is gated by the harness.
 
 ## 13. Honest risks
 
-1. **Tuning 60 interacting systems** is the dominant effort and where the game
+1. **Tuning 65 interacting systems** is the dominant effort and where the game
    lives or dies — runaway loops, deadlocks, or boring equilibria. The headless
    emergence harness (Phase 5) is the mitigation and the bulk of the work.
 2. **Legibility** — the player must *perceive* the arc, not just watch numbers
