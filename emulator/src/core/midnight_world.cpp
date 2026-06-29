@@ -384,26 +384,184 @@ static void bump_need(uint8_t& n, int delta) {
     n = (uint8_t)clampi(v, 0, 255);
 }
 
-// one agent's action this tick (deterministic; uses w.rng for ties/job pick)
-static void agent_step(World& w, int idx) {
+// ---- Phase 3: skill tiers, careers, crafting, company -----------------------
+uint8_t skill_tier(uint8_t xp) {
     const MidTunables& T = g_mtune;
-    Agent& a = w.agents[idx];
-    if (!(a.status & AF_ALIVE)) return;
+    if (xp < T.skill_tier_xp[0]) return ST_NOVICE;
+    if (xp < T.skill_tier_xp[1]) return ST_SKILLED;
+    if (xp < T.skill_tier_xp[2]) return ST_EXPERT;
+    return ST_MASTER;
+}
+const char* skill_tier_name(uint8_t t) {
+    static const char* n[ST_COUNT] = { "Novice", "Skilled", "Expert", "Master" };
+    return t < ST_COUNT ? n[t] : "?";
+}
+const char* ambition_name(uint8_t a) {
+    static const char* n[AMB_COUNT] = { "Survive", "Wealth", "Mastery", "Territory" };
+    return a < AMB_COUNT ? n[a] : "?";
+}
+const char* company_tier_name(uint8_t t) {
+    static const char* n[CT_COUNT] = { "Solo", "Crew", "Outfit", "Corp", "Megacorp" };
+    return t < CT_COUNT ? n[t] : "?";
+}
+uint8_t top_skill_tier(const Agent& a) {
+    uint8_t best = ST_NOVICE;
+    for (int j = J_CONSTRUCTION; j < J_COUNT; ++j) {
+        uint8_t t = skill_tier(a.skill[j]);
+        if (t > best) best = t;
+    }
+    return best;
+}
+// which facility a profession needs to craft for profit
+static uint16_t job_facility(uint8_t job) {
+    switch (job) {
+        case J_CONSTRUCTION: return SV_FORGE;
+        case J_MACHINIST:    return SV_FORGE;
+        case J_ELECTRONICS:  return SV_FABLAB;
+        case J_BIOTECH:      return SV_CLINIC;
+        case J_RIPPERDOC:    return SV_CLINIC;
+        case J_GUNSMITH:     return SV_ARMORSHOP;
+        case J_ARMOR:        return SV_ARMORSHOP;
+        case J_CHEMTECH:     return SV_CHEMLAB;
+        case J_DECKER:       return SV_DATAVAULT;
+        case J_DRONE:        return SV_DRONEBAY;
+        case J_INFRA:        return SV_FABLAB;
+        default:             return 0;
+    }
+}
+int production_value(const World& w, const Agent& a) {
+    if (a.job < J_CONSTRUCTION || a.job >= J_COUNT) return 0;
+    int tier = skill_tier(a.skill[a.job]);
+    int v = g_mtune.craft_base * (tier + 1);
+    v += v * w.districts[a.loc].prosperity / 200;   // up to +50% in a rich district
+    return v;
+}
+static bool can_craft(const World& w, const Agent& a) {
+    if (a.job < J_CONSTRUCTION || a.job >= J_COUNT) return false;
+    if (skill_tier(a.skill[a.job]) < ST_SKILLED) return false;
+    uint16_t fac = job_facility(a.job);
+    return fac && (w.districts[a.loc].services & fac);
+}
+// guarded skill access (a.job is a uint8_t; keep the array index provably in range)
+static uint8_t cur_skill(const Agent& a) { return a.job < J_COUNT ? a.skill[a.job] : 0; }
+// learning by doing — diminishing per tier so mastery is a long grind (deterministic).
+static void gain_skill(World& w, Agent& a, int boost = 0) {
+    if (a.job < J_CONSTRUCTION || a.job >= J_COUNT || a.skill[a.job] >= 255) return;
+    uint8_t tier = skill_tier(a.skill[a.job]);
+    int chance = (tier == ST_NOVICE) ? 45 : (tier == ST_SKILLED) ? 22 : (tier == ST_EXPERT) ? 10 : 4;
+    chance += boost;
+    if (w.rng.chance(chance)) a.skill[a.job]++;
+}
 
+// --- forward decl: the basic NPC subsistence ladder (also the survival floor) -
+static uint8_t npc_action(World& w, Agent& a);
+
+// the protagonist's self-driving policy (§1 agency model + §4.1 directives)
+static uint8_t career_action(World& w, Agent& a) {
+    const MidTunables& T = g_mtune;
+    District& here = w.districts[a.loc];
+    const Directive& dir = w.directive;
+
+    // survival first: a pressing vital this tick -> behave like an NPC
+    if (a.need[ND_HUNGER] > T.buy_thresh || a.need[ND_THIRST] > T.buy_thresh)
+        return npc_action(w, a);
+
+    if (dir.ambition == AMB_MASTERY) {
+        uint8_t tgt = (dir.target >= J_CONSTRUCTION && dir.target < J_COUNT) ? dir.target : (uint8_t)J_DECKER;
+        if (a.job != tgt) {
+            if (here.services & SV_JOB_BOARD) { a.job = tgt; a.status |= AF_EMPLOYED; return ACT_SEEKJOB; }
+            uint8_t nx = hop_to_service(w, a.loc, SV_JOB_BOARD);
+            if (nx != a.loc) { a.loc = nx; return ACT_MOVE; }
+            return ACT_REST;
+        }
+        a.money += (uint32_t)wage_of(w, a.loc, a);
+        bump_need(a.need[ND_FATIGUE], T.fatigue_work);
+        a.job = tgt; gain_skill(w, a, /*boost=*/T.train_rate * 18); // dedicated training is faster
+        return ACT_WORK;
+    }
+
+    if (dir.ambition == AMB_WEALTH || dir.ambition == AMB_TERRITORY) {
+        // 1) invest surplus personal cash to seed/feed the company. Reckless keeps a
+        //    thin reserve (faster growth, deadlier early); cautious keeps a buffer.
+        int reserve = T.personal_reserve + (int)dir.thrift / 4 - (int)dir.risk / 2;
+        if (reserve < 20) reserve = 20;
+        if ((int)a.money > T.found_threshold && (int)a.money > reserve) {
+            uint32_t invest = a.money - (uint32_t)reserve;
+            a.money -= invest;
+            uint64_t t = (uint64_t)w.company.treasury + invest;
+            w.company.treasury = (uint32_t)(t > 4000000000ULL ? 4000000000ULL : t);
+            return ACT_WORK;
+        }
+        // 2) need a trade first
+        if (a.job == J_NONE) {
+            if (here.services & SV_JOB_BOARD) { a.job = (uint8_t)w.rng.between(J_CONSTRUCTION, J_INFRA); a.status |= AF_EMPLOYED; return ACT_SEEKJOB; }
+            uint8_t nx = hop_to_service(w, a.loc, SV_JOB_BOARD);
+            if (nx != a.loc) { a.loc = nx; return ACT_MOVE; }
+            return ACT_REST;
+        }
+        // 3) craft for profit if we can; else build skill / go to our facility
+        if (can_craft(w, a)) {
+            a.money += (uint32_t)production_value(w, a);
+            bump_need(a.need[ND_FATIGUE], T.fatigue_work);
+            gain_skill(w, a);
+            return ACT_WORK;
+        }
+        if (skill_tier(cur_skill(a)) >= ST_SKILLED) {
+            uint8_t nx = hop_to_service(w, a.loc, job_facility(a.job));
+            if (nx != a.loc) { a.loc = nx; return ACT_MOVE; }
+        }
+        a.money += (uint32_t)wage_of(w, a.loc, a);
+        bump_need(a.need[ND_FATIGUE], T.fatigue_work);
+        gain_skill(w, a);
+        return ACT_WORK;
+    }
+
+    return npc_action(w, a); // AMB_SURVIVE
+}
+
+void company_step(World& w) {
+    const MidTunables& T = g_mtune;
+    Company& co = w.company;
+    if (co.emp_count == 0 && co.treasury == 0) return; // not founded
+
+    int tier = co.tier < CT_COUNT ? co.tier : CT_COUNT - 1;
+
+    // revenue = labor (emp x tier multiplier x asset bonus) + capital return
+    uint64_t labor = (uint64_t)co.emp_count * T.per_emp * T.tier_mult[tier];
+    labor += labor * (uint64_t)(co.asset_count * T.asset_bonus_pct) / 100;
+    uint64_t capital = (uint64_t)co.treasury * (uint64_t)T.tier_return[tier] / 10000;
+    uint64_t cost = (uint64_t)co.emp_count * T.emp_payroll + (uint64_t)co.asset_count * T.asset_upkeep;
+
+    uint64_t t = (uint64_t)co.treasury + labor + capital;
+    t = (cost > t) ? 0 : t - cost;
+    if (t > 4000000000ULL) t = 4000000000ULL;
+    co.treasury = (uint32_t)t;
+
+    // reinvest a slice (keep ~80% compounding): fill capacity for this tier
+    bool favor_assets = (w.directive.ambition == AMB_TERRITORY);
+    int asset_cap = tier * 4;   // assets only pay off from CREW up
+    for (int guard = 0; guard < 6; ++guard) {
+        int hire_cost  = T.hire_cost0 * (1 + co.emp_count);
+        int asset_cost = T.asset_cost0 * (1 + co.asset_count);
+        bool can_hire  = co.emp_count < T.emp_cap[tier] && (int)co.treasury >= hire_cost * 5;
+        bool can_asset = co.asset_count < asset_cap && (int)co.treasury >= asset_cost * 5;
+        if (favor_assets && can_asset) { co.treasury -= (uint32_t)asset_cost; co.asset_count++; }
+        else if (can_hire) { co.treasury -= (uint32_t)hire_cost; co.emp_count++; }
+        else if (can_asset) { co.treasury -= (uint32_t)asset_cost; co.asset_count++; }
+        else break;
+    }
+
+    // tier transitions (up only)
+    while (co.tier + 1 < CT_COUNT && co.treasury >= T.tier_thresh[co.tier + 1]) co.tier++;
+}
+
+// the basic NPC subsistence ladder — also the avatar's survival floor
+static uint8_t npc_action(World& w, Agent& a) {
+    const MidTunables& T = g_mtune;
     District& here = w.districts[a.loc];
 
-    // --- needs decay --------------------------------------------------------
-    bump_need(a.need[ND_HUNGER], T.hunger_rate);
-    bump_need(a.need[ND_THIRST], T.thirst_rate);
-    bump_need(a.need[ND_SOCIAL], T.social_rate);
-    // safety pressure tracks local danger; stress eases when safe
-    bump_need(a.need[ND_SAFETY], here.danger > 40 ? 2 : -2);
-    bump_need(a.need[ND_STRESS], here.danger / 16 - T.stress_relief);
-
-    // --- pick the most urgent vital ----------------------------------------
     uint8_t vital = a.need[ND_THIRST] >= a.need[ND_HUNGER] ? ND_THIRST : ND_HUNGER;
     uint8_t vcom  = need_commodity(vital);
-
     uint8_t action = ACT_REST;
 
     if (a.need[vital] > T.buy_thresh) {
@@ -431,12 +589,32 @@ static void agent_step(World& w, int idx) {
         }
     } else if ((int)a.money < T.reserve) {
         // build a buffer for the next purchases
-        if (a.status & AF_EMPLOYED) { a.money += (uint32_t)wage_of(w, a.loc, a); bump_need(a.need[ND_FATIGUE], T.fatigue_work); if (a.job < J_COUNT && a.skill[a.job] < 255) a.skill[a.job]++; action = ACT_WORK; }
+        if (a.status & AF_EMPLOYED) { a.money += (uint32_t)wage_of(w, a.loc, a); bump_need(a.need[ND_FATIGUE], T.fatigue_work); gain_skill(w, a); action = ACT_WORK; }
         else if (here.services & SV_JOB_BOARD) { a.job = (uint8_t)w.rng.between(J_CONSTRUCTION, J_INFRA); a.status |= AF_EMPLOYED; action = ACT_SEEKJOB; }
         else { uint8_t nx = hop_to_service(w, a.loc, SV_JOB_BOARD); if (nx != a.loc) { a.loc = nx; action = ACT_MOVE; } else { action = ACT_REST; } }
     } else {
         action = ACT_REST;
     }
+    return action;
+}
+
+// per-tick: needs decay (common) -> policy (player=career / NPC=ladder) ->
+// recovery / starvation / mood (common). Deterministic via w.rng.
+static void agent_step(World& w, int idx) {
+    const MidTunables& T = g_mtune;
+    Agent& a = w.agents[idx];
+    if (!(a.status & AF_ALIVE)) return;
+
+    District& here = w.districts[a.loc];
+
+    // --- needs decay --------------------------------------------------------
+    bump_need(a.need[ND_HUNGER], T.hunger_rate);
+    bump_need(a.need[ND_THIRST], T.thirst_rate);
+    bump_need(a.need[ND_SOCIAL], T.social_rate);
+    bump_need(a.need[ND_SAFETY], here.danger > 40 ? 2 : -2);
+    bump_need(a.need[ND_STRESS], here.danger / 16 - T.stress_relief);
+
+    uint8_t action = (a.status & AF_PLAYER) ? career_action(w, a) : npc_action(w, a);
 
     if (action == ACT_REST) { bump_need(a.need[ND_FATIGUE], -T.fatigue_rest); bump_need(a.need[ND_SOCIAL], -4); }
 
@@ -484,6 +662,45 @@ void tick_world(World& w) {
             else { a.money = 0; a.status |= AF_IN_DEBT; bump_need(a.need[ND_STRESS], 6); }
         }
     }
+
+    // street incidents (once per in-game day): danger-scaled muggings, front-loaded
+    // — lethal only to the broke + injured, so wealth/establishment buys safety.
+    if (T.rent_period > 0 && (w.tick % (uint32_t)T.rent_period) == 0 && w.tick > 0) {
+        for (int i = 0; i < w.agent_count; ++i) {
+            Agent& a = w.agents[i];
+            if (!(a.status & AF_ALIVE)) continue;
+            int danger = w.districts[a.loc].danger;
+            int chance = danger / T.incident_div;
+            if (a.status & AF_PLAYER) chance = chance * (128 + (int)w.directive.risk) / 256;
+            if (chance <= 0 || !w.rng.chance(chance)) continue;
+            a.money -= a.money / 2;                       // rolled / robbed
+            bump_need(a.need[ND_STRESS], 10);
+            // lethality scales with risk appetite, eases with company security
+            // (front-loaded: deadly while clawing up, survivable once established) and
+            // with cash for care; being already hurt makes it worse. An incident can
+            // kill in one go — injuries heal too fast to gate death on a prior wound.
+            bool player = (a.status & AF_PLAYER) != 0;
+            int dc;
+            if (player) {
+                // the protagonist lives dangerously: lethality scales with risk
+                // appetite, eases with company security + cash for care.
+                dc = T.incident_lethal_pct * (96 + (int)w.directive.risk) / 160;
+                dc /= (1 + w.company.tier);
+                if ((int)a.money >= T.safe_money) dc /= 2;
+            } else {
+                // background NPCs: incidents injure/rob; lethal only to the
+                // unemployed AND broke (a steady job or cash = security).
+                bool secure = (a.status & AF_EMPLOYED) || (int)a.money >= T.safe_money;
+                dc = secure ? 0 : T.incident_lethal_pct;
+            }
+            if (a.status & AF_INJURED) dc = dc * 3 / 2;      // already bleeding
+            if (dc > 0 && w.rng.chance(dc)) a.status &= (uint8_t)~AF_ALIVE;
+            else a.status |= AF_INJURED;
+        }
+    }
+
+    // company compounding (once per in-game day)
+    if (T.rent_period > 0 && (w.tick % (uint32_t)T.rent_period) == 0 && w.tick > 0) company_step(w);
 
     w.tick++;
 }
@@ -572,7 +789,9 @@ void serialize(const World& w, std::string& out) {
     wr.u8(w.company.name_id); wr.u8(w.company.tier); wr.u32(w.company.treasury);
     wr.u8(w.company.emp_count);
     for (int k = 0; k < EMPMAX; ++k) wr.u8(w.company.employees[k]);
-    wr.u16(w.company.assets); wr.u8(w.company.reputation);
+    wr.u8(w.company.asset_count); wr.u16(w.company.assets); wr.u8(w.company.reputation);
+    wr.u8(w.directive.ambition); wr.u8(w.directive.target);
+    wr.u8(w.directive.risk); wr.u8(w.directive.thrift);
     wr.u8(w.event_count); wr.u8(w.event_head);
     for (int i = 0; i < EVMAX; ++i) {
         const Event& e = w.events[i];
@@ -599,7 +818,9 @@ bool deserialize(const std::string& in, World& w) {
     w.company.name_id = rd.u8(); w.company.tier = rd.u8(); w.company.treasury = rd.u32();
     w.company.emp_count = rd.u8();
     for (int k = 0; k < EMPMAX; ++k) w.company.employees[k] = rd.u8();
-    w.company.assets = rd.u16(); w.company.reputation = rd.u8();
+    w.company.asset_count = rd.u8(); w.company.assets = rd.u16(); w.company.reputation = rd.u8();
+    w.directive.ambition = rd.u8(); w.directive.target = rd.u8();
+    w.directive.risk = rd.u8(); w.directive.thrift = rd.u8();
     w.event_count = rd.u8(); w.event_head = rd.u8();
     for (int i = 0; i < EVMAX; ++i) {
         Event& e = w.events[i];

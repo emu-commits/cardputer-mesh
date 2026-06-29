@@ -236,6 +236,154 @@ static void test_economy_soak() {
     std::printf("       total buys=%ld  works=%ld\n", total_buys, total_works);
 }
 
+// ---- Phase 3: auto-career runner -------------------------------------------
+struct CareerResult {
+    bool     alive;
+    uint32_t ticks;       // ticks survived / run
+    uint8_t  company_tier;
+    uint32_t treasury;
+    uint8_t  top_skill;   // best skill tier across professions
+    uint8_t  target_skill;// skill tier in the directive's target profession
+    uint8_t  job;
+};
+static CareerResult run_career(uint32_t seed, uint8_t ambition, uint8_t target,
+                               uint8_t risk, uint8_t thrift, uint32_t max_ticks) {
+    World w; gen_world(w, seed);
+    w.directive.ambition = ambition;
+    w.directive.target = target;
+    w.directive.risk = risk;
+    w.directive.thrift = thrift;
+    uint32_t t = 0;
+    for (; t < max_ticks; ++t) {
+        tick_world(w);
+        if (!(w.agents[0].status & AF_ALIVE)) break;
+        if (w.company.tier == CT_MEGACORP) { ++t; break; } // goal reached
+    }
+    CareerResult r;
+    r.alive = (w.agents[0].status & AF_ALIVE) != 0;
+    r.ticks = t;
+    r.company_tier = w.company.tier;
+    r.treasury = w.company.treasury;
+    r.top_skill = top_skill_tier(w.agents[0]);
+    uint8_t tj = (target >= J_CONSTRUCTION && target < J_COUNT) ? target : (uint8_t)J_DECKER;
+    r.target_skill = skill_tier(w.agents[0].skill[tj]);
+    r.job = w.agents[0].job;
+    return r;
+}
+
+static void career_curve(uint32_t seed, uint8_t ambition) {
+    const uint32_t MAX = 200000;
+    World w; gen_world(w, seed);
+    w.directive.ambition = ambition;
+    std::printf("career seed=%u ambition=%s\n", seed, ambition_name(ambition));
+    std::printf("   day   tick   $personal  coTier   coTreasury  emp  assets  topSkill  job\n");
+    auto snap = [&](uint32_t t) {
+        const Agent& p = w.agents[0];
+        std::printf("  %5u  %6u  %9u  %-7s  %10u  %3d  %5d   %-7s  %s\n",
+                    t / 24, t, p.money, company_tier_name(w.company.tier), w.company.treasury,
+                    w.company.emp_count, w.company.asset_count,
+                    skill_tier_name(top_skill_tier(p)), job_name(p.job));
+    };
+    uint32_t marks[] = {0, 240, 1200, 4800, 12000, 48000, 120000, 200000};
+    size_t mi = 0;
+    for (uint32_t t = 0; t <= MAX; ++t) {
+        if (mi < sizeof(marks)/sizeof(marks[0]) && t == marks[mi]) { snap(t); ++mi; }
+        if (!(w.agents[0].status & AF_ALIVE)) { std::printf("  >> DIED at tick %u (day %u)\n", t, t/24); break; }
+        if (w.company.tier == CT_MEGACORP) { snap(t); std::printf("  >> MEGACORP at tick %u (day %u)\n", t, t/24); break; }
+        if (t < MAX) tick_world(w);
+    }
+}
+
+// ---- Phase 3: career determinism + the gate --------------------------------
+static void test_career_determinism() {
+    std::printf("[career] same seed + directive -> identical career\n");
+    for (uint32_t s = 1; s <= 200; ++s) {
+        CareerResult a = run_career(s, AMB_WEALTH, J_DECKER, 128, 128, 8000);
+        CareerResult b = run_career(s, AMB_WEALTH, J_DECKER, 128, 128, 8000);
+        CHECK(a.alive == b.alive && a.ticks == b.ticks &&
+              a.company_tier == b.company_tier && a.treasury == b.treasury,
+              "auto-career is deterministic for a fixed seed + directive");
+    }
+}
+
+// Gate part 1: a WEALTH auto-career sometimes reaches MEGACORP, sometimes
+// stalls/dies — no dominant line — and the risk dial steers survival.
+static void test_career_outcomes() {
+    std::printf("[career] WEALTH outcomes spread (no dominant line); risk steers survival\n");
+    const int SEEDS = 80; const uint32_t H = 40000;
+    const uint8_t risks[3] = { 30, 128, 225 };
+    int mega = 0, dead = 0, alive_nonmega = 0, total = 0;
+    int dead_cautious = 0, dead_reckless = 0;
+    for (int ri = 0; ri < 3; ++ri) {
+        for (uint32_t s = 1; s <= (uint32_t)SEEDS; ++s) {
+            CareerResult r = run_career(s, AMB_WEALTH, J_DECKER, risks[ri], 128, H);
+            ++total;
+            if (!r.alive) { ++dead; if (ri == 0) ++dead_cautious; if (ri == 2) ++dead_reckless; }
+            else if (r.company_tier == CT_MEGACORP) ++mega;
+            else ++alive_nonmega;
+        }
+    }
+    int megapct = mega * 100 / total, deadpct = dead * 100 / total;
+    std::printf("       mega=%d%% dead=%d%% alive-non-mega=%d%%  (cautious dead=%d, reckless dead=%d)\n",
+                megapct, deadpct, alive_nonmega * 100 / total, dead_cautious, dead_reckless);
+    CHECK(megapct >= 10, "some careers reach MEGACORP");
+    CHECK((dead + alive_nonmega) * 100 / total >= 10, "some careers stall or die");
+    CHECK(deadpct >= 5, "death has teeth");
+    CHECK(megapct < 90 && deadpct < 90, "no single outcome dominates");
+    CHECK(dead_reckless > dead_cautious, "risk steers survival: reckless dies more than cautious");
+}
+
+// Gate part 2: a set ambition demonstrably steers the auto-career — WEALTH and
+// MASTERY produce measurably different traces from the same seeds.
+static void test_directive_steering() {
+    std::printf("[career] directives steer: WEALTH vs MASTERY produce different traces\n");
+    const int SEEDS = 80; const uint32_t H = 40000; const uint8_t risk = 30;
+    int w_mega = 0, m_mega = 0, w_master_tgt = 0, m_master_tgt = 0;
+    long w_tier = 0, m_tier = 0;
+    for (uint32_t s = 1; s <= (uint32_t)SEEDS; ++s) {
+        CareerResult W = run_career(s, AMB_WEALTH, J_DECKER, risk, 128, H);
+        CareerResult M = run_career(s, AMB_MASTERY, J_DECKER, risk, 128, H);
+        if (W.company_tier == CT_MEGACORP) ++w_mega;
+        if (M.company_tier == CT_MEGACORP) ++m_mega;
+        w_tier += W.company_tier; m_tier += M.company_tier;
+        if (W.target_skill == ST_MASTER) ++w_master_tgt;
+        if (M.target_skill == ST_MASTER) ++m_master_tgt;
+    }
+    std::printf("       WEALTH: mega=%d avgTier=%.2f tgtMastered=%d | MASTERY: mega=%d avgTier=%.2f tgtMastered=%d\n",
+                w_mega, (double)w_tier / SEEDS, w_master_tgt,
+                m_mega, (double)m_tier / SEEDS, m_master_tgt);
+    CHECK(w_mega > m_mega, "WEALTH reaches megacorp more than MASTERY");
+    CHECK(w_tier > m_tier, "WEALTH builds a bigger company than MASTERY");
+    CHECK(m_master_tgt > w_master_tgt, "MASTERY masters the chosen profession far more than WEALTH");
+}
+
+// ---- Phase 3: distribution scan (calibration aid) --------------------------
+static void scan_outcomes(uint8_t ambition, uint32_t horizon) {
+    const int SEEDS = 120;
+    const uint8_t risks[3] = { 30, 128, 225 };
+    const char* rn[3] = { "cautious", "balanced", "reckless" };
+    std::printf("scan ambition=%s horizon=%u ticks (~%u days)\n",
+                ambition_name(ambition), horizon, horizon / 24);
+    std::printf("  risk      MEGA  CORP  OUTF  CREW  SOLO  DEAD   reachedMaster\n");
+    for (int ri = 0; ri < 3; ++ri) {
+        int mega = 0, corp = 0, outf = 0, crew = 0, solo = 0, dead = 0, master = 0;
+        for (uint32_t s = 1; s <= (uint32_t)SEEDS; ++s) {
+            CareerResult r = run_career(s, ambition, J_DECKER, risks[ri], 128, horizon);
+            if (!r.alive) ++dead;
+            else switch (r.company_tier) {
+                case CT_MEGACORP: ++mega; break;
+                case CT_CORP: ++corp; break;
+                case CT_OUTFIT: ++outf; break;
+                case CT_CREW: ++crew; break;
+                default: ++solo; break;
+            }
+            if (r.top_skill == ST_MASTER) ++master;
+        }
+        std::printf("  %-8s  %4d  %4d  %4d  %4d  %4d  %4d   %4d/%d\n",
+                    rn[ri], mega, corp, outf, crew, solo, dead, master, SEEDS);
+    }
+}
+
 // ---- a readable world dump for eyeballing -----------------------------------
 static void dump_world(uint32_t seed) {
     World w; gen_world(w, seed);
@@ -316,6 +464,28 @@ int main(int argc, char** argv) {
         econ_curve(argc >= 3 ? (uint32_t)std::strtoul(argv[2], nullptr, 10) : 1);
         return 0;
     }
+    if (argc >= 2 && !std::strcmp(argv[1], "career")) {
+        uint32_t seed = argc >= 3 ? (uint32_t)std::strtoul(argv[2], nullptr, 10) : 1;
+        uint8_t amb = AMB_WEALTH;
+        if (argc >= 4) {
+            if (!std::strcmp(argv[3], "mastery")) amb = AMB_MASTERY;
+            else if (!std::strcmp(argv[3], "territory")) amb = AMB_TERRITORY;
+            else if (!std::strcmp(argv[3], "survive")) amb = AMB_SURVIVE;
+        }
+        career_curve(seed, amb);
+        return 0;
+    }
+    if (argc >= 2 && !std::strcmp(argv[1], "scan")) {
+        uint8_t amb = AMB_WEALTH;
+        if (argc >= 3) {
+            if (!std::strcmp(argv[2], "mastery")) amb = AMB_MASTERY;
+            else if (!std::strcmp(argv[2], "territory")) amb = AMB_TERRITORY;
+            else if (!std::strcmp(argv[2], "survive")) amb = AMB_SURVIVE;
+        }
+        uint32_t horizon = argc >= 4 ? (uint32_t)std::strtoul(argv[3], nullptr, 10) : 19200;
+        scan_outcomes(amb, horizon);
+        return 0;
+    }
     std::printf("Midnight City — Phase 1 substrate tests\n\n");
     test_rng();
     test_determinism();
@@ -323,6 +493,9 @@ int main(int argc, char** argv) {
     test_roundtrip();
     test_tick_determinism();
     test_economy_soak();
+    test_career_determinism();
+    test_career_outcomes();
+    test_directive_steering();
     std::printf("\n%d checks, %d failures\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

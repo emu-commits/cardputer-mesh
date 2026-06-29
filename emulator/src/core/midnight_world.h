@@ -65,6 +65,12 @@ enum CompanyTier : uint8_t {
 // packed personality: each trait 0..255, biases the DecisionPolicy (Phase 3)
 enum Trait : uint8_t { TR_GREED, TR_CAUTION, TR_LOYALTY, TR_AGGRESSION, TR_COUNT };
 
+// skill curriculum tiers (docs/MIDNIGHT_CITY.md §4): Novice->Skilled->Expert->Master
+enum SkillTier : uint8_t { ST_NOVICE, ST_SKILLED, ST_EXPERT, ST_MASTER, ST_COUNT };
+
+// standing-orders ambitions (§4.1) — the avatar's long arc
+enum Ambition : uint8_t { AMB_SURVIVE, AMB_WEALTH, AMB_MASTERY, AMB_TERRITORY, AMB_COUNT };
+
 // what an agent did this tick (also drives the embark-view animation, Phase 8)
 enum Activity : uint8_t {
     ACT_IDLE, ACT_WORK, ACT_BUY, ACT_MOVE, ACT_REST, ACT_SEEKJOB, ACT_COUNT
@@ -141,10 +147,20 @@ struct Company {
     uint8_t  name_id   = 0;
     uint8_t  tier      = CT_SOLO;
     uint32_t treasury  = 0;
-    uint8_t  emp_count = 0;
+    uint8_t  emp_count = 0;            // abstract headcount (the labor pool); see §4
     uint8_t  employees[EMPMAX] = {NONE8, NONE8, NONE8, NONE8, NONE8, NONE8, NONE8, NONE8};
-    uint16_t assets    = 0;
+    uint8_t  asset_count = 0;          // facilities owned across districts
+    uint16_t assets    = 0;            // bitmask of facility kinds (flavor)
     uint8_t  reputation = 0;
+};
+
+// standing-orders directive (§4.1): the player's incremental goals that bias the
+// avatar's self-driving DecisionPolicy. Defaults to "just survive".
+struct Directive {
+    uint8_t ambition = AMB_SURVIVE;
+    uint8_t target   = J_DECKER;       // AMB_MASTERY: which profession to master
+    uint8_t risk     = 128;            // 0 cautious .. 255 reckless (spend reserves vs hoard)
+    uint8_t thrift   = 128;            // 0 spend-freely .. 255 hoard
 };
 
 struct Event {
@@ -166,6 +182,7 @@ struct World {
     Agent    agents[MAX_AGENTS];           // agents[0] = protagonist
     FactionState factions[F_COUNT];
     Company  company;
+    Directive directive;                   // the protagonist's standing orders (§4.1)
     uint8_t  event_count = 0;              // events held in the ring
     uint8_t  event_head  = 0;              // ring write cursor
     Event    events[EVMAX];
@@ -194,6 +211,26 @@ struct MidTunables {
     int regen_period = 4, regen_min = 1, regen_max = 4, supply_cap = 100;
     int rent_period = 24, rent_base = 8;
     int starve = 235;         // vital pressure that starts hurting
+    // --- Phase 3: careers + crafting + company ---------------------------
+    int skill_tier_xp[3] = { 64, 128, 192 };  // novice<64<=skilled<128<=expert<192<=master
+    int craft_base = 45;      // production value per tick at Novice; x(tier+1)
+    int train_rate = 2;       // extra skill xp/tick when mastering (vs +1 working)
+    int found_threshold = 500;// personal money before seeding the company
+    int personal_reserve = 120; // cash the avatar keeps before investing surplus
+    // company compounding (per in-game day)
+    uint32_t tier_thresh[CT_COUNT] = { 0, 2000, 100000, 5000000, 1000000000 };
+    int tier_mult[CT_COUNT] = { 1, 2, 5, 15, 40 };
+    int emp_cap[CT_COUNT]   = { 1, 4, 12, 30, 80 };
+    int per_emp = 55, emp_payroll = 18, asset_upkeep = 25;
+    int hire_cost0 = 300, asset_cost0 = 2500, asset_bonus_pct = 12;
+    // capital return (basis points/day per tier) — the geometric driver that lets
+    // a thriving company compound from thousands toward the billion-shard megacorp.
+    int tier_return[CT_COUNT] = { 0, 20, 45, 90, 150 };
+    // street incidents (front-loaded danger): muggings scale with district danger
+    // + the avatar's risk appetite; lethal only while broke + injured (wealth = safety).
+    int incident_div = 7;          // per-day mugging chance = danger / incident_div (%)
+    int incident_lethal_pct = 16;  // base lethality vs an injured victim (scaled by risk/tier)
+    int safe_money = 120;          // cash above this buys care -> halves lethality
 };
 extern MidTunables g_mtune;
 
@@ -201,6 +238,15 @@ int  price_of(const World& w, uint8_t district, uint8_t commodity);
 int  wage_of(const World& w, uint8_t district, const Agent& a);
 void tick_world(World& w);                 // advance one tick (deterministic via w.rng)
 int  alive_count(const World& w);
+
+// ---- Phase 3 queries -------------------------------------------------------
+uint8_t     skill_tier(uint8_t xp);
+const char* skill_tier_name(uint8_t t);
+const char* ambition_name(uint8_t a);
+const char* company_tier_name(uint8_t t);
+int         production_value(const World& w, const Agent& a); // value/tick when operating
+uint8_t     top_skill_tier(const Agent& a);                   // best tier across professions
+void        company_step(World& w);                          // per-day compounding (no-op if empty)
 
 // ---- save format (byte-exact, fixed-width) ---------------------------------
 void serialize(const World& w, std::string& out);
