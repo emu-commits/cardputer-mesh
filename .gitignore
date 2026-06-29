@@ -26,3 +26,4 @@ firmware/dependencies.lock
 web/cyberhack.js
 web/cyberhack.wasm
 emulator/cyberhack_sim
+emulator/midnight_sim

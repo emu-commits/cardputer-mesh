@@ -41,10 +41,18 @@ cyberhack_sim: $(SIM_SRC) src/core/cyberhack_world.h
 sim: cyberhack_sim
 	./cyberhack_sim
 
+# Midnight City headless harness: substrate determinism + worldgen + save tests.
+# Same convention as cyberhack_sim (sim/ is outside the src/ GLOB).
+MID_SRC := sim/midnight_sim.cpp src/core/midnight_world.cpp
+midnight_sim: $(MID_SRC) src/core/midnight_world.h
+	$(CXX) $(CXXFLAGS) -o $@ $(MID_SRC) $(LDLIBS)
+msim: midnight_sim
+	./midnight_sim
+
 clean:
-	rm -f $(OBJ) $(DEP) $(BIN) cyberhack_sim
+	rm -f $(OBJ) $(DEP) $(BIN) cyberhack_sim midnight_sim
 
 # note: SQLITE_OBJ is intentionally NOT removed by clean (slow to rebuild)
-.PHONY: all run clean
+.PHONY: all run clean sim msim
 
 -include $(DEP)
