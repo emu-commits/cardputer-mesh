@@ -625,6 +625,29 @@ detects *arcs* (a chain of related events on a node/agent within a window) and
 emits Gibson-voice lines into the ticker and a per-day log on SD. Hard rule
 (inherited): original pastiche only, never embedded source text.
 
+**Generative, not enumerated — this is the whole point.** Because ~65 systems
+share one substrate, the set of *possible* event chains is combinatorial: there
+are effectively **n arcs**, not a fixed menu. The §3.1 examples (debt cascade,
+water riot) are *illustrative samples* of that space, never a closed list. So the
+narrator must be **generative**, in two layers:
+
+1. **General arc engine (the long tail).** Detect *any* causally-linked run of
+   events on the same node/agent within a window — "this led to this led to
+   this," whatever its shape — and narrate it from the *event types and actors
+   involved*. A never-before-seen chain still becomes a story beat. This is the
+   default and it has no enumerated list.
+2. **Recognized motifs (richer phrasing).** A small, growing set of named
+   patterns (the §3.1 archetypes + others) sit *on top* and, when matched, swap
+   in bespoke, higher-flavor phrasing. They're recognizers for color, not the
+   source of arcs.
+
+> **Note on the Phase 5 harness.** The Phase 5 `ArcDetector` recognizes 4 named
+> archetypes *only because the gate had to verify those specific examples fire* —
+> it is a counter, not the generator. The world already emits n arcs today; the
+> detector just names four. Phase 7 ports detection into the engine and inverts
+> the emphasis: a general "linked-events ⇒ narrate" engine first, named motifs as
+> an optional flavor layer.
+
 ---
 
 ## 8. Save format
@@ -705,7 +728,7 @@ seeded worlds *before* any rendering. Each phase is gated by the harness.
 | 4 | Territory + hazards + decay + pulses + **combat (§5.1: resolver, threats/megathreats, flatline spike)** | full interaction matrix wired; stable under soak; raids/turf-wars resolve via combat; a megathreat can appear, terrorize, and be driven off; life-risking avatar fights interrupt while routine ones auto-resolve; combat deaths feed grudges/scars/refugees |
 | 5 | **Emergence harness** | the named chain classes (§3.1) actually *fire* from base rules; tune frequency |
 | 6 | CyberHack bridge + feedback | headless jack-ins resolve & feed back; optional live player handoff |
-| 7 | Arc narrator (Gibson voice) | arcs detected & narrated deterministically |
+| 7 | Arc narrator (Gibson voice) — **generative** (general linked-events engine + named motifs as a flavor layer, §7) | arbitrary arcs detected & narrated deterministically; named motifs get bespoke phrasing |
 | 8a | `LocalMap` gen + within-district pathfinding (portable core) | deterministic per district seed; `@` reaches any POI; one resident map |
 | 8b | Renderer app — embark view, camera-follows-`@`, modal menus | engine/UI parity (scripted decisions → identical state headless vs UI) |
 | 9 | Device flash + soak | heap stable over uptime on the no-PSRAM part |
