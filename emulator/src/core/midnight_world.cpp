@@ -350,6 +350,24 @@ MidTunables g_mtune;
 static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 static void push_event(World& w, uint8_t kind, uint8_t node, uint8_t agent, uint8_t data); // fwd
 
+// record a cash move on the PROTAGONIST's ledger (#4). No-op for any other agent,
+// so the call sites can fire unconditionally. amount carries the sign of the move.
+static void record_txn(World& w, const Agent& a, int32_t amount, uint8_t reason) {
+    if (&a != &w.agents[0] || amount == 0) return;
+    Txn& t = w.txns[w.txn_head];
+    t.amount = amount; t.reason = reason; t.tick = (uint16_t)w.tick;
+    w.txn_head = (uint8_t)((w.txn_head + 1) % TXNMAX);
+    if (w.txn_count < TXNMAX) w.txn_count++;
+}
+
+const char* txn_reason_name(uint8_t r) {
+    static const char* n[TXN_REASON_COUNT] = {
+        "wage", "supplies", "rent", "invested", "craft sale", "contract",
+        "heist", "loot", "robbed", "company payout"
+    };
+    return r < TXN_REASON_COUNT ? n[r] : "?";
+}
+
 int price_of(const World& w, uint8_t district, uint8_t commodity) {
     if (district >= w.district_count || commodity >= C_COUNT) return g_mtune.price_max;
     const MidTunables& T = g_mtune;
@@ -500,7 +518,7 @@ static uint8_t career_action(World& w, Agent& a) {
             if (nx != a.loc) { a.loc = nx; return ACT_MOVE; }
             return ACT_REST;
         }
-        a.money += (uint32_t)wage_of(w, a.loc, a);
+        { int wg = wage_of(w, a.loc, a); a.money += (uint32_t)wg; record_txn(w, a, wg, TXN_WAGE); }
         bump_need(a.need[ND_FATIGUE], T.fatigue_work);
         a.job = tgt; gain_skill(w, a, /*boost=*/T.train_rate * 18); // dedicated training is faster
         return ACT_WORK;
@@ -514,6 +532,7 @@ static uint8_t career_action(World& w, Agent& a) {
         if ((int)a.money > T.found_threshold && (int)a.money > reserve) {
             uint32_t invest = a.money - (uint32_t)reserve;
             a.money -= invest;
+            record_txn(w, a, -(int32_t)invest, TXN_INVEST);
             uint64_t t = (uint64_t)w.company.treasury + invest;
             w.company.treasury = (uint32_t)(t > 4000000000ULL ? 4000000000ULL : t);
             return ACT_WORK;
@@ -527,7 +546,7 @@ static uint8_t career_action(World& w, Agent& a) {
         }
         // 3) craft for profit if we can; else build skill / go to our facility
         if (can_craft(w, a)) {
-            a.money += (uint32_t)production_value(w, a);
+            { int pv = production_value(w, a); a.money += (uint32_t)pv; record_txn(w, a, pv, TXN_CRAFT); }
             bump_need(a.need[ND_FATIGUE], T.fatigue_work);
             gain_skill(w, a);
             return ACT_WORK;
@@ -536,7 +555,7 @@ static uint8_t career_action(World& w, Agent& a) {
             uint8_t nx = hop_to_service(w, a.loc, job_facility(a.job));
             if (nx != a.loc) { a.loc = nx; return ACT_MOVE; }
         }
-        a.money += (uint32_t)wage_of(w, a.loc, a);
+        { int wg = wage_of(w, a.loc, a); a.money += (uint32_t)wg; record_txn(w, a, wg, TXN_WAGE); }
         bump_need(a.need[ND_FATIGUE], T.fatigue_work);
         gain_skill(w, a);
         return ACT_WORK;
@@ -597,6 +616,7 @@ static uint8_t npc_action(World& w, Agent& a) {
         if (market_here && stocked && (int)a.money >= price) {
             // CONSUME: pressure down, money + supply down, a little local prosperity up
             a.money -= (uint32_t)price;
+            record_txn(w, a, -price, TXN_BUY);
             bump_need(a.need[vital], -T.consume_relief);
             int s = here.supply[vcom] - T.consume_supply;
             here.supply[vcom] = (uint8_t)(s < 0 ? 0 : s);
@@ -604,7 +624,7 @@ static uint8_t npc_action(World& w, Agent& a) {
             action = ACT_BUY;
         } else if ((int)a.money < price) {
             // can't afford -> need income
-            if (a.status & AF_EMPLOYED) { a.money += (uint32_t)wage_of(w, a.loc, a); bump_need(a.need[ND_FATIGUE], T.fatigue_work); action = ACT_WORK; }
+            if (a.status & AF_EMPLOYED) { int wg = wage_of(w, a.loc, a); a.money += (uint32_t)wg; record_txn(w, a, wg, TXN_WAGE); bump_need(a.need[ND_FATIGUE], T.fatigue_work); action = ACT_WORK; }
             else if (here.services & SV_JOB_BOARD) { a.job = (uint8_t)w.rng.between(J_CONSTRUCTION, J_INFRA); a.status |= AF_EMPLOYED; action = ACT_SEEKJOB; }
             else { uint8_t nx = hop_to_service(w, a.loc, SV_JOB_BOARD); if (nx != a.loc) { a.loc = nx; action = ACT_MOVE; } else { action = ACT_REST; } }
         } else {
@@ -615,7 +635,7 @@ static uint8_t npc_action(World& w, Agent& a) {
         }
     } else if ((int)a.money < T.reserve) {
         // build a buffer for the next purchases
-        if (a.status & AF_EMPLOYED) { a.money += (uint32_t)wage_of(w, a.loc, a); bump_need(a.need[ND_FATIGUE], T.fatigue_work); gain_skill(w, a); action = ACT_WORK; }
+        if (a.status & AF_EMPLOYED) { int wg = wage_of(w, a.loc, a); a.money += (uint32_t)wg; record_txn(w, a, wg, TXN_WAGE); bump_need(a.need[ND_FATIGUE], T.fatigue_work); gain_skill(w, a); action = ACT_WORK; }
         else if (here.services & SV_JOB_BOARD) { a.job = (uint8_t)w.rng.between(J_CONSTRUCTION, J_INFRA); a.status |= AF_EMPLOYED; action = ACT_SEEKJOB; }
         else { uint8_t nx = hop_to_service(w, a.loc, SV_JOB_BOARD); if (nx != a.loc) { a.loc = nx; action = ACT_MOVE; } else { action = ACT_REST; } }
     } else {
@@ -748,6 +768,8 @@ static void resolve_combat(World& w, int ai, int di) {
     Agent& W = w.agents[wi]; Agent& L = w.agents[li];
 
     uint32_t loot = L.money / 2; L.money -= loot; W.money += loot;
+    record_txn(w, W, (int32_t)loot, TXN_LOOT);
+    record_txn(w, L, -(int32_t)loot, TXN_ROBBED);
     if (L.faction < F_COUNT) {
         int gi = (W.faction < F_COUNT) ? (int)W.faction : (int)F_COUNT;
         int8_t& g = w.factions[L.faction].grudge[gi]; if (g < 120) g = (int8_t)(g + 2);
@@ -1084,6 +1106,7 @@ JackResult jack_in(World& w, int ai) {
 
     // ---- feed results back as EVENTS so cyberspace drives meatspace arcs ----
     a.money += r.shards;
+    record_txn(w, a, (int32_t)r.shards, TXN_HEIST);
     bump_need(a.need[ND_STRESS], r.corruption / 4);
     push_event(w, EV_JACKIN, target, (uint8_t)ai, r.outcome);
     uint8_t owner = w.districts[target].owner;
@@ -1396,8 +1419,8 @@ void tick_world(World& w) {
             Agent& a = w.agents[i];
             if (!(a.status & AF_ALIVE)) continue;
             int rent = T.rent_base + w.districts[a.loc].prosperity / 8;
-            if ((int)a.money >= rent) { a.money -= (uint32_t)rent; a.status &= (uint8_t)~AF_IN_DEBT; }
-            else { a.money = 0; a.status |= AF_IN_DEBT; bump_need(a.need[ND_STRESS], 6); }
+            if ((int)a.money >= rent) { a.money -= (uint32_t)rent; record_txn(w, a, -rent, TXN_RENT); a.status &= (uint8_t)~AF_IN_DEBT; }
+            else { record_txn(w, a, -(int32_t)a.money, TXN_RENT); a.money = 0; a.status |= AF_IN_DEBT; bump_need(a.need[ND_STRESS], 6); }
         }
     }
 
@@ -1411,7 +1434,7 @@ void tick_world(World& w) {
             int chance = danger / T.incident_div;
             if (a.status & AF_PLAYER) chance = chance * (128 + (int)w.directive.risk) / 256;
             if (chance <= 0 || !w.rng.chance(chance)) continue;
-            a.money -= a.money / 2;                       // rolled / robbed
+            { uint32_t lost = a.money / 2; a.money -= lost; record_txn(w, a, -(int32_t)lost, TXN_ROBBED); } // rolled / robbed
             bump_need(a.need[ND_STRESS], 10);
             // lethality scales with risk appetite, eases with company security
             // (front-loaded: deadly while clawing up, survivable once established) and

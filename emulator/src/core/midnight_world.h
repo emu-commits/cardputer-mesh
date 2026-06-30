@@ -30,6 +30,7 @@ static constexpr int EMPMAX        = 8;    // company employees (early cap)
 static constexpr int EVMAX         = 32;   // bounded event ring
 static constexpr int MAX_THREATS   = 8;    // drones + megathreats (§5.1)
 static constexpr int MAX_NET       = 6;    // remembered cyberspace targets (§5.2)
+static constexpr int TXNMAX        = 16;   // protagonist transaction ledger ring (#4)
 static constexpr uint8_t NONE8     = 0xFF;
 
 static constexpr uint16_t MID_MAGIC   = 0x434D; // 'M','C' little-endian
@@ -199,6 +200,16 @@ struct Event {
     uint16_t tick  = 0;
 };
 
+// every change to the PROTAGONIST's cash is recorded here so the UI can show a
+// reason for each move (#4: "any transaction should be a log entry"). Transient:
+// a short rolling ledger, rebuilt as the sim runs — not serialized.
+enum TxnReason : uint8_t {
+    TXN_WAGE, TXN_BUY, TXN_RENT, TXN_INVEST, TXN_CRAFT, TXN_CONTRACT,
+    TXN_HEIST, TXN_LOOT, TXN_ROBBED, TXN_PAYOUT, TXN_REASON_COUNT
+};
+struct Txn { int32_t amount = 0; uint8_t reason = 0; uint16_t tick = 0; };
+const char* txn_reason_name(uint8_t r);
+
 // a non-agent combatant: feral/security drones, kill-drone swarms, and the
 // DF-megabeast-scale megathreats (rogue mechs, leviathans, rogue-AI bodies…)
 struct Threat {
@@ -234,6 +245,10 @@ struct World {
     uint8_t  event_count = 0;              // events held in the ring
     uint8_t  event_head  = 0;              // ring write cursor
     Event    events[EVMAX];
+    // protagonist transaction ledger (#4) — transient, not serialized
+    uint8_t  txn_count = 0;
+    uint8_t  txn_head  = 0;
+    Txn      txns[TXNMAX];
 };
 
 // ---- worldgen + queries ----------------------------------------------------

@@ -122,18 +122,40 @@ private:
         if (announce) push_log(std::string("You move into the ") + mc::district_type_name(world_.districts[d].type) + ".");
     }
 
+    std::string fmt_txn(const mc::Txn& t) {
+        char b[48];
+        long v = t.amount < 0 ? -(long)t.amount : (long)t.amount;
+        std::snprintf(b, sizeof b, "%s$%ld %s", t.amount < 0 ? "-" : "+", v, mc::txn_reason_name(t.reason));
+        return std::string(b);
+    }
+
     // one "watch it crawl" step: advance the world, narrate, animate the @
     void crawl() {
         uint32_t before = world_.tick;
         mc::tick_world(world_);
-        uint16_t tk = (uint16_t)(before);                 // events pushed this tick carry tick==before
+        uint16_t tk = (uint16_t)(before);                 // events/txns this tick carry tick==before
+
+        // transactions this tick -> the log: every cash move is accounted for (#4)
+        if (world_.txn_count) {
+            int n = world_.txn_count;
+            int start = (world_.txn_head + mc::TXNMAX - n) % mc::TXNMAX;
+            for (int i = 0; i < n; ++i) {
+                const mc::Txn& t = world_.txns[(start + i) % mc::TXNMAX];
+                if (t.tick == tk) push_log(fmt_txn(t));
+            }
+        }
+
+        // event narration — only beats we can SEE: co-located, about us, or
+        // world-scale (#5). Arcs see EVERY event (chains span districts) and are
+        // shown regardless, since they are city-scale story, not NPC chatter.
         std::string line; bool got_arc = false;
         for (int i = 0; i < mc::EVMAX; ++i) {
             const mc::Event& e = world_.events[i];
             if (e.kind == mc::EV_NONE || e.tick != tk) continue;
             uint8_t arc = arcs_.ingest(e.kind, e.node, e.data, (int)before);
+            bool here = (e.node == cur_district_) || (e.agent == 0) || (e.node == mc::NONE8);
             if (arc != mc::MA_NONE) { line = mc::narrate_arc(world_, arc, e.node, arcs_.last_kind[e.node < mc::MAX_DISTRICTS ? e.node : 0], e.kind); got_arc = true; }
-            else if (!got_arc) line = mc::narrate_event(world_, e);
+            else if (!got_arc && here) line = mc::narrate_event(world_, e);
         }
         if (!line.empty()) push_log(line);
 
