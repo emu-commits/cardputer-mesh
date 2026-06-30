@@ -23,7 +23,7 @@ namespace mc = mid;
 namespace apps {
 
 class Midnight : public App {
-    enum View { EMBARK, MENU, ORDERS, FOCUSMENU, COMPANY, SECTOR, TRAVEL };
+    enum View { EMBARK, MENU, ORDERS, FOCUSMENU, COMPANY, SECTOR, CRAFT, TRAVEL };
     static constexpr uint32_t STEP_MS = 600;   // "watch it crawl" cadence
     static constexpr uint32_t ANIM_MS = 110;   // @ walks smoothly between crawls
     static constexpr size_t   LOG_CAP = 24;     // recent log entries kept
@@ -47,6 +47,7 @@ public:
         if (view_ == FOCUSMENU) return key_focus(ctx, k);
         if (view_ == COMPANY)   return key_company(ctx, k);
         if (view_ == SECTOR)    return key_sector(ctx, k);
+        if (view_ == CRAFT)     return key_craft(ctx, k);
         if (view_ == TRAVEL)    return key_travel(ctx, k);
         // EMBARK
         if (k.is_char() && (k.ch == 'm' || k.ch == 'M')) { open_menu(); return true; }
@@ -337,14 +338,15 @@ private:
     // ---- menus -------------------------------------------------------------
     void open_menu() { view_ = MENU; mls_ = ui::ListState{}; }
 
-    int main_menu_n() const { return 6; } // Orders / Focus / Company / Jack in / Travel / Close
+    int main_menu_n() const { return 7; } // Orders/Focus/Company/Crafting/Jack/Travel/Close
     std::string main_menu_item(int i) {
         switch (i) {
             case 0: return "Standing orders";
             case 1: return "Set focus";
             case 2: return "Company";
-            case 3: return (world_.agents[0].status & mc::AF_HAS_DECK) ? "Jack in (run the net)" : "Jack in (need a deck)";
-            case 4: return "Travel to an adjacent district";
+            case 3: return "Crafting";
+            case 4: return (world_.agents[0].status & mc::AF_HAS_DECK) ? "Jack in (run the net)" : "Jack in (need a deck)";
+            case 5: return "Travel to an adjacent district";
             default: return "Close";
         }
     }
@@ -359,16 +361,34 @@ private:
                 case 0: view_ = ORDERS; mls_ = ui::ListState{}; return true;
                 case 1: view_ = FOCUSMENU; mls_ = ui::ListState{}; return true;
                 case 2: view_ = COMPANY; mls_ = ui::ListState{}; return true;
-                case 3: { if (world_.agents[0].status & mc::AF_HAS_DECK) { mc::JackResult r = mc::jack_in(world_, 0);
+                case 3: view_ = CRAFT; mls_ = ui::ListState{}; return true;
+                case 4: { if (world_.agents[0].status & mc::AF_HAS_DECK) { mc::JackResult r = mc::jack_in(world_, 0);
                               push_log(r.ran ? (std::string("You jacked in: ") + mc::outcome_name(r.outcome) + (r.flatlined ? " - flatline." : "."))
                                              : "No data target in reach.");
                           } else push_log("You have no cyberdeck to jack with."); view_ = EMBARK; break; }
-                case 4: view_ = TRAVEL; mls_ = ui::ListState{}; return true;
+                case 5: view_ = TRAVEL; mls_ = ui::ListState{}; return true;
                 default: view_ = EMBARK; break;
             }
             return true;
         }
         return true;   // modal swallows keys
+    }
+
+    // ---- crafting (#H2): visibility + the craft directive --------------------
+    bool key_craft(AppContext& ctx, const KeyEvent& k) {
+        (void)ctx;
+        int n = mc::CR_COUNT;
+        if (mls_.move(k, n, n)) return true;
+        if (k.key == Key::Esc) { view_ = MENU; mls_ = ui::ListState{}; return true; }
+        if (k.key == Key::Enter) {
+            uint8_t cr = (uint8_t)clampi(mls_.sel, 0, n - 1);
+            world_.craft_target = cr;
+            world_.focus = mc::FC_CRAFT;
+            push_log(std::string("New focus: craft ") + mc::craft_name(cr) + " (gathering parts).");
+            view_ = EMBARK;
+            return true;
+        }
+        return true;
     }
 
     // ---- company management (#12/#13/#14) ----------------------------------
@@ -533,6 +553,7 @@ private:
             return;
         }
         if (view_ == COMPANY) { draw_company(c); return; }
+        if (view_ == CRAFT) { draw_craft(c); return; }
         if (view_ == SECTOR) {
             list_modal(c, "Business model", "enter:pick  esc:back", sector_n(),
                        [&](int i) { return std::string(mc::sector_name((uint8_t)(i + 1))); });
@@ -571,6 +592,47 @@ private:
         }
         int list_rows = ih - (r - ir); if (list_rows < 1) list_rows = 1;
         ui::list(c, r, list_rows, mls_, nact, [&](int i) { return company_item(i); });
+    }
+
+    // a recipe row: what it is + the discipline/tier it takes
+    std::string craft_item(int i) {
+        const mc::Recipe& rc = mc::recipe_of((uint8_t)i);
+        char b[64];
+        std::snprintf(b, sizeof b, "%s (%s, %s)", mc::craft_name((uint8_t)i),
+                      mc::job_name(rc.job), mc::skill_tier_name(rc.min_tier));
+        return std::string(b);
+    }
+
+    // crafting visibility (#H2): trade/skill + inventory + current goal + recipes
+    void draw_craft(TextCanvas& c) {
+        const mc::Agent& p = world_.agents[0];
+        int n = mc::CR_COUNT;
+        int rows = clampi(n + 6, 8, c.height() - 2);
+        int ir, ic, iw, ih;
+        ui::modal_box(c, rows, 50, "Crafting", ui::BrightCyan, ir, ic, iw, ih, "enter:make  esc:back");
+        int r = ir; char b[80];
+        uint8_t job = p.job;
+        bool has_trade = (job >= mc::J_CONSTRUCTION && job < mc::J_COUNT);
+        const char* jn = has_trade ? mc::job_name(job) : "no trade yet";
+        uint8_t tier = has_trade ? mc::skill_tier(p.skill[job]) : 0;
+        std::snprintf(b, sizeof b, "Trade: %s (%s)%s", jn, mc::skill_tier_name(tier),
+                      (p.status & mc::AF_HAS_DECK) ? "  +cyberdeck" : "");
+        c.text(r++, ic, ui::fit(b, iw), ui::BrightWhite, ui::Black);
+        std::snprintf(b, sizeof b, "Stock: scrap%u comp%u data%u  gun%u arm%u imp%u chem%u",
+                      (unsigned)p.inv[mc::IT_MATERIALS], (unsigned)p.inv[mc::IT_COMPONENTS], (unsigned)p.inv[mc::IT_DATA],
+                      (unsigned)p.inv[mc::IT_WEAPONS], (unsigned)p.inv[mc::IT_ARMOR], (unsigned)p.inv[mc::IT_IMPLANTS],
+                      (unsigned)p.inv[mc::IT_CHEMS]);
+        c.text(r++, ic, ui::fit(b, iw), ui::White, ui::Black);
+        if (world_.craft_target < mc::CR_COUNT) {
+            const mc::Recipe& rc = mc::recipe_of(world_.craft_target);
+            std::snprintf(b, sizeof b, "Making %s - needs scrap%u comp%u data%u", mc::craft_name(world_.craft_target),
+                          (unsigned)rc.in_mat, (unsigned)rc.in_comp, (unsigned)rc.in_data);
+            c.text(r++, ic, ui::fit(b, iw), ui::BrightYellow, ui::Black);
+        } else {
+            c.text(r++, ic, ui::fit("Pick something to build (the @ will gather + make it):", iw), ui::Gray, ui::Black);
+        }
+        int list_rows = ih - (r - ir); if (list_rows < 1) list_rows = 1;
+        ui::list(c, r, list_rows, mls_, n, [&](int i) { return craft_item(i); });
     }
 
     std::string chronicle_death() {
