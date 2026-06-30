@@ -369,10 +369,10 @@ static void push_event(World& w, uint8_t kind, uint8_t node, uint8_t agent, uint
 
 // record a cash move on the PROTAGONIST's ledger (#4). No-op for any other agent,
 // so the call sites can fire unconditionally. amount carries the sign of the move.
-static void record_txn(World& w, const Agent& a, int32_t amount, uint8_t reason) {
+static void record_txn(World& w, const Agent& a, int32_t amount, uint8_t reason, uint8_t data = 0) {
     if (&a != &w.agents[0] || amount == 0) return;
     Txn& t = w.txns[w.txn_head];
-    t.amount = amount; t.reason = reason; t.tick = (uint16_t)w.tick;
+    t.amount = amount; t.reason = reason; t.data = data; t.tick = (uint16_t)w.tick;
     w.txn_head = (uint8_t)((w.txn_head + 1) % TXNMAX);
     if (w.txn_count < TXNMAX) w.txn_count++;
 }
@@ -383,6 +383,24 @@ const char* txn_reason_name(uint8_t r) {
         "heist", "loot", "robbed", "company payout", "clinic care", "sale"
     };
     return r < TXN_REASON_COUNT ? n[r] : "?";
+}
+const char* item_name(uint8_t it) {
+    static const char* n[IT_COUNT] = {
+        "materials", "components", "a weapon", "armor", "an implant", "chems", "data", "food"
+    };
+    return it < IT_COUNT ? n[it] : "goods";
+}
+// what a profession's labor produces (the unit a skilled worker crafts to sell)
+static uint8_t job_output(uint8_t job) {
+    switch (job) {
+        case J_GUNSMITH:    return IT_WEAPONS;
+        case J_ARMOR:       return IT_ARMOR;
+        case J_RIPPERDOC: case J_BIOTECH: return IT_IMPLANTS;
+        case J_CHEMTECH:    return IT_CHEMS;
+        case J_ELECTRONICS: case J_INFRA: return IT_COMPONENTS;
+        case J_DECKER:      return IT_DATA;
+        default:            return IT_MATERIALS;   // construction/machinist/drone -> raw goods
+    }
 }
 
 int price_of(const World& w, uint8_t district, uint8_t commodity) {
@@ -631,8 +649,16 @@ static uint8_t do_work(World& w, Agent& a) {
                             skill_tier(a.skill[a.job]) >= ST_SKILLED &&
                             (w.districts[a.loc].services & job_facility(a.job)) &&
                             production_value(w, a) > 0;
-        if (skilled_here) { int v = production_value(w, a); a.money += (uint32_t)v; record_txn(w, a, v, TXN_SALE); }
-        else              { int wg = wage_of(w, a.loc, a); a.money += (uint32_t)wg; record_txn(w, a, wg, TXN_WAGE); }
+        if (skilled_here) {
+            // craft a unit of your trade's output, then sell it -- inventory genuinely
+            // moves (made -> sold), and the log names the product (#3).
+            uint8_t out = job_output(a.job);
+            if (a.inv[out] < 250) a.inv[out]++;
+            int v = production_value(w, a);
+            if (a.inv[out] > 0) { a.inv[out]--; a.money += (uint32_t)v; record_txn(w, a, v, TXN_SALE, out); }
+        } else {
+            int wg = wage_of(w, a.loc, a); a.money += (uint32_t)wg; record_txn(w, a, wg, TXN_WAGE);
+        }
         bump_need(a.need[ND_FATIGUE], T.fatigue_work);
         bool master = (w.directive.ambition == AMB_MASTERY && a.job == w.directive.target);
         gain_skill(w, a, master ? T.train_rate * 18 : 0);
@@ -654,7 +680,7 @@ static uint8_t gather_item(World& w, Agent& a, uint8_t item) {
     if (com < C_COUNT && (here.services & SV_MARKET) && here.supply[com] > 0) {
         int price = price_of(w, a.loc, com);
         if ((int)a.money >= price) {
-            a.money -= (uint32_t)price; record_txn(w, a, -price, TXN_BUY);
+            a.money -= (uint32_t)price; record_txn(w, a, -price, TXN_BUY, com);   // names what was bought
             int s = here.supply[com] - 1; here.supply[com] = (uint8_t)(s < 0 ? 0 : s);
             if (a.inv[item] < 250) a.inv[item]++;
             return ACT_BUY;
@@ -752,7 +778,7 @@ static uint8_t do_found_co(World& w, Agent& a) {
     if ((int)a.money >= T.found_threshold) {
         uint32_t reserve = (uint32_t)T.personal_reserve;
         uint32_t seed = a.money > reserve ? a.money - reserve : 0;
-        a.money -= seed; record_txn(w, a, -(int32_t)seed, TXN_INVEST);
+        a.money -= seed;   // personal -> company treasury is an internal transfer, not logged (#9)
         Company& co = w.company;
         co.treasury += seed;
         if (co.tier < CT_SOLO) co.tier = CT_SOLO;
@@ -769,7 +795,7 @@ static uint8_t do_run_co(World& w, Agent& a) {
     const MidTunables& T = g_mtune;
     if ((int)a.money > T.personal_reserve + 100) {
         uint32_t invest = a.money - (uint32_t)T.personal_reserve;
-        a.money -= invest; record_txn(w, a, -(int32_t)invest, TXN_INVEST);
+        a.money -= invest;   // internal transfer to the company treasury, not logged (#9)
         uint64_t t = (uint64_t)w.company.treasury + invest;
         w.company.treasury = (uint32_t)(t > 4000000000ULL ? 4000000000ULL : t);
         return ACT_WORK;
@@ -948,7 +974,7 @@ static uint8_t npc_action(World& w, Agent& a) {
         if (market_here && stocked && (int)a.money >= price) {
             // CONSUME: pressure down, money + supply down, a little local prosperity up
             a.money -= (uint32_t)price;
-            record_txn(w, a, -price, TXN_BUY);
+            record_txn(w, a, -price, TXN_BUY, vcom);   // names the vital (food/water)
             bump_need(a.need[vital], -T.consume_relief);
             int s = here.supply[vcom] - T.consume_supply;
             here.supply[vcom] = (uint8_t)(s < 0 ? 0 : s);

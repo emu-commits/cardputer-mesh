@@ -150,6 +150,10 @@ private:
         if (t.reason == mc::TXN_RENT && world_.apt_district < world_.district_count)
             std::snprintf(b, sizeof b, "%s$%ld rent (%s)", sign, v,
                           mc::district_type_name(world_.districts[world_.apt_district].type));
+        else if (t.reason == mc::TXN_BUY)
+            std::snprintf(b, sizeof b, "-$%ld bought %s", v, mc::commodity_name(t.data));
+        else if (t.reason == mc::TXN_SALE)
+            std::snprintf(b, sizeof b, "+$%ld sold %s", v, mc::item_name(t.data));
         else
             std::snprintf(b, sizeof b, "%s$%ld %s", sign, v, mc::txn_reason_name(t.reason));
         return std::string(b);

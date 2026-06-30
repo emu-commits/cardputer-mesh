@@ -227,8 +227,9 @@ enum TxnReason : uint8_t {
     TXN_WAGE, TXN_BUY, TXN_RENT, TXN_INVEST, TXN_CRAFT, TXN_CONTRACT,
     TXN_HEIST, TXN_LOOT, TXN_ROBBED, TXN_PAYOUT, TXN_CARE, TXN_SALE, TXN_REASON_COUNT
 };
-struct Txn { int32_t amount = 0; uint8_t reason = 0; uint16_t tick = 0; };
+struct Txn { int32_t amount = 0; uint8_t reason = 0; uint8_t data = 0; uint16_t tick = 0; };
 const char* txn_reason_name(uint8_t r);
+const char* item_name(uint8_t item_class);   // ItemClass -> label (also used by the inventory screen)
 
 // a one-time contract/gig the protagonist is running (#10). One live at a time.
 struct Contract {
