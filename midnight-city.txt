@@ -1,0 +1,1756 @@
+We want to add another game to our cardputer adv firmware, respecting the constraints of the existing firmware design, the power of the hardware, the remaining resources available, and the CYD text-only display connected, similarly to how the "cyberhack" game was implemented.  This game will be a mini clone of Dwarf Fortress, in a Neuromancer‑style cyberpunk city setting, that fits these constraints, including constraint on display and input.  
+Game should generate an appropriately small 2D world and jump right into embark mode automatically.  
+Unless the user chooses a menu option to reset, every time the game loads it should jump back into the same world where it was left off (autosave to sd card).
+Instead of 7 dwarfs to start, just start with 1 character with a randomly generated theme-appropriate name.  The focus will be just on this individual instead of a colony of dwarfs. 
+There should be NPC's generated within the world as well, and they will operate with their own algorithmic intelligence that we create and apply to them, following their own motivations, and working within the systems and constructs of this game world.
+Rather than building a fortress, the goal for the character here is to start his or her own company within this unforgiving-future cyber world and grow it to an unstoppable megacorp, amassing billions of shards (money).  
+He starts as an adult with basically nothing and has to find hourly wage work to survive and accumulate wealth, knowledge, equipment and relationships.  He must find a novice-tier job to assume, learning it from on-the-job experience.
+Use a dwarf fortress classic style ascii graphic on the CYD display, with the dwarf fortress style menu system with modal overlays during menu navigation.  
+The whole UI should be menu driven with no arrow-cursor selecting things on the actual world map.
+To know what points of interest exist on the map rather than arrow over to them, a menu should provide the list, so this is essentially a text-based game but grounded in a world gen.
+One of the defining x-factors of dwarf fortress is the way it implements a large number of micro systems that have interaction points between each other to create chain reactions that become story arcs.  We have to build this in, within our limited resource budget.
+Example: Hunger → seek food → and then → and then
+The thing DF does relentlessly—is that triggers don’t fire in a vacuum.
+They fire because micro‑systems constantly create pressure, scarcity, conflict, risk, and opportunity.  On a low‑RAM platform like ESP32, you can’t simulate DF’s giant web of systems, but you can replicate the pattern: tiny, cheap micro‑systems that continuously generate situations that collide with rule‑based actors.
+**KEY POINT: None of this game will take place in cyberspace.  Once an entity has a cyberdeck or "deck" they can jack into cyberspace but in that case they should actually play our cyberhack game headless, with automated decision making based on their personality and situation (ex. desperate for shards, nothing to lose- take more risk, or doing well and comfortable- take no risk) and the results of the cyberhack game- shards, relationships, flatline- they feed back into this new game.
+
+
+THE FOLLOWING IS SUGGESTED REFERENCE CONTENT FOR THE GAME:
+Convert *Dwarf Fortress*’s fantasy building blocks into a Neuromancer‑style cyberpunk setting by **mapping each DF system to a cyberpunk analogue**—swap dwarves for street crews, caverns for undercity tunnels, nobles for megacorp fixers, artifacts for black‑market tech, etc.—while keeping the *simulation logic* intact. The trick is to reinterpret DF’s verbs (dig, build, craft, fight, govern) through the lens of Chiba City, Night City, and Sprawl‑era cyberpunk.
+
+Below is a **structured, deep conversion guide** that walks through every major DF subsystem and shows how to re-theme it without breaking the gameplay loop.
+
+---
+
+## Core Takeaway  
+**Keep the simulation; change the fiction.**  
+Every DF system has a natural cyberpunk equivalent—industrial, gritty, neon‑soaked, corporate‑dominated, and human‑scale. You’re not adding cyberspace gameplay; you’re just acknowledging its existence as a narrative element.
+
+---
+
+## 🧬 Species & Civs → Street Crews, Gangs, Syndicates  
+
+
+
+
+DF races become **factions**, each with culture, gear, and economic niches.
+
+- **Street crews** — your “dwarves.” A tight-knit, resourceful group living in a block, warehouse, or undercity sector.  
+- **Megacorp enclaves** — wealthy, militarized, vertically integrated societies.  
+- **Yakuza/Triad syndicates** — ritualistic, hierarchical, and territorial.  
+- **Nomad caravans** — mobile, scavenger-tech specialists.  
+- **Undercity mutants** — DF’s “goblins,” shaped by pollution, biotech, or corporate dumping.
+
+**Gameplay mapping:**  
+DF civ → cyberpunk faction with distinct tech, implants, fashion, slang, and economic role.
+
+---
+
+## 🏗️ Fortress Mode → Block/Arcology Management  
+
+
+
+
+Your “fortress” becomes:
+
+- A **derelict arcology floor**  
+- A **warehouse complex**  
+- A **subway‑adjacent undercity sector**  
+- A **sprawl block** with multiple levels (street, mezzanine, roof, tunnels)
+
+**Digging** → cutting through drywall, concrete, ventilation shafts, sewer tunnels.  
+**Workshops** → fab-labs, chop shops, biotech clinics, drone bays.  
+**Stockpiles** → crates, lockers, cold storage, server racks.
+
+---
+
+## ⚙️ Jobs & Labor → Cyberpunk Trades  
+DF’s job system maps beautifully to cyberpunk professions.
+
+- **Ripperdocs** — surgeons for implants (DF medical + crafting).  
+- **Techies** — repair, fabrication, electronics.  
+- **Scavs** — gather scrap, salvage tech.  
+- **Street samurai** — military roles.  
+- **Fixers** — nobles/administrators.  
+- **Deckers** — DF scholars/priests but with hacking rituals.
+
+**Artifacts** → legendary cyberdecks, prototype implants, experimental weapons.
+
+---
+
+## 🧱 Materials → Industrial & Tech Components  
+DF’s stone/metal/wood → cyberpunk equivalents:
+
+- **Concrete, rebar, steel plating**  
+- **Circuit boards, fiber optics, microchips**  
+- **Bioplastic, carbon composites**  
+- **Toxic sludge, industrial waste** (for “evil biome” equivalents)
+
+DF’s metalworking → machining, welding, 3D printing, chip fabrication.
+
+---
+
+## 🏞️ Biomes → City Districts & Undercity Zones  
+
+
+
+
+DF biome → cyberpunk district:
+
+- **Forest → Rooftop gardens, vertical farms**  
+- **Desert → Industrial wastelands, megacorp solar fields**  
+- **Tundra → Cryo-storage districts, refrigerated logistics hubs**  
+- **Caverns → sewer networks, abandoned metro tunnels, utility corridors**  
+- **Evil biomes → toxic zones, chemical spills, radiation pockets**
+
+---
+
+## 🐉 Creatures → Gangers, Drones, Mutants  
+DF creatures convert cleanly:
+
+- **Wildlife** → stray drones, feral dogs, scavenger bots.  
+- **Monsters** → biotech abominations, rogue AIs in robot bodies, vat-grown horrors.  
+- **Megabeasts** → colossal industrial machines, runaway construction mechs, giant sewer organisms.
+
+---
+
+## ⚔️ Combat → Street Fights & Corporate Raids  
+DF combat simulation stays intact:
+
+- Melee → knives, pipes, machetes, monoblades.  
+- Ranged → pistols, SMGs, jury-rigged railguns.  
+- Armor → kevlar, ceramic plates, improvised plating.  
+- Siege → corp SWAT teams, drone swarms, armored vehicles.
+
+---
+
+## 🧠 Mood System → Cyberpsychosis, Burnout, Addiction  
+DF’s emotional simulation maps perfectly:
+
+- **Cyberpsychosis** — too many implants, trauma, overstimulation.  
+- **Burnout** — overwork, stress, lack of stim patches.  
+- **Addiction** — stims, painkillers, neural enhancers.  
+- **Social tension** — gang rivalries, corp pressure, street politics.
+
+Strange moods → manic hacking sessions, obsessive tech builds, implant overclocking.
+
+---
+
+## 🏛️ Nobles → Fixers, Corp Liaisons, Block Bosses  
+DF nobles → cyberpunk power brokers:
+
+- **Fixer** — assigns missions, demands tribute.  
+- **Corp liaison** — enforces megacorp interests.  
+- **Block boss** — local authority figure.  
+- **Data priest** — cult-like technomystic leader.
+
+Mandates → “produce 10 cyberdecks,” “no unauthorized implants,” “ban certain drugs.”
+
+---
+
+## 📦 Economy → Black Markets & Supply Chains  
+DF trade → cyberpunk logistics:
+
+- **Caravans** → nomad convoys, corp delivery drones, smuggler vans.  
+- **Currency** → credsticks, crypto tokens, corp scrip.  
+- **Trade goods** → implants, weapons, rare chips, illicit biotech.
+
+---
+
+## 🧪 Magic → Biotech, Implants, Ritualistic Hacking  
+DF magic → cyberpunk “soft magic” systems:
+
+- **Implants** — stat boosts, special abilities.  
+- **Biotech rituals** — gene mods, vat-grown organs.  
+- **Hacking rites** — symbolic, ritualistic deck use (no cyberspace gameplay needed).
+
+---
+
+## 🏚️ World Generation → Sprawl Formation  
+DF worldgen → citygen:
+
+- **Civilizations** → factions, corps, gangs.  
+- **History** → turf wars, corporate coups, tech breakthroughs.  
+- **Sites** → arcologies, factories, slums, data centers.  
+- **Artifacts** → legendary tech items.
+
+---
+
+## 🧩 Final Synthesis  
+You’re not rewriting DF—you’re **re-skinning its simulation**:
+
+- Replace fantasy nouns with cyberpunk nouns.  
+- Replace medieval tech trees with industrial/tech trees.  
+- Replace monsters with drones/mutants.  
+- Replace nobles with fixers/corp agents.  
+- Replace magic with implants/biotech/hacking.  
+- Replace fortress with arcology block/undercity sector.
+
+The underlying gameplay loop—resource extraction, construction, crafting, social simulation, defense—remains unchanged.
+
+---
+
+**full mapping table** that converts *every DF item, job, workshop, creature, and noble* into cyberpunk equivalents:  
+Concise takeaway: every *Dwarf Fortress* system has a clean cyberpunk analogue if you treat the fortress as a **block/arcology sector**, dwarves as a **street crew**, and fantasy tech as **industrial, biotech, or electronic fabrication**. Below is a complete, structured conversion table covering races, jobs, workshops, items, nobles, creatures, biomes, moods, and worldgen.
+
+---
+
+## 🏙️ Civilization & Species Mapping  
+| DF Term | Cyberpunk Equivalent | Notes |
+|--------|-----------------------|-------|
+| **Dwarves** | Street crew / block residents | Tight-knit, skilled, territorial. |
+| **Humans** | Megacorp citizens / middle-class | Bureaucratic, regulated. |
+| **Elves** | Eco‑cultists / biogarden communes | Anti‑tech, biotech purists. |
+| **Goblins** | Mutant gangs / chemically warped | Toxic-zone adapted. |
+| **Kobolds** | Scavenger kids / micro‑gangs | Stealthy, opportunistic. |
+| **Necromancers** | Biotech cult leaders | Organ printers, vat‑growth labs. |
+
+---
+
+## ⚙️ Job & Labor Mapping  
+| DF Job | Cyberpunk Role | Notes |
+|--------|----------------|-------|
+| **Miner** | Tunnel cutter / demolition tech | Cuts through concrete, ducts, sewers. |
+| **Mason** | Concrete worker / structural fabricator | Walls, plating, barricades. |
+| **Carpenter** | Fab‑lab tech / 3D printer operator | Plastics, composites. |
+| **Blacksmith** | Machinist / metalworker | Weapon frames, armor plates. |
+| **Weaponsmith** | Gunsmith / monoblade crafter | Firearms, melee weapons. |
+| **Armorsmith** | Armor tech | Kevlar, ceramic, composite plating. |
+| **Doctor** | Ripperdoc | Implants, trauma care. |
+| **Hunter** | Scout / drone wrangler | Tracks drones, gangs. |
+| **Farmer** | Rooftop grower / vertical farm tech | Hydroponics. |
+| **Brewer** | Chemtech / stim mixer | Drugs, stimulants. |
+| **Craftsdwarf** | Street artisan / modder | Trinkets, custom gear. |
+| **Mechanic** | Roboticist / drone tech | Drone repair, automation. |
+| **Engraver** | Graffiti artist / tagger | Street murals, faction marks. |
+| **Scribe** | Data clerk / archivist | Logs, manifests. |
+| **Scholar** | Tech researcher | Reverse engineering. |
+| **Priest** | Technomystic | Ritualistic hacking. |
+| **Broker** | Fixer | Negotiates deals, missions. |
+
+---
+
+## 🏭 Workshop Mapping  
+| DF Workshop | Cyberpunk Facility | Notes |
+|-------------|--------------------|-------|
+| **Mason’s Workshop** | Concrete shop | Walls, barriers. |
+| **Carpenter’s Shop** | Fab‑lab | Plastics, composites. |
+| **Forge** | Machine shop | Metal machining. |
+| **Jeweler** | Microelectronics lab | Chips, optics. |
+| **Still** | Chem lab | Stims, solvents. |
+| **Kitchen** | Food lab | Synth-meals. |
+| **Hospital** | Clinic | Implants, trauma care. |
+| **Mechanic’s Shop** | Drone bay | Drone fabrication. |
+| **Craftsdwarf’s Workshop** | Mod shop | Custom gear. |
+| **Library** | Data center | Archives, research. |
+
+---
+
+## 📦 Item & Material Mapping  
+| DF Item | Cyberpunk Equivalent |
+|---------|----------------------|
+| **Stone** | Concrete, rebar chunks |
+| **Wood** | Plastics, composites |
+| **Metal bars** | Steel plates, alloys |
+| **Gems** | Optical crystals, micro‑lenses |
+| **Cloth** | Smart fabric, kevlar weave |
+| **Leather** | Synthhide |
+| **Weapons** | Pistols, SMGs, monoblades |
+| **Armor** | Kevlar, ceramic plating |
+| **Artifacts** | Prototype cyberdecks, experimental implants |
+
+---
+
+## 🧱 Building & Architecture Mapping  
+| DF Structure | Cyberpunk Structure |
+|--------------|---------------------|
+| **Fortress** | Arcology block / warehouse sector |
+| **Rooms** | Micro-apartments / bunk pods |
+| **Hallways** | Service corridors / ductways |
+| **Bridges** | Catwalks / skybridges |
+| **Towers** | Comm towers / surveillance posts |
+| **Caverns** | Undercity tunnels / metro ruins |
+
+---
+
+## 🧟 Creature Mapping  
+| DF Creature | Cyberpunk Equivalent |
+|-------------|----------------------|
+| **Wild animals** | Feral drones, stray bots |
+| **Goblins** | Mutant gangs |
+| **Megabeasts** | Rogue construction mechs |
+| **Forgotten beasts** | Biotech abominations |
+| **Demons** | Rogue AIs in robot bodies |
+
+---
+
+## 🌆 Biome → District Mapping  
+| DF Biome | Cyberpunk District |
+|----------|--------------------|
+| **Forest** | Rooftop gardens / vertical farms |
+| **Desert** | Industrial wasteland |
+| **Tundra** | Cryo-storage district |
+| **Swamp** | Toxic chemical zone |
+| **Caverns** | Undercity tunnels |
+| **Evil biomes** | Radiation pockets / spill zones |
+
+---
+
+## 🧠 Mood & Psychology Mapping  
+| DF Mood | Cyberpunk Equivalent |
+|---------|----------------------|
+| **Strange mood** | Manic hacking session / implant overclock |
+| **Depression** | Burnout |
+| **Tantrum** | Street rage |
+| **Possession** | AI influence / neural glitch |
+| **Fey mood** | Tech‑vision obsession |
+
+---
+
+## 🏛️ Nobles & Leadership Mapping  
+| DF Noble | Cyberpunk Role |
+|----------|----------------|
+| **Mayor** | Block boss |
+| **Baron** | Corp representative |
+| **Monarch** | Executive overseer |
+| **Sheriff** | Security chief |
+| **Broker** | Fixer |
+| **Priest** | Technomystic |
+
+---
+
+## 📜 Worldgen Mapping  
+| DF Worldgen Element | Cyberpunk Equivalent |
+|----------------------|----------------------|
+| **Civilizations** | Factions, corps, syndicates |
+| **Sites** | Arcologies, factories, slums |
+| **Artifacts** | Legendary tech prototypes |
+| **Wars** | Turf wars, corp raids |
+| **Historical figures** | Street legends, infamous hackers |
+
+---
+
+## 🧩 Final Synthesis  
+This table gives you a **complete re-skinning blueprint**: keep DF’s simulation logic but reinterpret every noun, job, workshop, creature, and biome through a gritty cyberpunk lens. The result feels like *Dwarf Fortress* running inside **Chiba City**, **Night City**, or **The Sprawl**, without needing cyberspace gameplay.
+
+**Cyberpunk Item Tree (Full Structured Version)**  
+This is a complete, DF‑style hierarchical item tree reinterpreted for a **Chiba/Night City/Sprawl‑inspired cyberpunk block‑sim**, organized by fabrication domain. It preserves DF’s logic (raw → processed → crafted → advanced) but replaces fantasy materials with industrial, electronic, and biotech equivalents.
+
+---
+
+# 🏗️ **Construction Materials**  
+### Raw  
+- Concrete rubble  
+- Rebar  
+- Steel scrap  
+- Carbon composite sheets  
+- Bioplastic pellets  
+
+### Processed  
+- Reinforced concrete blocks  
+- Steel plating  
+- Composite panels  
+- Bioplastic boards  
+
+### Crafted  
+- Walls, floors, barricades  
+- Catwalks, skybridges  
+- Vent shafts, duct segments  
+- Reinforced doors  
+
+---
+
+# ⚙️ **Mechanical Components**  
+### Raw  
+- Gears, bearings  
+- Servo housings  
+- Hydraulic tubing  
+
+### Processed  
+- Servo motors  
+- Hydraulic pistons  
+- Gear assemblies  
+
+### Crafted  
+- Drone actuators  
+- Door motors  
+- Lift systems  
+- Turret rotation units  
+
+---
+
+# 🔌 **Electronic Components**  
+### Raw  
+- Circuit boards  
+- Fiber optic cable  
+- Microchips  
+- Capacitors, resistors  
+
+### Processed  
+- Logic boards  
+- Sensor arrays  
+- Power regulators  
+- Wireless modules  
+
+### Crafted  
+- Cyberdecks  
+- Surveillance nodes  
+- Access terminals  
+- Smart weapon control units  
+
+---
+
+# 🧬 **Biotech Components**  
+### Raw  
+- Gene slurry  
+- Vat-grown tissue  
+- Synthbone rods  
+- Organ cultures  
+
+### Processed  
+- Biografts  
+- Neural interface pads  
+- Synth-organ modules  
+
+### Crafted  
+- Implants (eyes, limbs, organs)  
+- Neural jacks  
+- Bio‑reinforcement kits  
+- Combat stim injectors  
+
+---
+
+# 🔫 **Weapons**  
+### Raw  
+- Steel bars  
+- Composite blades  
+- Gun frames  
+- Energy cells  
+
+### Processed  
+- Barrels  
+- Trigger assemblies  
+- Blade cores  
+- Battery packs  
+
+### Crafted  
+- Pistols, SMGs, shotguns  
+- Monoblades, machetes  
+- Rail pistols  
+- EMP grenades  
+
+### Advanced  
+- Smartguns  
+- Rail carbines  
+- Plasma cutters  
+- Drone-mounted weapons  
+
+---
+
+# 🛡️ **Armor & Protective Gear**  
+### Raw  
+- Kevlar weave  
+- Ceramic plates  
+- Smart fabric  
+
+### Processed  
+- Armor panels  
+- Reinforced vests  
+- Helmet shells  
+
+### Crafted  
+- Light armor  
+- Tactical armor  
+- Riot shields  
+
+### Advanced  
+- Reactive armor  
+- Thermal-dampening suits  
+- Stealth fabric cloaks  
+
+---
+
+# 📦 **Utility Gear**  
+### Raw  
+- Plastic casings  
+- Metal housings  
+
+### Processed  
+- Tool modules  
+- Battery packs  
+
+### Crafted  
+- Lockpicks (electronic)  
+- Multitools  
+- Portable scanners  
+- Flashlights  
+
+### Advanced  
+- Holo-projectors  
+- Portable signal jammers  
+- Microdrones  
+
+---
+
+# 🧰 **Tools & Industrial Equipment**  
+### Raw  
+- Steel rods  
+- Composite handles  
+
+### Processed  
+- Motorized tool heads  
+- Welding tips  
+
+### Crafted  
+- Welders  
+- Concrete cutters  
+- Pipe wrenches  
+- Fabrication tools  
+
+### Advanced  
+- Microfabricators  
+- Nanoprint toolkits  
+- Industrial exoskeletons  
+
+---
+
+# 🧪 **Chemicals & Consumables**  
+### Raw  
+- Solvents  
+- Reagents  
+- Stimulant bases  
+
+### Processed  
+- Painkillers  
+- Combat stims  
+- Sleep patches  
+- Detox kits  
+
+### Crafted  
+- Medkits  
+- Combat drug cocktails  
+- Repair foam  
+- Coolant sprays  
+
+---
+
+# 🍲 **Food & Sustenance**  
+### Raw  
+- Hydroponic greens  
+- Synthmeat blocks  
+- Nutrient paste  
+
+### Processed  
+- Meal packs  
+- Protein bars  
+- Street food portions  
+
+### Crafted  
+- High-energy rations  
+- Luxury meals (rare)  
+
+---
+
+# 🗃️ **Data & Info Items**  
+### Raw  
+- Blank chips  
+- Storage wafers  
+
+### Processed  
+- Encrypted drives  
+- Data shards  
+- Access keys  
+
+### Crafted  
+- Black-market data  
+- Corp intel packages  
+- Hacking scripts (represented as items)  
+
+---
+
+# 🛠️ **Infrastructure Modules**  
+### Raw  
+- Wiring bundles  
+- Pipe sections  
+
+### Processed  
+- Power nodes  
+- Water pumps  
+- Air filtration units  
+
+### Crafted  
+- Power grids  
+- Water systems  
+- Ventilation networks  
+- Surveillance networks  
+
+---
+Crafting tree:
+TIER 0 — RAW MATERIALS
+----------------------
+[concrete_rubble]
+[rebar]
+[steel_scrap]
+[composite_sheet]
+[circuit_board]
+[microchip]
+[fiber_optic]
+[gene_slurry]
+[vat_tissue]
+[gun_frame]
+[kevlar_weave]
+[ceramic_plate]
+[solvent_base]
+[reagent]
+[blank_data_chip]
+[wiring_bundle]
+[bearing]
+[tubing]
+
+
+TIER 1 — PROCESSED
+------------------
+[concrete_rubble] + [rebar]
+    -> [reinforced_concrete_block]
+
+[steel_scrap]
+    -> [steel_plating]
+
+[composite_sheet]
+    -> [composite_panel]
+
+[steel_scrap] + [bearing]
+    -> [servo_motor]
+
+[tubing] + [steel_scrap]
+    -> [hydraulic_piston]
+
+[circuit_board] + [microchip x2]
+    -> [logic_board]
+
+[microchip] + [fiber_optic]
+    -> [sensor_array]
+
+[microchip] + [capacitor]
+    -> [power_regulator]
+
+[vat_tissue]
+    -> [biograft]
+
+[gene_slurry] + [microchip]
+    -> [neural_pad]
+
+[steel_plating]
+    -> [barrel]
+
+[steel_scrap] + [microchip]
+    -> [trigger_assembly]
+
+[kevlar_weave] + [ceramic_plate]
+    -> [armor_panel]
+
+[solvent_base] + [reagent]
+    -> [stimulant_base]
+
+[blank_data_chip] + [logic_board]
+    -> [encrypted_drive]
+
+[wiring_bundle] + [power_regulator]
+    -> [power_node]
+
+[hydraulic_piston] + [servo_motor]
+    -> [water_pump]
+
+[composite_panel]
+    -> [air_filter]
+
+
+TIER 2 — CRAFTED
+----------------
+[reinforced_concrete_block]
+    -> [wall]
+
+[steel_plating]
+    -> [door]
+
+[composite_panel]
+    -> [catwalk]
+
+[servo_motor]
+    -> [drone_actuator]
+
+[hydraulic_piston] + [servo_motor]
+    -> [lift_system]
+
+[sensor_array] + [logic_board]
+    -> [surveillance_node]
+
+[logic_board] + [casing]
+    -> [access_terminal]
+
+[biograft] + [neural_pad]
+    -> [implant]
+
+[neural_pad] + [microchip]
+    -> [neural_jack]
+
+[gun_frame] + [barrel] + [trigger_assembly]
+    -> [pistol]
+
+[composite_panel] + [steel_plating]
+    -> [monoblade]
+
+[power_regulator] + [casing]
+    -> [EMP_grenade]
+
+[armor_panel] + [kevlar_weave]
+    -> [tactical_armor]
+
+[stimulant_base] + [biograft]
+    -> [medkit]
+
+[solvent_base] + [composite_dust]
+    -> [repair_foam]
+
+[encrypted_drive] + [data_shard]
+    -> [corp_intel_package]
+
+[power_node] + [wiring_bundle]
+    -> [power_grid]
+
+[air_filter] + [duct_segment]
+    -> [ventilation_network]
+
+[surveillance_node] + [wiring_bundle]
+    -> [surveillance_network]
+
+
+TIER 3 — ADVANCED
+-----------------
+[access_terminal] + [neural_jack] + [logic_board x2]
+    -> [cyberdeck]
+
+[sensor_array] + [power_regulator]
+    -> [smart_weapon_module]
+
+[implant] + [stimulant_base]
+    -> [combat_implant]
+
+[biograft] + [composite_panel]
+    -> [bio_reinforcement_kit]
+
+[pistol] + [smart_weapon_module]
+    -> [smartgun]
+
+[barrel] + [power_regulator] + [composite_panel]
+    -> [rail_carbine]
+
+[drone_actuator] + [smart_weapon_module]
+    -> [drone_weapon_mount]
+
+[tactical_armor] + [sensor_array]
+    -> [reactive_armor]
+
+[smart_fabric] + [power_regulator]
+    -> [stealth_cloak]
+
+[stimulant_base] + [reagent x2] + [biograft]
+    -> [combat_drug_cocktail]
+
+[corp_intel_package] + [encrypted_drive]
+    -> [black_market_data]
+
+[surveillance_network] + [smart_weapon_module]
+    -> [automated_security_grid]
+
+
+_____________
+Jobs:
+These are the DF professions reinterpreted for a Chiba/Night City/Sprawl setting.
+
+    Construction Tech — concrete, steel, structural fabrication
+
+    Machinist — metalworking, mechanical parts
+
+    Electronics Tech — chips, boards, sensors
+
+    Ripperdoc — implants, biotech, trauma care
+
+    Biotech Engineer — gene slurry, vat tissue, organ mods
+
+    Gunsmith — firearms, barrels, triggers
+
+    Armor Tech — kevlar, plating, tactical gear
+
+    Chemtech — stims, solvents, medkits
+
+    Decker — cyberdecks, data items, encryption
+
+    Drone Tech — actuators, drone frames, automation
+
+    Infrastructure Engineer — power, water, air, surveillance networks
+    
+RAW MATERIALS
+(concrete rubble, steel scrap, circuit boards, vat tissue, gun frames, kevlar weave)
+        |
+        v
+CONSTRUCTION TECH --------------------+
+(processes concrete, steel, composites)|
+        |                              |
+        v                              |
+STRUCTURAL PARTS                       |
+(blocks, panels, plating)              |
+        |                              |
+        v                              |
+MACHINIST -----------------------------+
+(servo motors, pistons, barrels)       |
+        |                              |
+        v                              |
+MECHANICAL ASSEMBLIES                  |
+(drone actuators, lift systems)        |
+        |                              |
+        +------------------------------+
+        |
+        v
+ELECTRONICS TECH ----------------------+
+(logic boards, sensors, regulators)    |
+        |                              |
+        v                              |
+ELECTRONIC ASSEMBLIES                  |
+(terminals, surveillance nodes)        |
+        |                              |
+        +------------------------------+
+        |
+        v
+RIPPERDOC / BIOTECH ENGINEER ----------+
+(implants, neural pads, biografts)     |
+        |                              |
+        v                              |
+BIOTECH DEVICES                        |
+(neural jacks, reinforcement kits)     |
+        |                              |
+        +------------------------------+
+        |
+        v
+GUNSMITH ------------------------------+
+(pistols, barrels, triggers)           |
+        |                              |
+        v                              |
+WEAPONS                                |
+(monoblades, pistols, EMP grenades)    |
+        |                              |
+        +------------------------------+
+        |
+        v
+ARMOR TECH ----------------------------+
+(armor panels, tactical armor)         |
+        |                              |
+        v                              |
+ARMOR                                  |
+(reactive armor, stealth cloaks)       |
+        |                              |
+        +------------------------------+
+        |
+        v
+CHEMTECH ------------------------------+
+(stimulants, medkits, drug cocktails)  |
+        |                              |
+        v                              |
+CHEMICAL PRODUCTS                      |
+        |                              |
+        +------------------------------+
+        |
+        v
+DECKER -------------------------------+
+(data shards, encrypted drives)       |
+        |                             |
+        v                             |
+DATA DEVICES                          |
+(cyberdecks, intel packages)          |
+        |                             |
+        +-----------------------------+
+        |
+        v
+DRONE TECH ----------------------------+
+(drone actuators, drone frames)        |
+        |                              |
+        v                              |
+DRONE SYSTEMS                          |
+(drone weapons, surveillance drones)   |
+        |                              |
+        +------------------------------+
+        |
+        v
+INFRASTRUCTURE ENGINEER --------------+
+(power nodes, pumps, filters)          |
+        |                              |
+        v                              |
+INFRASTRUCTURE NETWORKS                |
+(power grids, ventilation, security)   |
+
+
+_______________________________________
+How Jobs Interlock (DF‑style chains)
+Construction Tech → Machinist → Electronics Tech
+
+Used for: smartguns, cyberdecks, drones
+Ripperdoc + Electronics Tech
+
+Used for: implants, neural jacks, cyberdecks
+Gunsmith + Electronics Tech
+
+Used for: smart weapon modules, rail carbines
+Armor Tech + Electronics Tech
+
+Used for: reactive armor, stealth cloaks
+Chemtech + Biotech Engineer
+
+Used for: combat drug cocktails, medkits
+Decker + Electronics Tech
+
+Used for: encrypted drives, intel packages
+Infrastructure Engineer + Electronics Tech
+
+Used for: automated security grids
+
+
+____________________________
+Workers improve by doing, studying, and mentorship, with each job having a tiered curriculum and unlockable capabilities.
+
+Expanded:
+
+    Hands‑on practice: performing tasks increases skill XP.
+
+    Workshop modules: each facility offers training programs.
+
+    Mentorship: high‑skill workers accelerate training for novices.
+
+    Certification tiers: Novice → Skilled → Expert → Master.
+
+    Unlocks: higher tiers unlock advanced recipes, safer work, faster production, and lower failure rates.
+
+    Cross‑discipline synergy: some advanced crafts require multiple trained roles.
+    
+    
+NOVICE → SKILLED → EXPERT → MASTER
+   |         |         |        |
+Basic tasks  Standard   Advanced  Prototype /
+only         crafting   crafting  experimental tech
+
+🏗️ Construction Tech
+Training Modules
+
+    Novice: concrete mixing, basic wall assembly
+
+    Skilled: reinforced structures, catwalks, ductwork
+
+    Expert: multi‑level architecture, load‑bearing analysis
+
+    Master: arcology retrofits, structural optimization
+
+Unlocks
+
+    Faster building
+
+    Reduced collapse risk
+
+    Ability to fabricate advanced composite structures
+
+⚙️ Machinist
+Training Modules
+
+    Novice: cutting, shaping, basic metalwork
+
+    Skilled: servo motors, pistons, gear assemblies
+
+    Expert: precision machining, weapon barrels
+
+    Master: micro‑machining, railgun components
+
+Unlocks
+
+    Reduced mechanical failure
+
+    Access to advanced mechanical assemblies
+
+🔌 Electronics Tech
+Training Modules
+
+    Novice: soldering, basic circuit repair
+
+    Skilled: logic boards, sensor arrays
+
+    Expert: regulators, wireless modules
+
+    Master: cyberdeck internals, smart‑weapon modules
+
+Unlocks
+
+    Lower short‑circuit risk
+
+    Faster fabrication
+
+    Access to high‑end electronics
+
+🧬 Biotech Engineer
+Training Modules
+
+    Novice: tissue handling, sterile technique
+
+    Skilled: biografts, synth‑organ prep
+
+    Expert: neural pad fabrication, organ mods
+
+    Master: vat‑grown organs, combat‑grade implants
+
+Unlocks
+
+    Reduced infection risk
+
+    Access to advanced implants
+
+🩺 Ripperdoc
+Training Modules
+
+    Novice: basic trauma care
+
+    Skilled: implant installation
+
+    Expert: neural interface surgery
+
+    Master: experimental augmentation
+
+Unlocks
+
+    Lower surgery failure
+
+    Ability to install high‑tier implants
+
+🔫 Gunsmith
+Training Modules
+
+    Novice: weapon cleaning, basic repair
+
+    Skilled: pistol assembly, trigger groups
+
+    Expert: monoblades, custom barrels
+
+    Master: smartgun integration, rail systems
+
+Unlocks
+
+    Reduced weapon jamming
+
+    Access to advanced firearms
+
+🛡️ Armor Tech
+Training Modules
+
+    Novice: kevlar stitching
+
+    Skilled: armor panels, ceramic plating
+
+    Expert: tactical armor fabrication
+
+    Master: reactive armor, stealth fabric
+
+Unlocks
+
+    Higher armor durability
+
+    Access to advanced armor types
+
+🧪 Chemtech
+Training Modules
+
+    Novice: solvent mixing
+
+    Skilled: stimulants, painkillers
+
+    Expert: medkits, repair foam
+
+    Master: combat drug cocktails
+
+Unlocks
+
+    Reduced contamination risk
+
+    Access to high‑grade chemicals
+
+🧠 Decker
+Training Modules
+
+    Novice: basic encryption
+
+    Skilled: data shards, encrypted drives
+
+    Expert: intel packages, intrusion scripts
+
+    Master: cyberdeck optimization, black‑market data
+
+Unlocks
+
+    Faster data processing
+
+    Access to advanced data items
+
+🤖 Drone Tech
+Training Modules
+
+    Novice: drone cleaning, battery swaps
+
+    Skilled: actuators, frames
+
+    Expert: drone weapons, sensor rigs
+
+    Master: autonomous drone systems
+
+Unlocks
+
+    Reduced drone malfunction
+
+    Access to advanced drone builds
+
+🏭 Infrastructure Engineer
+Training Modules
+
+    Novice: wiring, pipe fitting
+
+    Skilled: power nodes, pumps, filters
+
+    Expert: power grids, ventilation networks
+
+    Master: automated security grids
+
+Unlocks
+
+    Reduced network failure
+
+    Access to advanced infrastructure
+
+🎓 Training Methods
+1. Hands‑On Work
+
+XP gained by performing job tasks.
+2. Workshop Modules
+
+Each facility offers training sessions:
+
+    Concrete shop
+
+    Machine shop
+
+    Microelectronics lab
+
+    Biotech clinic
+
+    Armor shop
+
+    Chem lab
+
+    Drone bay
+
+    Data center
+
+3. Mentorship
+
+Masters accelerate novice training.
+4. Study Items
+
+Workers can study:
+
+    Training manuals
+
+    Data shards
+
+    Practice rigs
+    
+    
+    
+    
+_______________________
+WORLDGEN TEMPLATE
+
+Below is the full template, broken into the same phases DF uses: Parameters → Geography → Factions → Sites → History → Artifacts → Threats → Starting Conditions.
+1. World Parameters
+WORLD_NAME: <generated>
+WORLD_SIZE: SMALL | MEDIUM | LARGE
+TECH_LEVEL: LOW | MID | HIGH
+CORPORATE_DOMINANCE: LOW | MEDIUM | HIGH
+MUTATION_INDEX: LOW | MEDIUM | HIGH
+AI_AUTONOMY: LOW | MEDIUM | HIGH
+POPULATION_DENSITY: SPARSE | NORMAL | DENSE
+
+2. Geography Generation
+
+Cyberpunk geography is urban sprawl, not wilderness.
+DISTRICT_TYPES:
+  - Industrial Wasteland
+  - Corporate Arcology
+  - Slum Block
+  - Neon Market
+  - Undercity Tunnels
+  - Rooftop Gardens
+  - Toxic Spill Zone
+  - Abandoned Metro
+  - Logistics Hub
+  - Data Center Sector
+  
+TERRAIN FEATURES:
+  - Elevated Highways
+  - Flooded Underlevels
+  - Power Grid Nodes
+  - Water Treatment Plants
+  - Air Filtration Towers
+  - Drone Corridors
+  - Blackout Zones
+
+ENVIRONMENTAL HAZARDS:
+  - Radiation Pockets
+  - Chemical Fog
+  - Rolling Blackouts
+  - Rogue Drones
+  - Structural Collapse Zones
+
+3. Factions & Civs
+
+Equivalent to DF civilizations.
+Faction Archetypes:
+  - Street Crew (your dwarves)
+  - Megacorp Enclave
+  - Syndicate Family (Yakuza/Triad)
+  - Nomad Caravans
+  - Mutant Gangs
+  - Techno‑Cult Cells
+  - Rogue AI Collectives
+  
+Faction Parameters:
+  NAME: <generated>
+  ALIGNMENT: Neutral | Hostile | Corporate | Anarchic
+  TECH_LEVEL: Low | Mid | High
+  TERRITORY: District list
+  SPECIALTY: Implants | Weapons | Data | Drones | Biotech
+  LEADER: <generated>
+
+4. Sites & Settlements
+
+Equivalent to DF towns, fortresses, lairs.
+Site Types:
+  - Arcology Floor
+  - Slum Block
+  - Warehouse Complex
+  - Abandoned Factory
+  - Data Vault
+  - Biotech Clinic
+  - Drone Hangar
+  - Syndicate Safehouse
+  - Corp Security Hub
+
+SITE PARAMETERS:
+  OWNER: Faction
+  POPULATION: <number>
+  INFRASTRUCTURE: Power | Water | Air | Surveillance
+  THREATS: Gangs | Drones | Collapse | Chemical
+  RESOURCES: Electronics | Biotech | Scrap | Food
+
+5. Historical Simulation
+
+Equivalent to DF’s world history.
+EVENTS:
+  - Corporate Coup
+  - Syndicate War
+  - Drone Uprising
+  - Chemical Spill
+  - Arcology Collapse
+  - Data Heist
+  - Biotech Breakthrough
+  - AI Emergence
+
+
+HISTORICAL FIGURE:
+  NAME: <generated>
+  ROLE: Fixer | Ripperdoc | Gang Boss | Corp Exec | Decker
+  LEGACY: Created Artifact | Led War | Founded Faction
+
+6. Artifacts & Legendary Tech
+
+Equivalent to DF artifacts.
+ARTIFACT TYPES:
+  - Prototype Cyberdeck
+  - Experimental Implant
+  - Smartgun Prototype
+  - Rogue AI Core
+  - Biotech Organ
+  - Quantum Encryption Key
+
+ARTIFACT GENERATION:
+  CREATOR: Historical Figure
+  MATERIALS: High‑tier components
+  POWER: Unique ability
+  CURSE: Side effect (cyberpsychosis, AI influence)
+  
+  
+7. Megathreats
+
+Equivalent to DF megabeasts.
+
+MEGATHREATS:
+  - Rogue Construction Mech
+  - Sewer Leviathan (bio‑abomination)
+  - Autonomous Kill‑Drone Swarm
+  - Rampant AI in Robot Body
+  - Mutant Colony
+  - Corp Black‑Ops Strike Team
+
+THREAT PARAMETERS:
+  POWER_LEVEL: 1–10
+  TERRITORY: District list
+  BEHAVIOR: Aggressive | Territorial | Dormant
+  LOOT: Rare tech, implants, data
+
+
+8. Starting Conditions
+
+Equivalent to DF embark.
+Crew Setup
+CREW:
+  MEMBERS: 6–12
+  ROLES:
+    - Construction Tech
+    - Machinist
+    - Electronics Tech
+    - Ripperdoc
+    - Chemtech
+    - Decker
+  STARTING_GEAR:
+    - Basic tools
+    - Low‑tier weapons
+    - Medkits
+    - Scrap electronics
+
+START_SITE:
+  TYPE: Slum Block | Warehouse | Undercity Sector
+  RESOURCES: Scrap | Food | Water | Power
+  THREATS: Gangs | Drones | Chemical Fog
+
+Final Synthesis
+
+This worldgen template gives you:
+
+    DF‑style procedural structure
+    
+    
+Micro systems that trigger reaction needs in the player and NPC's:
+1. Need decay — the universal pressure engine
+Every entity has needs that tick down:
+    Hunger
+    Thirst
+    Fatigue
+    Social
+    Safety
+2. Environmental drift — slow changes that create new constraints
+3. Resource regeneration — the scarcity/opportunity cycle
+Food, water, loot, and materials respawn slowly.
+This creates:
+    Competition
+    Migration
+    Conflict
+    Exploration
+4. Territory pressure — factions expand or contract
+A simple “influence field” (1 byte per tile) that spreads or shrinks.
+This creates:
+    Border tension
+    Patrols
+    Raids
+    Refugees
+    Predator zones
+5. Hazard propagation — danger spreads
+Fire, corruption, poison, alarms, trace, ICE escalation.
+This creates:
+    Urgency
+    Evacuation
+    Heroic rescues
+    Cascading failures
+6. Item decay — equipment slowly breaks
+Weapons dull, food spoils, modules corrupt.
+This creates:
+    Maintenance
+    Scavenging
+    Risk
+    Improvisation
+7. Memory scars — past events create future behavior
+
+Entities remember:
+    Last injury
+    Last enemy
+    Last safe place
+    Last resource location
+
+This creates:
+    Fear loops
+    Revenge arcs
+    Avoidance patterns
+    Emergent personalities
+    
+8.  Micro‑economy — simple supply/demand
+
+Track:
+    Local food supply
+    Local danger
+    Local population
+    Local wealth
+
+This creates:
+    Migration
+    Trade
+    Theft
+    Conflict 
+9.     Opportunity pulses — periodic events
+Timers generate:
+    Rainfall
+    Festivals
+    Market days
+    Predator hunts
+    Patrol sweeps
+
+10. Random faults — DF’s “glitches”
+Small random events:
+    Pathfinding error
+    Mistake
+    Panic
+    Overreaction
+    Dropped item
+
+11. Micro‑quests — tiny goals that emerge from state
+Examples:
+    “Find water”
+    “Escape predator”
+    “Repair module”
+    “Recover stolen item”
+    “Reach safe zone”
+These are generated automatically from needs + environment.
+Examples:
+How these micro‑systems create trigger situations
+
+Let’s show the chain reaction:
+Example chain
+
+    Environmental drift → drought
+
+    Resource regeneration → food nodes dry up
+
+    Need decay → hunger spikes
+
+    Territory pressure → factions move inward
+
+    Social proximity → crowding → stress
+
+    Hazard propagation → predators follow prey
+
+    Memory scars → entities avoid past danger zones
+
+    Micro‑economy → scarcity → theft
+
+    Random faults → someone drops food
+
+    Micro‑quests → “recover food”
+
+    Rule collision behavior → fights, escapes, alliances, betrayals
+    
+    
+Complex examples:
+Chain Reaction 2: “Black Clinic Debt Cascade”
+
+Inspired by Molly’s backstory and Night City’s ripperdoc economy.
+1. Micro‑economy shifts
+
+Local ripperdoc prices spike due to gang pressure.
+2. Need decay
+
+Your avatar’s cyberware stability drops—maintenance required.
+3. Resource regeneration
+
+The clinic’s biogel supply is depleted.
+4. Memory scars
+
+Your avatar avoids a clinic where they were burned before.
+5. Territory pressure
+
+A gang expands into the safe zone around your preferred clinic.
+6. Hazard propagation
+
+Gang presence increases violence → clinic goes into lockdown.
+7. Opportunity pulse
+
+A street market opens offering illicit biogel.
+8. Rule collision behavior
+
+Your avatar must choose:
+
+    Buy illegal biogel
+
+    Risk entering gang territory
+
+    Attempt a self‑patch
+
+    Hack the clinic’s lockdown
+
+    Steal biogel from a gang stash
+
+Result
+
+A simple “need cyberware maintenance” becomes a multi‑system economic and territorial story arc.
+
+
+Chain Reaction 4: “Corporate Data‑War Ripple”
+
+Inspired by Neuromancer’s AI politics and Cyberpunk 2077’s megacorp conflicts.
+1. Territory pressure
+
+A megacorp expands its influence field into a neutral grid.
+2. Resource regeneration
+
+Data caches in the area respawn with corp‑tagged encryption.
+3. Need decay
+
+Your avatar’s credit reserves drop—needs a job.
+4. Micro‑economy
+
+Corp expansion increases demand for freelance runners.
+5. Opportunity pulse
+
+A corp posts a bounty on a rival’s data shard.
+6. Hazard propagation
+
+Rival corp deploys counter‑ICE in the same region.
+7. Random faults
+
+A rogue daemon leaks partial shard metadata.
+8. Rule collision behavior
+
+Your avatar must choose:
+
+    Work for corp A
+
+    Work for corp B
+
+    Play both sides
+
+    Steal the shard for yourself
+
+    Leak the shard publicly
+
+Result
+
+A simple “need money” becomes a corporate espionage arc.
+
+
+Chain Reaction A: “Street‑Level Bioware Contamination Spiral”
+
+A tiny biological glitch becomes a neighborhood‑wide crisis.
+1. Bio‑decay pressure
+
+A cheap knockoff muscle‑weave implant begins to denature in a single street vendor’s stall.
+2. Environmental drift
+
+Heat wave accelerates the decay → implant fluid becomes unstable.
+3. Hazard propagation
+
+Contaminated implants cause mild seizures in early adopters → panic spreads.
+4. Territory pressure
+
+Local gang claims the vendor is sabotaging their turf → they shut down the market.
+5. Social proximity
+
+Crowds fleeing the market overwhelm nearby clinics → triage failures.
+6. Micro‑economy shift
+
+Black‑market ripperdocs raise prices due to sudden demand.
+7. Random faults
+
+A courier drops a crate of contaminated implants → more people exposed.
+8. Rule collision behavior
+
+NPCs choose between:
+
+    Seeking emergency treatment
+
+    Blaming rival gangs
+
+    Hoarding clean implants
+
+    Fleeing the district
+
+    Retaliating against vendors
+
+Result
+
+A single faulty implant batch becomes a district‑wide bioware panic.
+
+Chain Reaction B: “Megacorp Water‑Ration Riot”
+
+Inspired by Night City scarcity loops.
+1. Resource scarcity
+
+A megacorp quietly reduces water pressure in low‑income blocks.
+2. Need decay
+
+Residents’ hydration and hygiene needs spike.
+3. Environmental drift
+
+Heat wave intensifies → dehydration risk rises.
+4. Social proximity
+
+Crowding at public fountains → tension builds.
+5. Territory pressure
+
+A local gang begins “protecting” water sources → extortion starts.
+6. Hazard propagation
+
+Fights break out → police deploy shock drones → panic spreads.
+7. Opportunity pulse
+
+A street preacher claims a hidden cistern exists → crowds mobilize.
+8. Rule collision behavior
+
+NPCs choose between:
+
+    Joining the search
+
+    Rioting
+
+    Looting water shipments
+
+    Negotiating with gangs
+
+    Fleeing the district
+
+Result
+
+A minor water‑pressure tweak becomes a full‑scale riot and territorial reshuffle.
+
+Chain Reaction C: “Black Clinic Organ‑Shortage Spiral”
+
+A Neuromancer‑style medical scarcity cascade.
+1. Organ supply drift
+
+A black clinic’s organ printer jams → daily output drops.
+2. Need decay
+
+Patients with failing bioware need replacements urgently.
+3. Micro‑economy shift
+
+Organ prices spike → desperate buyers seek illegal sources.
+4. Territory pressure
+
+Organ‑harvesting gangs expand operations to meet demand.
+5. Hazard propagation
+
+Rumors of kidnappings spread → paranoia rises.
+6. Memory scars
+
+NPCs avoid alleys where past abductions occurred → crowding in “safe” zones.
+7. Random faults
+
+A clinic assistant mislabels a donor → incompatible transplant → death → outrage.
+8. Rule collision behavior
+
+NPCs choose between:
+
+    Paying gang prices
+
+    Attempting DIY organ repair
+
+    Protecting loved ones
+
+    Joining vigilante groups
+
+    Fleeing the district
+
+Result
+
+A single printer jam becomes a city‑wide organ‑harvesting crisis.
+
+Chain Reaction D: “Street‑Drug Feedback Loop”
+
+Inspired by Case’s amphetamine dependency and cyberpunk street chemistry.
+1. Chemical drift
+
+A street chemist tweaks a popular stimulant formula → slightly unstable batch.
+2. Need decay
+
+Users’ tolerance rises → they consume more.
+3. Hazard propagation
+
+Unstable batch causes micro‑seizures → panic among addicts.
+4. Territory pressure
+
+Dealers fight over “clean” supply → turf war ignites.
+5. Social proximity
+
+Crowds gather around dealers → violence spreads.
+6. Micro‑economy shift
+
+Price spikes → theft and mugging increase.
+7. Random faults
+
+A courier accidentally mixes unstable batch with clean stock → widespread contamination.
+8. Rule collision behavior
+
+NPCs choose between:
+
+    Seeking detox
+
+    Hoarding clean product
+
+    Joining gang conflict
+
+    Fleeing the area
+
+    Turning vigilante
+
+Result
+
+A tiny chemical tweak becomes a district‑wide drug war.
+⚡ Chain Reaction E: “Corporate Eviction Cascade”
+
+Inspired by Chiba City’s corporate dominance.
+1. Influence field expansion
+
+A megacorp buys a block of slum housing.
+2. Need decay
+
+Residents’ housing stability drops → eviction notices issued.
+3. Social proximity
+
+Crowded shelters → disease risk rises.
+4. Environmental drift
+
+Rainstorm floods the shelters → desperation spikes.
+5. Territory pressure
+
+Gangs offer “protection” for displaced residents → extortion begins.
+6. Hazard propagation
+
+Tensions escalate → street fights → police crackdown.
+7. Opportunity pulse
+
+A corp recruiter offers jobs to displaced residents → strings attached.
+8. Rule collision behavior
+
+NPCs choose between:
+
+    Joining the corp
+
+    Joining gangs
+
+    Protesting
+
+    Sabotaging corp property
+
+    Migrating to another district
+
+Result
+
+A simple real‑estate acquisition becomes a full‑scale social upheaval.
+Analyze the above examples for what common micro-systems are needed, including considering stories of player growth into a stable, wealthy life within this gritty setting.
