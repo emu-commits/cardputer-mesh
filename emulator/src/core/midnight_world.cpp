@@ -638,7 +638,10 @@ static uint8_t do_work(World& w, Agent& a) {
         gain_skill(w, a, master ? T.train_rate * 18 : 0);
         return ACT_WORK;
     }
-    uint8_t home = (w.apt_district < w.district_count) ? w.apt_district : w.home;
+    // off-hours: head home. With no apartment you doss at work (home == work, so no
+    // commute at all); once you've rented, home is an ADJACENT zone -> a one-hop
+    // daily commute (#5/#8), not a multi-zone scramble.
+    uint8_t home = (w.apt_district < w.district_count) ? w.apt_district : w.work_district;
     if (a.loc != home) { uint8_t nx = next_hop_toward(w, a.loc, home); if (nx != a.loc) { a.loc = nx; return ACT_MOVE; } }
     return ACT_REST;
 }
@@ -698,14 +701,24 @@ static uint8_t do_craft(World& w, Agent& a) {
     return ACT_WORK;
 }
 
-// FC_RENT_APT (player milestone): sign a lease here (3 periods up front), then
-// fall back to the work/seek loop.
+// FC_RENT_APT (player milestone): rent a flat in a DIFFERENT zone, adjacent to work
+// (#8 — one-hop daily commute + room for encounters), 3 periods up front.
 static uint8_t do_rent_apt(World& w, Agent& a) {
     const MidTunables& T = g_mtune;
+    // choose the home zone: a neighbour of the work district (not work itself)
+    uint8_t home_zone = a.loc;
+    if (w.work_district < w.district_count) {
+        const District& wd = w.districts[w.work_district];
+        for (int i = 0; i < wd.deg; ++i) {
+            uint8_t nb = wd.adj[i];
+            if (nb != NONE8 && nb < w.district_count && nb != w.work_district) { home_zone = nb; break; }
+        }
+    }
+    if (a.loc != home_zone) { uint8_t nx = next_hop_toward(w, a.loc, home_zone); if (nx != a.loc) { a.loc = nx; return ACT_MOVE; } }
     int deposit = (T.rent_base + w.districts[a.loc].prosperity / 8) * 3;
     if ((int)a.money >= deposit) {
-        a.money -= (uint32_t)deposit; record_txn(w, a, -deposit, TXN_RENT);
         w.apt_district = a.loc;
+        a.money -= (uint32_t)deposit; record_txn(w, a, -deposit, TXN_RENT);
         push_event(w, EV_RECRUIT, a.loc, 0, F_COUNT);   // "signed a lease" beat
         w.focus = (a.status & AF_EMPLOYED) ? FC_WORK : FC_FIND_WORK;
         return ACT_REST;
@@ -1748,7 +1761,12 @@ void tick_world(World& w) {
         for (int i = 0; i < w.agent_count; ++i) {
             Agent& a = w.agents[i];
             if (!(a.status & AF_ALIVE)) continue;
-            int rent = T.rent_base + w.districts[a.loc].prosperity / 8;
+            // the protagonist pays rent ONCE/day on their APARTMENT only (#4); with no
+            // apartment they doss at work for free. NPC housing stays abstract (at loc).
+            uint8_t rent_loc;
+            if (a.status & AF_PLAYER) { if (w.apt_district >= w.district_count) continue; rent_loc = w.apt_district; }
+            else rent_loc = a.loc;
+            int rent = T.rent_base + w.districts[rent_loc].prosperity / 8;
             if ((int)a.money >= rent) { a.money -= (uint32_t)rent; record_txn(w, a, -rent, TXN_RENT); a.status &= (uint8_t)~AF_IN_DEBT; }
             else { record_txn(w, a, -(int32_t)a.money, TXN_RENT); a.money = 0; a.status |= AF_IN_DEBT; bump_need(a.need[ND_STRESS], 6); }
         }

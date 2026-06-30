@@ -144,9 +144,14 @@ private:
     }
 
     std::string fmt_txn(const mc::Txn& t) {
-        char b[48];
+        char b[64];
         long v = t.amount < 0 ? -(long)t.amount : (long)t.amount;
-        std::snprintf(b, sizeof b, "%s$%ld %s", t.amount < 0 ? "-" : "+", v, mc::txn_reason_name(t.reason));
+        const char* sign = t.amount < 0 ? "-" : "+";
+        if (t.reason == mc::TXN_RENT && world_.apt_district < world_.district_count)
+            std::snprintf(b, sizeof b, "%s$%ld rent (%s)", sign, v,
+                          mc::district_type_name(world_.districts[world_.apt_district].type));
+        else
+            std::snprintf(b, sizeof b, "%s$%ld %s", sign, v, mc::txn_reason_name(t.reason));
         return std::string(b);
     }
 
@@ -187,35 +192,22 @@ private:
             pending_district_ = world_.agents[0].loc;
     }
 
-    static bool on_edge(int x, int y) { return x == 0 || y == 0 || x == mc::LMAP_W - 1 || y == mc::LMAP_H - 1; }
-
-    // pick the nearest walkable map-boundary tile as the crossing point
-    void pick_edge_target() {
-        int bd = 1 << 30, bx = px_, by = py_;
-        auto consider = [&](int x, int y) {
-            if (!mc::localmap_walkable(local_, x, y)) return;
-            int d = iabs(x - px_) + iabs(y - py_);
-            if (d < bd) { bd = d; bx = x; by = y; }
-        };
-        for (int x = 0; x < mc::LMAP_W; ++x) { consider(x, 0); consider(x, mc::LMAP_H - 1); }
-        for (int y = 0; y < mc::LMAP_H; ++y) { consider(0, y); consider(mc::LMAP_W - 1, y); }
-        tx_ = bx; ty_ = by;
-    }
-
     // walk the @ one tile toward where the current focus needs it (#9), or — when a
-    // district crossing is pending — toward the edge, then transition (#3). Pure
-    // view animation: it reads the sim's activity but never changes the sim.
+    // district crossing is pending — back to the entry "gate" and then cross (#1: a
+    // visible walk, never an instant jump). Pure view animation; never touches the sim.
     void step_avatar() {
         if (pending_district_ != mc::NONE8) {
-            if (tx_ < 0) pick_edge_target();
-            if ((px_ == tx_ && py_ == ty_) || on_edge(px_, py_)) {
+            int gx = local_.entry_x, gy = local_.entry_y;     // leave via the gate (always reachable)
+            for (int step = 0; step < 3; ++step) {            // brisk but visible
+                if (px_ == gx && py_ == gy) break;
+                int nx = px_, ny = py_;
+                if (mc::localmap_step_toward(local_, px_, py_, gx, gy, &nx, &ny)) { px_ = nx; py_ = ny; }
+                else break;
+            }
+            if (px_ == gx && py_ == gy) {                     // reached the gate -> cross
                 uint8_t d = pending_district_; pending_district_ = mc::NONE8;
                 enter_district(d, /*announce=*/true);
-                return;
             }
-            int nx = px_, ny = py_;
-            if (mc::localmap_step_toward(local_, px_, py_, tx_, ty_, &nx, &ny)) { px_ = nx; py_ = ny; }
-            else { uint8_t d = pending_district_; pending_district_ = mc::NONE8; enter_district(d, true); }
             return;
         }
         // path toward the POI the avatar's current activity calls for (work / market
