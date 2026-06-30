@@ -328,6 +328,31 @@ JackResult jack_in(World& w, int ai);
 int  net_target_count(const World& w);   // # of data targets (datacenters)
 const char* outcome_name(uint8_t cyber_outcome);
 
+// ---- Phase 7: generative Gibson-voice narrator (§7) ------------------------
+// Generative, not enumerated: any single event narrates (the long tail); a
+// growing set of named motifs get richer bespoke phrasing on top. No LLM —
+// template grammar + lexicons, deterministic from the world seed + event.
+enum ArcKind : uint8_t {
+    MA_NONE, MA_LINKED, MA_DEBT_CASCADE, MA_WATER_RIOT, MA_MEGA_RAMPAGE,
+    MA_FEUD, MA_CYBER_FALLOUT, MA_COUNT
+};
+const char* arc_name(uint8_t a);
+std::string narrate_event(const World& w, const Event& e);             // any event -> a line
+std::string narrate_arc(const World& w, uint8_t arc, uint8_t district,
+                        uint8_t prev_kind, uint8_t cur_kind);          // a recognized chain -> a line
+
+// transient aggregator (app-owned, NOT serialized; rebuildable from the stream):
+// watches events and recognizes arcs — a generic "linked pair" plus named motifs.
+struct ArcTracker {
+    int shortage_t[MAX_DISTRICTS], gang_t[MAX_DISTRICTS], riot_t[MAX_DISTRICTS];
+    int mega_t[MAX_DISTRICTS], death_t[MAX_DISTRICTS], heist_t[MAX_DISTRICTS];
+    int last_t[MAX_DISTRICTS];
+    uint8_t last_kind[MAX_DISTRICTS];
+    int heat_until = 0, window = 720;
+    void    reset(int window_ticks);
+    uint8_t ingest(uint8_t kind, uint8_t d, uint8_t data, int t);      // -> ArcKind
+};
+
 // ---- save format (byte-exact, fixed-width) ---------------------------------
 void serialize(const World& w, std::string& out);
 bool deserialize(const std::string& in, World& w);

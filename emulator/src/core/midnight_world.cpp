@@ -1,6 +1,7 @@
 // Midnight City — engine substrate implementation (Phase 1).
 // See midnight_world.h for the architectural contract.
 #include "core/midnight_world.h"
+#include <cstdio>   // snprintf for the narrator (§7)
 
 namespace mid {
 
@@ -1085,6 +1086,177 @@ JackResult jack_in(World& w, int ai) {
         push_event(w, EV_NETALLY, a.loc, (uint8_t)ai, 0);
     }
     return res;
+}
+
+// ============================================================================
+// Phase 7: generative Gibson-voice narrator (§7) — no LLM, deterministic
+// ============================================================================
+namespace {
+uint32_t nhash(uint32_t x) {
+    x ^= x >> 16; x *= 0x7feb352dU; x ^= x >> 15; x *= 0x846ca68bU; x ^= x >> 16; return x;
+}
+const char* atmos(uint32_t h) {
+    static const char* a[8] = { "neon", "rain", "chrome haze", "static", "the sprawl",
+                                "sodium glare", "wet asphalt", "dead air" };
+    return a[h & 7];
+}
+const char* sky(uint32_t h) {
+    static const char* a[4] = { "a sky the color of dead tv", "a bruised, rain-fat sky",
+                                "the chrome dusk", "a sky gone to static" };
+    return a[h & 3];
+}
+} // namespace
+
+const char* arc_name(uint8_t a) {
+    static const char* n[MA_COUNT] = { "-", "linked", "debt-cascade", "water-riot",
+                                       "megathreat-rampage", "feud", "cyber-fallout" };
+    return a < MA_COUNT ? n[a] : "?";
+}
+
+std::string narrate_event(const World& w, const Event& e) {
+    uint32_t h = nhash(w.world_seed ^ (e.kind * 2654435761U) ^ (e.node * 40503U)
+                       ^ (e.agent * 2246822519U) ^ (e.tick * 3266489917U));
+    const char* place = (e.node < w.district_count) ? district_type_name(w.districts[e.node].type) : "the sprawl";
+    const char* who   = (e.agent < w.agent_count)   ? agent_name(w.agents[e.agent].name_id)        : "a stranger";
+    const char* fac   = faction_name(e.data);
+    char b[192];
+    switch (e.kind) {
+        case EV_COMBAT:
+            std::snprintf(b, sizeof b, "Blood and %s in the %s - a deal gone wrong, a debt called in.", atmos(h), place);
+            break;
+        case EV_DEATH: {
+            const char* how = e.data == 1 ? "a blade found the gap in the chrome"
+                            : e.data == 2 ? "the thing in the dark was hungrier"
+                            : e.data == 4 ? "the deck went dark and took them with it"
+                                          : "the street simply stopped feeding them";
+            std::snprintf(b, sizeof b, "%s flatlined in the %s; %s. The %s did not blink.", who, place, how, atmos(h));
+            break; }
+        case EV_TURF_FLIP:
+            std::snprintf(b, sizeof b, "The %s flies new colors - the %s runs it now. Same %s, fresh blood.", place, fac, atmos(h));
+            break;
+        case EV_RAID:
+            std::snprintf(b, sizeof b, "The %s came down hard on the %s. Muzzle-flash under %s.", fac, place, sky(h));
+            break;
+        case EV_THREAT_SPAWN:
+            std::snprintf(b, sizeof b, "Something woke in the %s: a %s, and it is not afraid.", place, threat_name(e.data));
+            break;
+        case EV_THREAT_DEFEAT:
+            std::snprintf(b, sizeof b, "They put the %s down in the %s. A story for the bars, true or not.", threat_name(e.data), place);
+            break;
+        case EV_REFUGEE:
+            std::snprintf(b, sizeof b, "%s ran from the %s with nothing but %s at their back.", who, place, atmos(h));
+            break;
+        case EV_EXTORT:
+            std::snprintf(b, sizeof b, "The %s leans on the %s again - protection, they call it.", fac, place);
+            break;
+        case EV_BOUNTY:
+            std::snprintf(b, sizeof b, "A bounty hits the %s board. Somebody upstairs wants somebody gone.", place);
+            break;
+        case EV_RECRUIT:
+            std::snprintf(b, sizeof b, "%s took the %s's coin. Everybody belongs to someone, eventually.", who, fac);
+            break;
+        case EV_MARKET_DAY:
+            std::snprintf(b, sizeof b, "Market day in the %s - noise, grease-smoke, a moment's mercy under %s.", place, sky(h));
+            break;
+        case EV_RUMOR:
+            std::snprintf(b, sizeof b, "Word moves through the %s like %s: half of it lies.", place, atmos(h));
+            break;
+        case EV_COLLAPSE:
+            std::snprintf(b, sizeof b, "The %s gave way - rebar and dust and a sound like the city exhaling.", place);
+            break;
+        case EV_SHORTAGE: {
+            const char* c = commodity_name(e.data);
+            std::snprintf(b, sizeof b, "The %s ran dry of %s. Scarcity sharpens everything.", place, c);
+            break; }
+        case EV_HEATWAVE:
+            std::snprintf(b, sizeof b, "The heat came down like a hammer; the low blocks went thirsty under %s.", sky(h));
+            break;
+        case EV_LOCKDOWN:
+            std::snprintf(b, sizeof b, "The %s sealed tight - drones at every door, %s in the wires.", place, atmos(h));
+            break;
+        case EV_RIOT:
+            std::snprintf(b, sizeof b, "The %s boiled over - thirst and rage in equal measure, and no one to bill.", place);
+            break;
+        case EV_JACKIN:
+            std::snprintf(b, sizeof b, "%s jacked the %s ice and went under - %s.", who, place, outcome_name(e.data));
+            break;
+        case EV_HEIST:
+            std::snprintf(b, sizeof b, "%s cracked the %s vault and ran with the data. Somewhere, an alarm with teeth.", who, place);
+            break;
+        case EV_FLATLINE:
+            std::snprintf(b, sizeof b, "%s's deck went dark mid-run - flatline, the long fall, the silver static.", who);
+            break;
+        case EV_NETALLY:
+            std::snprintf(b, sizeof b, "%s found a friend in the matrix, of all the cold places to find one.", who);
+            break;
+        default:
+            std::snprintf(b, sizeof b, "The %s turns over in its sleep.", place);
+            break;
+    }
+    return std::string(b);
+}
+
+std::string narrate_arc(const World& w, uint8_t arc, uint8_t district, uint8_t prev_kind, uint8_t cur_kind) {
+    const char* place = (district < w.district_count) ? district_type_name(w.districts[district].type) : "the sprawl";
+    char b[224];
+    switch (arc) {
+        case MA_DEBT_CASCADE:
+            std::snprintf(b, sizeof b, "ARC | The %s: scarcity drew the sharks, the sharks drew the law, and the doors slammed shut. A debt that started small and ate a block.", place);
+            break;
+        case MA_WATER_RIOT:
+            std::snprintf(b, sizeof b, "ARC | The %s went dry, then went up. They came for water and stayed for the reckoning; the old flags burned.", place);
+            break;
+        case MA_MEGA_RAMPAGE:
+            std::snprintf(b, sizeof b, "ARC | The %s remembers the thing that came: it broke them, it scattered them, and then someone broke it. Legends are cheaper than rent.", place);
+            break;
+        case MA_FEUD:
+            std::snprintf(b, sizeof b, "ARC | A death in the %s did not stay buried. Blood answers blood; the ledger never balances.", place);
+            break;
+        case MA_CYBER_FALLOUT:
+            std::snprintf(b, sizeof b, "ARC | A run in the matrix put a price on the %s - and the corp collected in the street. What you steal in the deck, you bleed for in the rain.", place);
+            break;
+        case MA_LINKED: default:
+            std::snprintf(b, sizeof b, "ARC | In the %s, the %s gave way to the %s - one thing leaning on the next, the way this city always works.",
+                          place, event_name(prev_kind), event_name(cur_kind));
+            break;
+    }
+    return std::string(b);
+}
+
+void ArcTracker::reset(int window_ticks) {
+    for (int i = 0; i < MAX_DISTRICTS; ++i) {
+        shortage_t[i] = gang_t[i] = riot_t[i] = mega_t[i] = death_t[i] = heist_t[i] = last_t[i] = -(1 << 28);
+        last_kind[i] = EV_NONE;
+    }
+    heat_until = -(1 << 28);
+    window = window_ticks;
+}
+
+uint8_t ArcTracker::ingest(uint8_t kind, uint8_t d, uint8_t data, int t) {
+    if (kind == EV_HEATWAVE) { heat_until = t + window; return MA_NONE; }
+    if (d == NONE8 || d >= MAX_DISTRICTS) return MA_NONE;
+    int W = window;
+    bool mega = (data == TK_CONSTRUCT_MECH || data == TK_SEWER_LEVIATHAN ||
+                 data == TK_ROGUE_AI_BODY || data == TK_MUTANT_COLONY);
+    // arming
+    if (kind == EV_SHORTAGE) shortage_t[d] = t;
+    if (kind == EV_THREAT_SPAWN && mega) mega_t[d] = t;
+    if ((kind == EV_EXTORT || kind == EV_RAID || kind == EV_TURF_FLIP) && t - shortage_t[d] <= W) gang_t[d] = t;
+    if (kind == EV_RIOT && (t - shortage_t[d] <= W || t < heat_until)) riot_t[d] = t;
+    if (kind == EV_DEATH && data == 1) death_t[d] = t;
+    if (kind == EV_HEIST) heist_t[d] = t;
+
+    uint8_t arc = MA_NONE;
+    if ((kind == EV_RAID || kind == EV_TURF_FLIP || kind == EV_DEATH) && t - heist_t[d] <= W) { heist_t[d] = -(1 << 28); arc = MA_CYBER_FALLOUT; }
+    else if ((kind == EV_LOCKDOWN || kind == EV_COMBAT) && t - gang_t[d] <= W) { gang_t[d] = shortage_t[d] = -(1 << 28); arc = MA_DEBT_CASCADE; }
+    else if ((kind == EV_TURF_FLIP || kind == EV_REFUGEE || kind == EV_RAID) && t - riot_t[d] <= W) { riot_t[d] = -(1 << 28); arc = MA_WATER_RIOT; }
+    else if (kind == EV_THREAT_DEFEAT && mega && t - mega_t[d] <= W) { mega_t[d] = -(1 << 28); arc = MA_MEGA_RAMPAGE; }
+    else if (kind == EV_COMBAT && t - death_t[d] <= W && death_t[d] < t) { death_t[d] = -(1 << 28); arc = MA_FEUD; }
+    // generic long-tail: any two related events on a block in the window are a beat
+    else if (last_kind[d] != EV_NONE && t - last_t[d] <= W && last_kind[d] != kind) arc = MA_LINKED;
+
+    last_kind[d] = kind; last_t[d] = t;
+    return arc;
 }
 
 void tick_world(World& w) {

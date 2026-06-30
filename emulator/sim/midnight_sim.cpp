@@ -552,6 +552,61 @@ static void test_phase4_systems() {
     CHECK(grudge_peak > 10, "combat/turf builds faction grudges");
 }
 
+// ---- Phase 7: generative narrator (the gate) -------------------------------
+static bool ascii_ok(const std::string& s) {
+    if (s.empty()) return false;
+    for (char c : s) if ((unsigned char)c < 0x20 || (unsigned char)c > 0x7E) return false;
+    return true;
+}
+static void test_narrator() {
+    std::printf("[narr] every event narrates (Gibson voice, deterministic, ASCII); arcs too\n");
+    World w; gen_world(w, 3);
+    // 1) every event kind produces a non-empty, ASCII, deterministic line
+    for (uint8_t k = EV_NONE + 1; k < EV_COUNT; ++k) {
+        Event e; e.kind = k; e.node = 1; e.agent = 2; e.data = 1; e.tick = 100;
+        std::string a = narrate_event(w, e), b = narrate_event(w, e);
+        CHECK(ascii_ok(a), "event line is non-empty + ASCII (fits the CYD font)");
+        CHECK(a == b, "narration is deterministic");
+    }
+    // 2) every arc kind narrates distinctly
+    for (uint8_t a = MA_NONE + 1; a < MA_COUNT; ++a) {
+        std::string s = narrate_arc(w, a, 1, EV_SHORTAGE, EV_RIOT);
+        CHECK(ascii_ok(s), "arc line is non-empty + ASCII");
+    }
+    // 3) a real run yields a deterministic chronicle, including recognized arcs
+    auto chronicle_hash = [](uint32_t seed) {
+        World ww; gen_world(ww, seed);
+        ArcTracker tr; tr.reset(720);
+        uint32_t hh = 2166136261u; long lines = 0, arcs = 0;
+        for (uint32_t t = 0; t < 20000; ++t) {
+            tick_world(ww);
+            uint16_t tk = (uint16_t)(ww.tick - 1);
+            for (int i = 0; i < EVMAX; ++i) {
+                const Event& e = ww.events[i];
+                if (e.kind == EV_NONE || e.tick != tk) continue;
+                std::string line = narrate_event(ww, e); ++lines;
+                for (char c : line) hh = (hh ^ (unsigned char)c) * 16777619u;
+                uint8_t arc = tr.ingest(e.kind, e.node, e.data, (int)ww.tick - 1);
+                if (arc != MA_NONE) {
+                    std::string al = narrate_arc(ww, arc, e.node, tr.last_kind[e.node], e.kind); ++arcs;
+                    for (char c : al) hh = (hh ^ (unsigned char)c) * 16777619u;
+                }
+            }
+        }
+        return std::make_pair(hh, std::make_pair(lines, arcs));
+    };
+    auto r1 = chronicle_hash(8);
+    auto r2 = chronicle_hash(8);
+    CHECK(r1.first == r2.first, "the whole chronicle is reproducible from the seed");
+    CHECK(r1.second.first > 100, "a run produces a stream of narrated beats");
+    CHECK(r1.second.second > 0, "recognized arcs are narrated within the stream");
+    std::printf("       seed 8: %ld narrated beats, %ld arc beats (deterministic hash %08x)\n",
+                r1.second.first, r1.second.second, r1.first);
+    // show a few sample lines for eyeballing
+    std::printf("       e.g.  %s\n", narrate_event(w, [&]{ Event e; e.kind=EV_HEIST; e.node=2; e.agent=3; e.tick=1; return e; }()).c_str());
+    std::printf("             %s\n", narrate_arc(w, MA_WATER_RIOT, 0, EV_SHORTAGE, EV_RIOT).c_str());
+}
+
 // ---- Phase 3: distribution scan (calibration aid) --------------------------
 static void scan_outcomes(uint8_t ambition, uint32_t horizon) {
     const int SEEDS = 120;
@@ -695,6 +750,7 @@ int main(int argc, char** argv) {
     test_phase4_systems();
     test_cyberhack_bridge();
     test_emergence();
+    test_narrator();
     std::printf("\n%d checks, %d failures\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }
