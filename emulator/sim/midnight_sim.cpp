@@ -337,9 +337,15 @@ static void test_career_outcomes() {
     int megapct = mega * 100 / total, deadpct = dead * 100 / total;
     std::printf("       mega=%d%% dead=%d%% alive-non-mega=%d%%  (cautious dead=%d, reckless dead=%d)\n",
                 megapct, deadpct, alive_nonmega * 100 / total, dead_cautious, dead_reckless);
+    // Death is CHOICE-GATED now (Batch E): a cautious run is meant to survive, while
+    // the reckless take the risk and pay for it. So the gate is no longer a blunt
+    // population-wide death rate — it's "reckless death has teeth" + "cautious survives".
+    int reckless_deadpct = dead_reckless * 100 / SEEDS;
+    int cautious_deadpct = dead_cautious * 100 / SEEDS;
     CHECK(megapct >= 10, "some careers reach MEGACORP");
     CHECK((dead + alive_nonmega) * 100 / total >= 10, "some careers stall or die");
-    CHECK(deadpct >= 5, "death has teeth");
+    CHECK(reckless_deadpct >= 5, "death has teeth for the reckless (risk is real)");
+    CHECK(cautious_deadpct <= 3, "a cautious run is survivable (death is a choice, not bad luck)");
     CHECK(megapct < 90 && deadpct < 90, "no single outcome dominates");
     CHECK(dead_reckless > dead_cautious, "risk steers survival: reckless dies more than cautious");
 }

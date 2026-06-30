@@ -222,7 +222,7 @@ struct Event {
 // a short rolling ledger, rebuilt as the sim runs — not serialized.
 enum TxnReason : uint8_t {
     TXN_WAGE, TXN_BUY, TXN_RENT, TXN_INVEST, TXN_CRAFT, TXN_CONTRACT,
-    TXN_HEIST, TXN_LOOT, TXN_ROBBED, TXN_PAYOUT, TXN_REASON_COUNT
+    TXN_HEIST, TXN_LOOT, TXN_ROBBED, TXN_PAYOUT, TXN_CARE, TXN_SALE, TXN_REASON_COUNT
 };
 struct Txn { int32_t amount = 0; uint8_t reason = 0; uint16_t tick = 0; };
 const char* txn_reason_name(uint8_t r);
@@ -329,8 +329,11 @@ struct MidTunables {
     // street incidents (front-loaded danger): muggings scale with district danger
     // + the avatar's risk appetite; lethal only while broke + injured (wealth = safety).
     int incident_div = 7;          // per-day mugging chance = danger / incident_div (%)
-    int incident_lethal_pct = 16;  // base lethality vs an injured victim (scaled by risk/tier)
-    int safe_money = 120;          // cash above this buys care -> halves lethality
+    int incident_lethal_pct = 35;  // lethality of a repeat hit on the injured+broke (scaled by risk/tier)
+    int safe_money = 120;          // cash above this buys care -> survive a repeat hit
+    int care_cost  = 35;           // pay a clinic to clear an injury fast (else rest heals slowly)
+    int care_risk_max = 170;       // a player below this risk tends wounds (survives); at/above it
+                                   // the reckless push on through injuries (stay exposed -> die more)
     // --- Phase 4: territory / hazards / combat / threats -----------------
     int weapon_grade = 6, armor_grade = 5, implant_grade = 4; // gear -> atk/def
     int combat_death_pct = 18;     // chance a beaten combatant dies (scaled by margin)

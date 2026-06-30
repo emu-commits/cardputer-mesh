@@ -372,7 +372,7 @@ static void record_txn(World& w, const Agent& a, int32_t amount, uint8_t reason)
 const char* txn_reason_name(uint8_t r) {
     static const char* n[TXN_REASON_COUNT] = {
         "wage", "supplies", "rent", "invested", "craft sale", "contract",
-        "heist", "loot", "robbed", "company payout"
+        "heist", "loot", "robbed", "company payout", "clinic care", "sale"
     };
     return r < TXN_REASON_COUNT ? n[r] : "?";
 }
@@ -676,13 +676,37 @@ static uint8_t career_action(World& w, Agent& a) {
     if (a.need[ND_HUNGER] > T.buy_thresh || a.need[ND_THIRST] > T.buy_thresh)
         return npc_action(w, a);
 
+    // INJURY OFF-RAMP (so a wound isn't a death spiral, and death stays a choice):
+    // a cautious avatar gets patched up before doing anything else (clinic if it can
+    // pay, else lie low and heal slowly). A RECKLESS one (risk >= care_risk_max) skips
+    // this and pushes on through the wound — staying exposed, which is how the
+    // risk-takers die. Death is thus a consequence of the player's risk dial.
+    if ((a.status & AF_INJURED) && (int)w.directive.risk < T.care_risk_max) {
+        if (here.services & SV_CLINIC) {
+            if ((int)a.money >= T.care_cost) {
+                a.money -= (uint32_t)T.care_cost; record_txn(w, a, -T.care_cost, TXN_CARE);
+                a.status &= (uint8_t)~AF_INJURED;            // patched up; resume focus below
+            } else return ACT_REST;                          // can't pay -> rest and heal slowly
+        } else if ((int)a.money >= T.care_cost) {
+            uint8_t nx = hop_to_service(w, a.loc, SV_CLINIC);
+            if (nx != a.loc) { a.loc = nx; return ACT_MOVE; }
+            return ACT_REST;
+        } else {
+            return ACT_REST;                                 // broke + hurt -> lie low, heal slowly
+        }
+    }
+
     // INTERRUPT-AND-RETURN (the arc engine): a dangerous block or a threat here
     // pulls the avatar off its focus to flee; the prior focus is stashed and
     // restored once it clears.
     bool threat_here = false;
     for (int i = 0; i < w.threat_count; ++i)
         if (w.threats[i].active && w.threats[i].district == a.loc) { threat_here = true; break; }
-    if (here.danger >= T.refugee_danger || threat_here) {
+    // how much danger the avatar tolerates before bailing scales with the risk dial:
+    // cautious flees early (stays safe), reckless lingers in the bad blocks (more
+    // muggings -> the risk-takers' deaths). A co-located threat is always fled.
+    int flee_at = clampi(T.refugee_danger + ((int)w.directive.risk - 128) / 2, 25, 140);
+    if (here.danger >= flee_at || threat_here) {
         if (w.interrupt_focus == NONE8) w.interrupt_focus = w.focus;
         if (flee_to_safer(w, a)) return ACT_MOVE;
         return ACT_REST;
@@ -1620,8 +1644,12 @@ void tick_world(World& w) {
         }
     }
 
-    // street incidents (once per in-game day): danger-scaled muggings, front-loaded
-    // — lethal only to the broke + injured, so wealth/establishment buys safety.
+    // street incidents (once per in-game day): danger-scaled muggings. CHOICE-GATED
+    // lethality — an incident NEVER kills outright: the first hit robs + wounds. Death
+    // only strikes someone ALREADY injured who is also BROKE (can't buy care). Both are
+    // player-addressable: get patched up (you won't be "already injured"), or keep cash
+    // >= safe_money (you buy your way out of a repeat). So a careful run survives; a
+    // reckless/broke one that ignores its wounds is the one that dies.
     if (T.rent_period > 0 && (w.tick % (uint32_t)T.rent_period) == 0 && w.tick > 0) {
         for (int i = 0; i < w.agent_count; ++i) {
             Agent& a = w.agents[i];
@@ -1632,27 +1660,14 @@ void tick_world(World& w) {
             if (chance <= 0 || !w.rng.chance(chance)) continue;
             { uint32_t lost = a.money / 2; a.money -= lost; record_txn(w, a, -(int32_t)lost, TXN_ROBBED); } // rolled / robbed
             bump_need(a.need[ND_STRESS], 10);
-            // lethality scales with risk appetite, eases with company security
-            // (front-loaded: deadly while clawing up, survivable once established) and
-            // with cash for care; being already hurt makes it worse. An incident can
-            // kill in one go — injuries heal too fast to gate death on a prior wound.
-            bool player = (a.status & AF_PLAYER) != 0;
-            int dc;
-            if (player) {
-                // the protagonist lives dangerously: lethality scales with risk
-                // appetite, eases with company security + cash for care.
-                dc = T.incident_lethal_pct * (96 + (int)w.directive.risk) / 160;
-                dc /= (1 + w.company.tier);
-                if ((int)a.money >= T.safe_money) dc /= 2;
-            } else {
-                // background NPCs: incidents injure/rob; lethal only to the
-                // unemployed AND broke (a steady job or cash = security).
-                bool secure = (a.status & AF_EMPLOYED) || (int)a.money >= T.safe_money;
-                dc = secure ? 0 : T.incident_lethal_pct;
-            }
-            if (a.status & AF_INJURED) dc = dc * 3 / 2;      // already bleeding
+            if (!(a.status & AF_INJURED)) { a.status |= AF_INJURED; continue; }  // first hit: wounded, not dead
+            if ((int)a.money >= T.safe_money) continue;       // hurt again, but cash buys care -> survives
+            // hurt + broke + caught out again: now it can be fatal (scaled by risk; eased
+            // once you're an established outfit).
+            int dc = T.incident_lethal_pct;
+            if (a.status & AF_PLAYER) dc = dc * (96 + (int)w.directive.risk) / 160;
+            dc /= (1 + w.company.tier);
             if (dc > 0 && w.rng.chance(dc)) { a.status &= (uint8_t)~AF_ALIVE; push_event(w, EV_DEATH, a.loc, (uint8_t)i, /*mugging*/3); }
-            else a.status |= AF_INJURED;
         }
     }
 
