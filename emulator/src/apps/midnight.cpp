@@ -35,7 +35,6 @@ public:
             mc::gen_world(world_, seed);
         }
         enter_district(world_.agents[0].loc, /*announce=*/false);
-        arcs_.reset(720);
         view_ = EMBARK; paused_ = false; last_step_ = ctx.now_ms;
         push_log("Midnight City. You have nothing. The rain doesn't care.");
     }
@@ -89,7 +88,6 @@ public:
 private:
     mc::World     world_;
     mc::LocalMap  local_;
-    mc::ArcTracker arcs_;
     uint8_t  cur_district_ = 0;
     uint8_t  pending_district_ = mc::NONE8; // sim moved us; @ must walk to edge first (#3)
     int      px_ = 0, py_ = 0;            // @ tile on local_
@@ -129,6 +127,21 @@ private:
         if (announce) push_log(std::string("You move into the ") + mc::district_type_name(world_.districts[d].type) + ".");
     }
 
+    // how notable an event is, so a busy tick surfaces the beat that matters most
+    static int salience(uint8_t kind) {
+        switch (kind) {
+            case mc::EV_DEATH: case mc::EV_FLATLINE: return 9;
+            case mc::EV_THREAT_SPAWN: case mc::EV_THREAT_DEFEAT: return 8;
+            case mc::EV_RIOT: case mc::EV_COMBAT: return 7;
+            case mc::EV_TURF_FLIP: case mc::EV_RAID: case mc::EV_HEIST: return 6;
+            case mc::EV_LOCKDOWN: case mc::EV_COLLAPSE: case mc::EV_EXTORT: return 5;
+            case mc::EV_SHORTAGE: case mc::EV_REFUGEE: case mc::EV_HEATWAVE: return 4;
+            case mc::EV_BOUNTY: case mc::EV_POP_SHIFT: case mc::EV_NETALLY: return 3;
+            case mc::EV_RECRUIT: case mc::EV_JACKIN: return 2;
+            default:           return 1;   // market day / rumor / newcomer — ambient
+        }
+    }
+
     std::string fmt_txn(const mc::Txn& t) {
         char b[48];
         long v = t.amount < 0 ? -(long)t.amount : (long)t.amount;
@@ -152,19 +165,20 @@ private:
             }
         }
 
-        // event narration — only beats we can SEE: co-located, about us, or
-        // world-scale (#5). Arcs see EVERY event (chains span districts) and are
-        // shown regardless, since they are city-scale story, not NPC chatter.
-        std::string line; bool got_arc = false;
+        // event narration — surface ONE salient beat we can SEE this tick
+        // (co-located / about us / world-scale, #5). Generative per-event voice; the
+        // story emerges from a dense stream of these, not baked "named arcs". The
+        // consecutive-duplicate de-dup in push_log keeps it from repeating.
+        const mc::Event* best = nullptr; int best_sal = -1;
         for (int i = 0; i < mc::EVMAX; ++i) {
             const mc::Event& e = world_.events[i];
             if (e.kind == mc::EV_NONE || e.tick != tk) continue;
-            uint8_t arc = arcs_.ingest(e.kind, e.node, e.data, (int)before);
             bool here = (e.node == cur_district_) || (e.agent == 0) || (e.node == mc::NONE8);
-            if (arc != mc::MA_NONE) { line = mc::narrate_arc(world_, arc, e.node, arcs_.last_kind[e.node < mc::MAX_DISTRICTS ? e.node : 0], e.kind); got_arc = true; }
-            else if (!got_arc && here) line = mc::narrate_event(world_, e);
+            if (!here) continue;
+            int s = salience(e.kind);
+            if (s > best_sal) { best_sal = s; best = &e; }
         }
-        if (!line.empty()) push_log(line);
+        if (best) push_log(mc::narrate_event(world_, *best));
 
         // the sim is authoritative about WHICH district the avatar is in, but the
         // view never warps: flag a pending crossing so the @ walks to the edge (#3).
