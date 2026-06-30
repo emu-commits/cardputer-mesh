@@ -95,6 +95,7 @@ private:
     int      px_ = 0, py_ = 0;            // @ tile on local_
     int      tx_ = -1, ty_ = -1;          // current walk target
     int      exit_x_ = 0, exit_y_ = 0;    // far gate the @ walks to before leaving the zone (#1)
+    int      cam_x_ = 0, cam_y_ = 0;      // deadzone camera origin (persists across frames)
     uint32_t last_step_ = 0, step_ms_ = STEP_MS;
     uint32_t last_anim_ = 0;
     bool     paused_ = false;
@@ -121,12 +122,14 @@ private:
         if (!log_.empty() && log_.back() == s) return;    // de-dup consecutive lines
         log_.push_back(s);
         while (log_.size() > LOG_CAP) log_.erase(log_.begin());
+        log_dirty_ = true;                                 // re-wrap on next draw (not every frame)
     }
 
     void enter_district(uint8_t d, bool announce) {
         cur_district_ = d;
         mc::gen_localmap(local_, world_, d);
         px_ = local_.entry_x; py_ = local_.entry_y; tx_ = ty_ = -1;
+        cam_x_ = px_ - 26; cam_y_ = py_ - 5;   // roughly centre the new zone; deadzone refines it
         // exit gate = the POI farthest from entry (POIs are reachable) so leaving a zone
         // is a visible walk ACROSS it, never an instant blink to the next (#1).
         exit_x_ = local_.entry_x; exit_y_ = local_.entry_y;
@@ -216,7 +219,7 @@ private:
     void step_avatar() {
         if (pending_district_ != mc::NONE8) {
             int moved = 0;
-            for (int step = 0; step < 6; ++step) {            // brisk slide across to the far gate
+            for (int step = 0; step < 3; ++step) {            // walk across to the far gate
                 if (px_ == exit_x_ && py_ == exit_y_) break;
                 int nx = px_, ny = py_;
                 if (mc::localmap_step_toward(local_, px_, py_, exit_x_, exit_y_, &nx, &ny)) { px_ = nx; py_ = ny; ++moved; }
@@ -292,8 +295,20 @@ private:
 
     void draw_map(TextCanvas& c, int top, int rows) {
         int mw = c.width();
-        int cam_x = mc::LMAP_W <= mw ? 0 : clampi(px_ - mw / 2, 0, mc::LMAP_W - mw);
-        int cam_y = mc::LMAP_H <= rows ? 0 : clampi(py_ - rows / 2, 0, mc::LMAP_H - rows);
+        // DEADZONE camera: hold the view fixed while the @ walks inside it; scroll only
+        // when it nears an edge. Keeps the map STATIC most frames so the row-diff
+        // renderer resends ~2 cells per step instead of the whole map -- no UART flood,
+        // no CYD blink, and the @ visibly WALKS instead of the world jerking under it.
+        int maxcx = mc::LMAP_W > mw ? mc::LMAP_W - mw : 0;
+        int maxcy = mc::LMAP_H > rows ? mc::LMAP_H - rows : 0;
+        const int mx = 6, my = 3;     // deadzone margins
+        if (px_ < cam_x_ + mx)             cam_x_ = px_ - mx;
+        if (px_ > cam_x_ + mw - 1 - mx)    cam_x_ = px_ - (mw - 1 - mx);
+        if (py_ < cam_y_ + my)             cam_y_ = py_ - my;
+        if (py_ > cam_y_ + rows - 1 - my)  cam_y_ = py_ - (rows - 1 - my);
+        cam_x_ = clampi(cam_x_, 0, maxcx);
+        cam_y_ = clampi(cam_y_, 0, maxcy);
+        int cam_x = cam_x_, cam_y = cam_y_;
         // terrain
         for (int r = 0; r < rows; ++r) {
             int my = cam_y + r;
@@ -332,18 +347,26 @@ private:
     // The wrapping log panel (#2): wrap each entry on spaces/hyphens (never
     // mid-word) via ui::wrap_text, then show the tail so the newest is at bottom.
     void draw_log(TextCanvas& c, int top, int rows, int w) {
-        std::vector<std::string> lines;
-        for (const std::string& s : log_) {
-            std::vector<std::string> ws = ui::wrap_text(s, w);
-            for (std::string& l : ws) lines.push_back(l);
+        // re-wrap only when the log or width changed (not every frame -> no heap churn)
+        if (log_dirty_ || wrapped_w_ != w) {
+            wrapped_.clear();
+            for (const std::string& s : log_) {
+                std::vector<std::string> ws = ui::wrap_text(s, w);
+                for (std::string& l : ws) wrapped_.push_back(std::move(l));
+            }
+            wrapped_w_ = w; log_dirty_ = false;
         }
-        int start = (int)lines.size() - rows; if (start < 0) start = 0;
+        int start = (int)wrapped_.size() - rows; if (start < 0) start = 0;
         for (int r = 0; r < rows; ++r) {
             int li = start + r;
-            std::string s = (li >= 0 && li < (int)lines.size()) ? lines[li] : std::string();
+            const std::string& s = (li >= 0 && li < (int)wrapped_.size()) ? wrapped_[li] : empty_;
             c.text(top + r, 0, ui::fit(s, w), ui::BrightCyan, ui::Black);
         }
     }
+    std::vector<std::string> wrapped_;   // cached wrapped log lines
+    int  wrapped_w_ = -1;
+    bool log_dirty_ = true;
+    const std::string empty_;
 
     // ---- menus -------------------------------------------------------------
     void open_menu() { view_ = MENU; mls_ = ui::ListState{}; }
