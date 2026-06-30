@@ -60,8 +60,9 @@ void AppManager::restore_session(AppContext& ctx) {
 }
 
 void AppManager::shutdown(AppContext& ctx) {
-    if (cur_) { cur_->on_pause(ctx); cur_->on_destroy(ctx); cur_.reset(); }
-    if (ctx.state) { ctx.state->set("session.active", cur_id_); ctx.state->flush(); }
+    if (cur_) guarded("shutdown", [&]{ cur_->on_pause(ctx); cur_->on_destroy(ctx); });
+    cur_.reset();   // free the app (and its world) BEFORE the big NVS blob build
+    if (ctx.state) guarded("flush", [&]{ ctx.state->set("session.active", cur_id_); ctx.state->flush(); });
 }
 
 void AppManager::apply_pending(AppContext& ctx) {
@@ -72,9 +73,10 @@ void AppManager::apply_pending(AppContext& ctx) {
     if (id == "__quit__") { quit_requested = true; return; }
     if (fac_.find(id) == fac_.end()) return;
     if (cur_) guarded("on_pause", [&]{ cur_->on_pause(ctx); cur_->on_destroy(ctx); });
-    guarded("on_create", [&]{ start(id, ctx); });
+    guarded("on_create", [&]{ start(id, ctx); });   // frees the old app + its world first
     // Checkpoint: the just-saved resume tokens (in on_pause) + the new active app.
-    if (ctx.state) { ctx.state->set("session.active", id); ctx.state->flush(); }
+    // Guarded: a low-heap flush must never hard-abort (reboot) the device.
+    if (ctx.state) guarded("flush", [&]{ ctx.state->set("session.active", id); ctx.state->flush(); });
 }
 
 void AppManager::handle_key(AppContext& ctx, const ui::KeyEvent& k) {

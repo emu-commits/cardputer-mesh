@@ -50,7 +50,11 @@ public:
     void flush() override {
         if (!ok_ || !dirty_) return;
         std::string blob;
-        blob.reserve(1024);
+        // reserve the EXACT total up front: std::string's 2x growth would otherwise
+        // peak at ~2x the blob (e.g. 27KB for a 14KB map), which OOMs the no-PSRAM heap.
+        size_t total = 0;
+        for (auto& kv : m_) total += 8 + kv.first.size() + kv.second.size();
+        blob.reserve(total);
         for (auto& kv : m_) {
             put_u32(blob, (uint32_t)kv.first.size());  blob += kv.first;
             put_u32(blob, (uint32_t)kv.second.size()); blob += kv.second;

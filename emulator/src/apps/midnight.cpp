@@ -650,7 +650,11 @@ private:
         if (!ctx.state) return;
         std::string blob; mc::serialize(world_, blob);
         ctx.state->set("midnight.world", blob);
-        ctx.state->flush();
+        // NOTE: deliberately NO flush() here. On device, flush() rebuilds the entire
+        // NVS key/value map into one ~13KB contiguous std::string; doing that while
+        // this ~9KB World is still resident OOMs on the no-PSRAM heap (fragmentation)
+        // and aborts -> reboot. The AppManager checkpoints (flush) right after the
+        // app is torn down and the World is freed, when a large block is available.
     }
 };
 
