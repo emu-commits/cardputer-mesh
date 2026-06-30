@@ -799,7 +799,78 @@ static void econ_curve(uint32_t seed) {
                 start ? alive_count(w) * 100 / start : 100);
 }
 
+// ---- a readable narrated chronicle of a live run (eyeballing emergence) -----
+// Drives a real world with the in-engine ArcTracker + narrator, exactly as the
+// renderer does, and prints the recognized chain-reaction ARCs as they fire plus a
+// tally — so you can SEE the ~67 micro-systems colliding into story.
+static void chronicle_run(uint32_t seed, int days) {
+    World w; gen_world(w, seed);
+    ArcTracker tr; tr.reset(720);
+    std::printf("=== Midnight City chronicle  seed=%u  (%d days) ===\n", seed, days);
+    std::printf("districts=%d  agents=%d  protagonist=%s starts broke in the %s\n\n",
+                w.district_count, w.agent_count, agent_name(w.agents[0].name_id),
+                district_type_name(w.districts[w.agents[0].loc].type));
+    long arc_tally[MA_COUNT] = {0};
+    long raw[EV_COUNT] = {0};
+    int named_printed = 0; const int NAMED_CAP = 30;
+    uint8_t prev_tier = 0;
+    bool founded = false, died = false;
+    int ticks = days * 24;
+    for (int t = 0; t < ticks; ++t) {
+        // play the player: pick a business model + found a company once affordable
+        if (!died && !founded && w.company.treasury == 0 && w.company.emp_count == 0 &&
+            w.focus != FC_FOUND_CO && w.focus != FC_RUN_CO &&
+            (int)w.agents[0].money >= g_mtune.found_threshold) {
+            w.company.sector = (uint8_t)(SEC_FABRICATION + (seed % (SEC_COUNT - 1)));
+            w.focus = FC_FOUND_CO;
+        }
+        tick_world(w);
+        if (!died && !(w.agents[0].status & AF_ALIVE)) {
+            std::printf("  [day %4d] >> %s flatlines. The CITY keeps turning (chronicle continues).\n",
+                        t / 24, agent_name(w.agents[0].name_id));
+            died = true;  // the game ends on death; the sim does not — keep showing emergence
+        }
+        uint16_t tk = (uint16_t)(w.tick - 1);
+        for (int i = 0; i < EVMAX; ++i) {
+            const Event& e = w.events[i];
+            if (e.kind == EV_NONE || e.tick != tk) continue;
+            raw[e.kind]++;
+            uint8_t arc = tr.ingest(e.kind, e.node, e.data, (int)w.tick - 1);
+            if (arc == MA_NONE) continue;
+            arc_tally[arc]++;
+            // spotlight the NAMED cross-system chains (skip the generic linked-pair)
+            if (arc != MA_LINKED && named_printed < NAMED_CAP) {
+                std::printf("  [day %4d] %-16s | %s\n", t / 24, arc_name(arc),
+                            narrate_arc(w, arc, e.node, tr.last_kind[e.node < MAX_DISTRICTS ? e.node : 0], e.kind).c_str());
+                ++named_printed;
+            }
+        }
+        if (!died && w.company.tier != prev_tier) {
+            if (w.company.tier > 0) { founded = true;
+                std::printf("  [day %4d] >> your company is now a %s (%s)\n",
+                            t / 24, company_tier_name(w.company.tier), sector_name(w.company.sector)); }
+            prev_tier = w.company.tier;
+        }
+    }
+    std::printf("\n  ARC TALLY:");
+    for (int a = MA_NONE + 1; a < MA_COUNT; ++a) std::printf("  %s=%ld", arc_name(a), arc_tally[a]);
+    long total_arcs = 0; for (int a = 0; a < MA_COUNT; ++a) total_arcs += arc_tally[a];
+    std::printf("  (total %ld)\n", total_arcs);
+    std::printf("  raw events: shortage=%ld riot=%ld lockdown=%ld turf=%ld combat=%ld death=%ld refugee=%ld heist=%ld\n",
+                raw[EV_SHORTAGE], raw[EV_RIOT], raw[EV_LOCKDOWN], raw[EV_TURF_FLIP],
+                raw[EV_COMBAT], raw[EV_DEATH], raw[EV_REFUGEE], raw[EV_HEIST]);
+    std::printf("  protagonist: focus=%s  job=%s  $%u  company=%s [%s]\n",
+                focus_name(w.focus), job_name(w.agents[0].job), w.agents[0].money,
+                company_tier_name(w.company.tier), sector_name(w.company.sector));
+}
+
 int main(int argc, char** argv) {
+    if (argc >= 2 && !std::strcmp(argv[1], "chronicle")) {
+        uint32_t seed = argc >= 3 ? (uint32_t)std::strtoul(argv[2], nullptr, 10) : 7;
+        int days = argc >= 4 ? (int)std::strtoul(argv[3], nullptr, 10) : 200;
+        chronicle_run(seed, days);
+        return 0;
+    }
     if (argc >= 2 && !std::strcmp(argv[1], "world")) {
         dump_world(argc >= 3 ? (uint32_t)std::strtoul(argv[2], nullptr, 10) : 1);
         return 0;
