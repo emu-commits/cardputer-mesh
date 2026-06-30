@@ -4,9 +4,14 @@
 // The engine is pure/headless and proven by sim/midnight_sim; this file is only
 // rendering + input. The avatar SELF-DRIVES (agency model, §1), so the menu is
 // standing-orders + jack-in + travel + info, not micro-management.
+//
+// Screen layout (Batch A): status row · focus row · legend row · separator ·
+// the (1/3-shorter) embark map · a wrapping LOG panel · footer.
 #include "apps/apps.h"
 #include <cstdio>
+#include <functional>
 #include <vector>
+#include <string>
 #include "core/midnight_world.h"
 #include "core/persist.h"
 #include "core/ui_kit.h"
@@ -18,8 +23,9 @@ namespace mc = mid;
 namespace apps {
 
 class Midnight : public App {
-    enum View { EMBARK, MENU, TRAVEL };
+    enum View { EMBARK, MENU, ORDERS, TRAVEL };
     static constexpr uint32_t STEP_MS = 600;   // "watch it crawl" cadence
+    static constexpr size_t   LOG_CAP = 24;     // recent log entries kept
 
 public:
     void on_create(AppContext& ctx) override {
@@ -30,13 +36,14 @@ public:
         enter_district(world_.agents[0].loc, /*announce=*/false);
         arcs_.reset(720);
         view_ = EMBARK; paused_ = false; last_step_ = ctx.now_ms;
-        ticker_ = "Midnight City. You have nothing. The rain doesn't care.";
+        push_log("Midnight City. You have nothing. The rain doesn't care.");
     }
     void on_pause(AppContext& ctx) override { save(ctx); }
     void on_destroy(AppContext& ctx) override { save(ctx); }
 
     bool on_key(AppContext& ctx, const KeyEvent& k) override {
         if (view_ == MENU)   return key_menu(ctx, k);
+        if (view_ == ORDERS) return key_orders(ctx, k);
         if (view_ == TRAVEL) return key_travel(ctx, k);
         // EMBARK
         if (k.is_char() && (k.ch == 'm' || k.ch == 'M')) { open_menu(); return true; }
@@ -49,7 +56,7 @@ public:
     void tick(AppContext& ctx) override {
         if (view_ != EMBARK || paused_) return;
         if (ctx.keep_awake) ctx.keep_awake();             // hold the CYD awake through the crawl
-        if (!(world_.agents[0].status & mc::AF_ALIVE)) { paused_ = true; ticker_ = chronicle_death(); return; }
+        if (!(world_.agents[0].status & mc::AF_ALIVE)) { paused_ = true; push_log(chronicle_death()); return; }
         if (ctx.now_ms - last_step_ < step_ms_) return;
         last_step_ = ctx.now_ms;
         crawl();
@@ -57,13 +64,22 @@ public:
 
     void render(AppContext& ctx, TextCanvas& c) override {
         (void)ctx;
-        draw_status(c);
-        c.hline(1, 0, c.width());
-        draw_map(c, 2, c.height() - 3);                   // rows 2 .. h-3
-        c.text(c.height() - 2, 0, ui::fit(ticker_, c.width()), ui::BrightCyan, ui::Black);
+        int h = c.height(), w = c.width();
+        draw_status(c, 0);
+        draw_focus(c, 1);
+        draw_legend(c, 2);
+        c.hline(3, 0, w);
+        // body split: a 1/3-shorter map on top, a wrapping log panel beneath it.
+        int log_rows = (h - 5) / 3; if (log_rows < 4) log_rows = 4;
+        int map_top  = 4;
+        int log_top  = h - 1 - log_rows;          // log occupies [log_top, h-1)
+        int map_rows = log_top - map_top;
+        if (map_rows < 3) { map_rows = 3; log_top = map_top + map_rows; }
+        draw_map(c, map_top, map_rows);
+        draw_log(c, log_top, log_rows, w);
         ui::footer(c, paused_ ? " [PAUSED] m:menu space:resume <>:speed esc:home"
                               : " m:menu  space:pause  <>:speed  esc:home ");
-        if (view_ == MENU || view_ == TRAVEL) draw_menu(c);
+        if (view_ != EMBARK) draw_menu(c);
     }
 
 private:
@@ -76,16 +92,34 @@ private:
     uint32_t last_step_ = 0, step_ms_ = STEP_MS;
     bool     paused_ = false;
     View     view_ = EMBARK;
-    std::string ticker_;
+    std::vector<std::string> log_;        // scrolling log ring (newest at back)
     ui::ListState mls_;
 
     static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+    static const char* act_name(uint8_t a) {
+        switch (a) {
+            case mc::ACT_WORK:    return "working";
+            case mc::ACT_BUY:     return "buying supplies";
+            case mc::ACT_MOVE:    return "on the move";
+            case mc::ACT_REST:    return "resting";
+            case mc::ACT_SEEKJOB: return "seeking work";
+            default:              return "idle";
+        }
+    }
+
+    void push_log(const std::string& s) {
+        if (s.empty()) return;
+        if (!log_.empty() && log_.back() == s) return;    // de-dup consecutive lines
+        log_.push_back(s);
+        while (log_.size() > LOG_CAP) log_.erase(log_.begin());
+    }
 
     void enter_district(uint8_t d, bool announce) {
         cur_district_ = d;
         mc::gen_localmap(local_, world_, d);
         px_ = local_.entry_x; py_ = local_.entry_y; tx_ = ty_ = -1;
-        if (announce) ticker_ = std::string("You move into the ") + mc::district_type_name(world_.districts[d].type) + ".";
+        if (announce) push_log(std::string("You move into the ") + mc::district_type_name(world_.districts[d].type) + ".");
     }
 
     // one "watch it crawl" step: advance the world, narrate, animate the @
@@ -101,7 +135,7 @@ private:
             if (arc != mc::MA_NONE) { line = mc::narrate_arc(world_, arc, e.node, arcs_.last_kind[e.node < mc::MAX_DISTRICTS ? e.node : 0], e.kind); got_arc = true; }
             else if (!got_arc) line = mc::narrate_event(world_, e);
         }
-        if (!line.empty()) ticker_ = line;
+        if (!line.empty()) push_log(line);
 
         // the sim is authoritative about which district the avatar is in
         if (world_.agents[0].loc != cur_district_) enter_district(world_.agents[0].loc, /*announce=*/true);
@@ -121,17 +155,33 @@ private:
     }
 
     // ---- rendering ---------------------------------------------------------
-    void draw_status(TextCanvas& c) {
+    void draw_status(TextCanvas& c, int row) {
         const mc::Agent& p = world_.agents[0];
         const mc::Company& co = world_.company;
-        int h = mc::human_count(world_), s = mc::synth_count(world_), m = 0;
-        for (int i = 0; i < world_.agent_count; ++i) if ((world_.agents[i].status & mc::AF_ALIVE) && world_.agents[i].kind == mc::AK_MUTANT) ++m;
+        int hum = mc::human_count(world_), syn = mc::synth_count(world_), mut = 0;
+        for (int i = 0; i < world_.agent_count; ++i) if ((world_.agents[i].status & mc::AF_ALIVE) && world_.agents[i].kind == mc::AK_MUTANT) ++mut;
         char b[96];
         std::snprintf(b, sizeof b, "%s $%u [%s] D%u %02u:00%s H%dS%dM%d",
                       mc::agent_name(p.name_id), p.money, mc::company_tier_name(co.tier),
                       world_.tick / 24, world_.tick % 24, (p.status & mc::AF_INJURED) ? " HURT" : "",
-                      h, s, m);
-        c.text(0, 0, ui::fit(b, c.width()), ui::Black, ui::BrightGreen);
+                      hum, syn, mut);
+        c.text(row, 0, ui::fit(b, c.width()), ui::Black, ui::BrightGreen);
+    }
+
+    // Row 1: the standing order + what the avatar is doing right now. (Batch C
+    // upgrades this into a concrete focus + destination.)
+    void draw_focus(TextCanvas& c, int row) {
+        const mc::Directive& d = world_.directive;
+        char b[80];
+        std::snprintf(b, sizeof b, "Order: pursue %s  -  now: %s",
+                      mc::ambition_name(d.ambition), act_name(world_.agents[0].activity));
+        c.text(row, 0, ui::fit(b, c.width()), ui::BrightYellow, ui::Black);
+    }
+
+    // Row 2: one-line glyph legend (#6).
+    void draw_legend(TextCanvas& c, int row) {
+        c.text(row, 0, ui::fit("@you  p s m=folk  J$CXFBDfRLAG=places  ~hazard  #wall",
+                               c.width()), ui::Gray, ui::Black);
     }
 
     void glyph_color(uint8_t tile, uint8_t& fg) {
@@ -182,14 +232,29 @@ private:
             c.put(top + psy, psx, U'@', ui::BrightWhite, ui::Black);
     }
 
+    // The wrapping log panel (#2): wrap each entry on spaces/hyphens (never
+    // mid-word) via ui::wrap_text, then show the tail so the newest is at bottom.
+    void draw_log(TextCanvas& c, int top, int rows, int w) {
+        std::vector<std::string> lines;
+        for (const std::string& s : log_) {
+            std::vector<std::string> ws = ui::wrap_text(s, w);
+            for (std::string& l : ws) lines.push_back(l);
+        }
+        int start = (int)lines.size() - rows; if (start < 0) start = 0;
+        for (int r = 0; r < rows; ++r) {
+            int li = start + r;
+            std::string s = (li >= 0 && li < (int)lines.size()) ? lines[li] : std::string();
+            c.text(top + r, 0, ui::fit(s, w), ui::BrightCyan, ui::Black);
+        }
+    }
+
     // ---- menus -------------------------------------------------------------
     void open_menu() { view_ = MENU; mls_ = ui::ListState{}; }
 
     int main_menu_n() const { return 4; }                 // Orders / Jack in / Travel / Close
     std::string main_menu_item(int i) {
-        const mc::Directive& d = world_.directive;
         switch (i) {
-            case 0: return std::string("Orders: pursue ") + mc::ambition_name(d.ambition);
+            case 0: return "Standing orders";
             case 1: return (world_.agents[0].status & mc::AF_HAS_DECK) ? "Jack in (run the net)" : "Jack in (need a deck)";
             case 2: return "Travel to an adjacent district";
             default: return "Close";
@@ -203,18 +268,32 @@ private:
         if (k.key == Key::Esc)  { view_ = EMBARK; return true; }
         if (k.key == Key::Enter) {
             switch (mls_.sel) {
-                case 0: { mc::Directive& d = world_.directive; d.ambition = (uint8_t)((d.ambition + 1) % mc::AMB_COUNT);
-                          ticker_ = std::string("New standing order: pursue ") + mc::ambition_name(d.ambition) + "."; break; }
+                case 0: view_ = ORDERS; mls_ = ui::ListState{}; return true;
                 case 1: { if (world_.agents[0].status & mc::AF_HAS_DECK) { mc::JackResult r = mc::jack_in(world_, 0);
-                              ticker_ = r.ran ? (std::string("You jacked in: ") + mc::outcome_name(r.outcome) + (r.flatlined ? " - flatline." : "."))
-                                              : "No data target in reach.";
-                          } else ticker_ = "You have no cyberdeck to jack with."; view_ = EMBARK; break; }
-                case 2: { view_ = TRAVEL; mls_ = ui::ListState{}; return true; }
+                              push_log(r.ran ? (std::string("You jacked in: ") + mc::outcome_name(r.outcome) + (r.flatlined ? " - flatline." : "."))
+                                             : "No data target in reach.");
+                          } else push_log("You have no cyberdeck to jack with."); view_ = EMBARK; break; }
+                case 2: view_ = TRAVEL; mls_ = ui::ListState{}; return true;
                 default: view_ = EMBARK; break;
             }
             return true;
         }
         return true;   // modal swallows keys
+    }
+
+    // Standing-orders sub-menu (#7): a real selection, not a cycle.
+    bool key_orders(AppContext& ctx, const KeyEvent& k) {
+        (void)ctx;
+        int n = mc::AMB_COUNT;
+        if (mls_.move(k, n, n)) return true;
+        if (k.key == Key::Esc)  { view_ = MENU; mls_ = ui::ListState{}; return true; }
+        if (k.key == Key::Enter) {
+            world_.directive.ambition = (uint8_t)clampi(mls_.sel, 0, n - 1);
+            push_log(std::string("New standing order: pursue ") + mc::ambition_name(world_.directive.ambition) + ".");
+            view_ = EMBARK;
+            return true;
+        }
+        return true;
     }
 
     bool key_travel(AppContext& ctx, const KeyEvent& k) {
@@ -234,21 +313,35 @@ private:
         return true;
     }
 
-    void draw_menu(TextCanvas& c) {
+    // a content-sized list modal so text never overflows the box (#8)
+    void list_modal(TextCanvas& c, const char* title, const char* foot, int n,
+                    const std::function<std::string(int)>& item) {
+        size_t maxw = std::string(title).size();
+        if (std::string(foot).size() > maxw) maxw = std::string(foot).size();
+        for (int i = 0; i < n; ++i) { size_t l = item(i).size(); if (l > maxw) maxw = l; }
+        int cols = clampi((int)maxw + 6, 18, c.width() - 2);
+        int rows = clampi(n + 4, 6, c.height() - 2);
         int ir, ic, iw, ih;
+        ui::modal_box(c, rows, cols, title, ui::BrightCyan, ir, ic, iw, ih, foot);
+        ui::list(c, ir, ih, mls_, n, item);
+    }
+
+    void draw_menu(TextCanvas& c) {
         if (view_ == TRAVEL) {
             const mc::District& d = world_.districts[cur_district_];
-            int n = d.deg;
-            ui::modal_box(c, n + 4, 34, "Travel", ui::BrightCyan, ir, ic, iw, ih, "enter:go  esc:back");
-            ui::list(c, ir, ih, mls_, n, [&](int i) {
+            list_modal(c, "Travel", "enter:go  esc:back", d.deg, [&](int i) {
                 uint8_t nb = d.adj[i];
                 return std::string(nb < world_.district_count ? mc::district_type_name(world_.districts[nb].type) : "?");
             });
             return;
         }
-        int n = main_menu_n();
-        ui::modal_box(c, n + 4, 42, "Orders", ui::BrightCyan, ir, ic, iw, ih, "enter:do  esc:back");
-        ui::list(c, ir, ih, mls_, n, [&](int i) { return main_menu_item(i); });
+        if (view_ == ORDERS) {
+            list_modal(c, "Standing orders", "enter:set  esc:back", mc::AMB_COUNT, [&](int i) {
+                return std::string("Pursue ") + mc::ambition_name((uint8_t)i);
+            });
+            return;
+        }
+        list_modal(c, "Menu", "enter:do  esc:back", main_menu_n(), [&](int i) { return main_menu_item(i); });
     }
 
     std::string chronicle_death() {
