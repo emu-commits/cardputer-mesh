@@ -567,22 +567,30 @@ static void test_population_inflow() {
         CHECK(newcomers > 0, "newcomers arrive to backfill the dead");
         CHECK(end >= start * 3 / 5, "inflow keeps the population from collapsing");
     }
-    // 2) over a long game the automation tide rises and synths can take over
-    //    (the protagonist's road to being the last human)
+    // 2) composition is a POSSIBILITY SPACE, not a bias: over long games across
+    //    many seeds, worlds drift differently — some lean synth, some mutant, some
+    //    stay human — driven by conditions, never a guaranteed march to machines.
     {
-        World w; gen_world(w, 7);
-        int synth0 = synth_count(w), human0 = human_count(w);
-        bool synth_majority_ever = false;
-        for (uint32_t t = 0; t < 200000; ++t) {  // ~8300 days
-            tick_world(w);
-            if (synth_count(w) > human_count(w)) synth_majority_ever = true;
+        int synth_worlds = 0, mutant_worlds = 0, human_worlds = 0;
+        int mt_count = 0;
+        for (uint32_t s = 1; s <= 24; ++s) {
+            World w; gen_world(w, s);
+            for (uint32_t t = 0; t < 120000; ++t) tick_world(w);  // ~5000 days
+            int h = human_count(w), sy = synth_count(w), mu = 0;
+            for (int i = 0; i < w.agent_count; ++i)
+                if ((w.agents[i].status & AF_ALIVE) && w.agents[i].kind == AK_MUTANT) ++mu;
+            CHECK(alive_count(w) > 0, "the city stays alive even as it changes hands");
+            if (sy > h && sy >= mu) ++synth_worlds;
+            else if (mu > h && mu > sy) ++mutant_worlds;
+            else ++human_worlds;
+            (void)mt_count;
         }
-        std::printf("       run B: tide %d, humans %d->%d, synths %d->%d, synth-majority reached=%s\n",
-                    w.synth_tide, human0, human_count(w), synth0, synth_count(w),
-                    synth_majority_ever ? "yes" : "no");
-        CHECK(w.synth_tide > 60, "the automation tide rises over a long game");
-        CHECK(synth_count(w) > synth0, "the synthetic population grows as humans are replaced");
-        CHECK(alive_count(w) > 0, "the city stays alive even as it changes hands");
+        std::printf("       run B (24 worlds, ~5000 days each): synth-led=%d  mutant-led=%d  human-majority=%d\n",
+                    synth_worlds, mutant_worlds, human_worlds);
+        // the point: it's NOT all one outcome — more than one fate occurs
+        int distinct = (synth_worlds > 0) + (mutant_worlds > 0) + (human_worlds > 0);
+        CHECK(distinct >= 2, "population fate varies by world (synth / mutant / human all possible)");
+        CHECK(synth_worlds < 24 && mutant_worlds < 24, "no single fate is guaranteed (not a built-in bias)");
     }
 }
 

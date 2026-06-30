@@ -328,19 +328,22 @@ another system *reads*.
 | 64 | Bounty & retaliation | grudge (`#25`), revenge arc (`#41`) | spawns a hunter who seeks + fights the target |
 | 65 | Megathreat behavior | `threats[]`, behavior | roam/occupy/attack; driven off → loot + legend + `#26` refugees |
 
-### K. Population & the automation tide (the endless world)
+### K. Population & composition tides (the endless world)
 | # | System | Reads | Writes |
 |---|---|---|---|
 | 66 | Population inflow | alive count vs. worldgen target | admits a newcomer into a dead slot — the inflow side of `#26`, so the city stays populated as long as the player survives |
-| 67 | Automation tide | `synth_tide` (rises slowly, forever) | newcomers skew **synthetic** over time; humans dying are replaced by machines |
+| 67 | Composition tides | `synth_tide`/`mutant_tide` mean-revert to **condition-derived** targets | weight newcomer kind (human/synth/mutant); automation drivers (corp/cult/datacenters/industrial/rogue-AI) raise synth, mutation drivers (toxic zones/undercity/contamination/mutant gangs) raise mutant — each rises **or falls** |
 
-> **Endless by design — and the city can change hands.** The protagonist can
-> climb slowly, dodging death, indefinitely (there's no run cap; the game ends
-> only on the protagonist's death). Inflow (`#66`) keeps the *world* alive
-> alongside them. And because the **automation tide** (`#67`) climbs over a long
-> game, the human population can dwindle while synths fill the streets — a society
-> **replaced by machines, with the (human) protagonist left as one of the last of
-> their kind** (`EV_SYNTH_MAJORITY`). Not scripted; an emergent late-game.
+> **Endless by design — and the city's fate is open.** The protagonist can climb
+> slowly, dodging death, indefinitely (there's no run cap; the game ends only on
+> the protagonist's death). Inflow (`#66`) keeps the *world* alive alongside them.
+> What the city *becomes* is a **possibility space, not a bias** (`#67`): a
+> corp/AI/industrial world can drift **synth**, a toxic/undercity world can drift
+> **mutant**, a quiet one stays **human** — and a shifting world shifts. Over a
+> long game the protagonist may end up among the last humans in a city of machines
+> **or** of mutants — or in a city still recognizably human (`EV_POP_SHIFT` marks
+> the tipping point, data = the new dominant kind). Emergent, condition-driven,
+> none guaranteed and none counted out.
 
 ### I. Surfacing
 | # | System | Reads | Writes |

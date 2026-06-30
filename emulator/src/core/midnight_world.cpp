@@ -298,7 +298,8 @@ void gen_world(World& w, uint32_t seed) {
         p.mood = (uint8_t)r.between(40, 70);
         p.kind = AK_HUMAN;                          // the protagonist is human
     }
-    w.synth_tide = (uint8_t)r.between(0, 25);       // the future hasn't fully automated yet
+    w.synth_tide = (uint8_t)r.between(0, 20);       // tides start low; conditions decide their fate
+    w.mutant_tide = (uint8_t)r.between(0, 20);
 
     for (int i = 1; i < m; ++i) {
         Agent& a = w.agents[i];
@@ -678,7 +679,7 @@ const char* event_name(uint8_t k) {
         "-", "combat", "death", "turf flip", "raid", "threat spawn", "threat defeat",
         "refugee", "extortion", "bounty", "recruit", "market day", "rumor", "collapse",
         "shortage", "heatwave", "lockdown", "riot",
-        "jack-in", "heist", "flatline", "net-ally", "newcomer", "synth-majority"
+        "jack-in", "heist", "flatline", "net-ally", "newcomer", "population shift"
     };
     return k < EV_COUNT ? n[k] : "?";
 }
@@ -1217,8 +1218,11 @@ std::string narrate_event(const World& w, const Event& e) {
             std::snprintf(b, sizeof b, "A fresh face in the %s - %s, a %s, looking for a foothold under %s.",
                           place, who, agent_kind_name(e.data), sky(h));
             break;
-        case EV_SYNTH_MAJORITY:
-            std::snprintf(b, sizeof b, "The census tipped: the machines outnumber the living now. The sprawl hums where it used to breathe.");
+        case EV_POP_SHIFT:
+            if (e.data == AK_SYNTH)
+                std::snprintf(b, sizeof b, "The census tipped: the machines outnumber the living now. The sprawl hums where it used to breathe.");
+            else
+                std::snprintf(b, sizeof b, "The census tipped: the changed outnumber the clean now. The toxin won; the streets wear new faces.");
             break;
         default:
             std::snprintf(b, sizeof b, "The %s turns over in its sleep.", place);
@@ -1291,12 +1295,37 @@ uint8_t ArcTracker::ingest(uint8_t kind, uint8_t d, uint8_t data, int t) {
 }
 
 // ---- population inflow (#26): newcomers keep the sprawl alive endlessly -----
+// composition is a weighted choice among human/synth/mutant, driven by the global
+// tides + the spawn district. As tides rise, fewer humans bother coming -> the city
+// CAN become synth or mutant; if tides stay low it stays human. A possibility space.
 static uint8_t pick_newcomer_kind(World& w, uint8_t loc) {
+    int s = w.synth_tide, m = w.mutant_tide;
     uint8_t dt = w.districts[loc].type;
-    if ((dt == DT_TOXIC || dt == DT_UNDERCITY) && w.rng.chance(30)) return AK_MUTANT;
-    // the automation tide: as synth_tide climbs, the sprawl fills with machines
-    if ((int)w.rng.range(255) < w.synth_tide) return AK_SYNTH;
+    if (dt == DT_TOXIC || dt == DT_UNDERCITY)        m += 60;   // local mutation pull
+    if (dt == DT_DATACENTER || dt == DT_INDUSTRIAL)  s += 40;   // local automation pull
+    int human = clampi(255 - s - m, 8, 255);                   // humans thin out as the city turns
+    int total = human + s + m;
+    int r = (int)w.rng.range((uint32_t)total);
+    if (r < s) return AK_SYNTH;
+    if (r < s + m) return AK_MUTANT;
     return AK_HUMAN;
+}
+// condition-derived targets for the two tides (0..255), so they can rise OR fall
+static void tide_targets(const World& w, int& autom, int& mutat) {
+    int dc = 0, ind = 0, tox = 0, undc = 0, inf_corp = 0, inf_cult = 0, toxin = 0, mutown = 0;
+    for (int i = 0; i < w.district_count; ++i) {
+        const District& d = w.districts[i];
+        if (d.type == DT_DATACENTER) ++dc; else if (d.type == DT_INDUSTRIAL) ++ind;
+        else if (d.type == DT_TOXIC) ++tox; else if (d.type == DT_UNDERCITY) ++undc;
+        inf_corp += d.influence[F_MEGACORP]; inf_cult += d.influence[F_CULT];
+        toxin += d.hazard[HZ_TOXIN];
+        if (d.owner == F_MUTANT) ++mutown;
+    }
+    int nd = w.district_count ? w.district_count : 1;
+    int rogue = 0;
+    for (int t = 0; t < w.threat_count; ++t) if (w.threats[t].kind == TK_ROGUE_AI_BODY) rogue += 25;
+    autom = clampi((inf_corp + inf_cult) / nd + dc * 18 + ind * 8 + rogue, 0, 255);
+    mutat = clampi(toxin / nd + tox * 30 + undc * 14 + mutown * 10, 0, 255);
 }
 static void respawn_newcomer(World& w, int slot) {
     Agent& a = w.agents[slot];
@@ -1317,8 +1346,15 @@ static void respawn_newcomer(World& w, int slot) {
     push_event(w, EV_NEWCOMER, loc, (uint8_t)slot, a.kind);
 }
 static void population_step(World& w) {
-    // the future automates — the tide of synthetic life rises, slowly, forever
-    if (w.rng.chance(g_mtune.synth_rise_pct) && w.synth_tide < 255) w.synth_tide++;
+    // tides drift toward what the world's conditions support (rise OR fall) — no
+    // built-in march to machines; an industrial/corp world leans synth, a toxic
+    // one leans mutant, a quiet one stays human, and a shifting world shifts.
+    int autom = 0, mutat = 0; tide_targets(w, autom, mutat);
+    if (w.synth_tide < autom && w.synth_tide < 255) w.synth_tide++;
+    else if (w.synth_tide > autom && w.synth_tide > 0) w.synth_tide--;
+    if (w.mutant_tide < mutat && w.mutant_tide < 255) w.mutant_tide++;
+    else if (w.mutant_tide > mutat && w.mutant_tide > 0) w.mutant_tide--;
+
     // inflow: backfill the dead toward the worldgen population (never slot 0 = player)
     int alive = 0;
     for (int i = 0; i < w.agent_count; ++i) if (w.agents[i].status & AF_ALIVE) ++alive;
@@ -1326,11 +1362,15 @@ static void population_step(World& w) {
         for (int i = 1; i < w.agent_count; ++i)
             if (!(w.agents[i].status & AF_ALIVE)) { respawn_newcomer(w, i); break; }
     }
-    // the tipping point: when machines outnumber the living, the city has changed
-    // hands — an occasional beat (the protagonist may end up the last human).
+
+    // tipping point: when humans are no longer the majority, the city has changed
+    // hands — occasional beat, data = the new dominant kind (synth or mutant).
     int humans = human_count(w), synths = synth_count(w);
-    if (synths > humans && humans > 0 && w.rng.chance(2))
-        push_event(w, EV_SYNTH_MAJORITY, NONE8, NONE8, (uint8_t)(humans < 256 ? humans : 255));
+    int mutants = 0;
+    for (int i = 0; i < w.agent_count; ++i)
+        if ((w.agents[i].status & AF_ALIVE) && w.agents[i].kind == AK_MUTANT) ++mutants;
+    if (humans > 0 && (synths > humans || mutants > humans) && w.rng.chance(2))
+        push_event(w, EV_POP_SHIFT, NONE8, NONE8, (uint8_t)(synths >= mutants ? AK_SYNTH : AK_MUTANT));
 }
 
 void tick_world(World& w) {
@@ -1546,7 +1586,7 @@ void serialize(const World& w, std::string& out) {
     wr.u8(w.company.asset_count); wr.u16(w.company.assets); wr.u8(w.company.reputation);
     wr.u8(w.directive.ambition); wr.u8(w.directive.target);
     wr.u8(w.directive.risk); wr.u8(w.directive.thrift);
-    wr.u8(w.weather); wr.u8(w.synth_tide);
+    wr.u8(w.weather); wr.u8(w.synth_tide); wr.u8(w.mutant_tide);
     wr.u8(w.threat_count);
     for (int i = 0; i < MAX_THREATS; ++i) {
         const Threat& t = w.threats[i];
@@ -1583,7 +1623,7 @@ bool deserialize(const std::string& in, World& w) {
     w.company.asset_count = rd.u8(); w.company.assets = rd.u16(); w.company.reputation = rd.u8();
     w.directive.ambition = rd.u8(); w.directive.target = rd.u8();
     w.directive.risk = rd.u8(); w.directive.thrift = rd.u8();
-    w.weather = rd.u8(); w.synth_tide = rd.u8();
+    w.weather = rd.u8(); w.synth_tide = rd.u8(); w.mutant_tide = rd.u8();
     w.threat_count = rd.u8();
     for (int i = 0; i < MAX_THREATS; ++i) {
         Threat& t = w.threats[i];
