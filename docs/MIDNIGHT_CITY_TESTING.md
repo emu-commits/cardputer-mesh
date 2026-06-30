@@ -2,9 +2,24 @@
 
 A cold-start handoff for testing **Midnight City** (the DF-style emergent cyberpunk
 sim). Read this + `docs/MIDNIGHT_CITY.md` (the design spec) to resume after context
-loss. Status as of this writing: **Phases 1–8 complete** (full engine + playable
-embark renderer in the emulator); **Phase 9 = device flash + on-glass soak** is the
-open step; balance is intentionally rough ("tune more later").
+loss. Status as of this writing: **Phases 1–8 complete** plus the **playtest-feedback
+overhaul (batches A–D)** (plan: `.claude/plans/witty-doodling-adleman.md`). The
+on-glass soak (open it on the CYD, run it a while, watch heap) is the open step;
+balance is intentionally rough ("tune more later" — career death rate is high right
+now because wage income is presence-gated).
+
+What the overhaul changed (vs the first on-glass build):
+- **Layout**: shorter map + a wrapping multi-line **log** panel; a **focus row** and
+  a **legend row** under the status bar; content-sized modals.
+- **Economy is legible**: every change to your cash is a logged transaction
+  (`+$12 wage`, `-$8 supplies`, `-$50 rent`…); off-screen NPC chatter is filtered out.
+- **Focus-driven life**: you start **unemployed**, hunt for work (a steady job OR a
+  one-time **contract/gig**), then a daily **work↔home commute** is the default loop.
+  Events interrupt it (you flee danger, then resume). **No district warping** — the
+  `@` walks to the map edge before crossing. The company never self-founds anymore.
+- **Company management**: found with a chosen **business model (sector)**; a Company
+  screen shows P&L (treasury, crew/target, gross/payroll/upkeep/net); **grow/shrink**
+  headcount directives.
 
 ---
 
@@ -78,24 +93,42 @@ The CYD shows the 53×20 embark view over UART; the Cardputer is the brain.
 - **m** — open the Orders menu (modal)
 - **esc** — (in a menu) back; (in embark) leave to the launcher
 
-Menu (the avatar self-drives, so this is *orders*, not micro-management):
-- **Orders: pursue <ambition>** — Enter cycles Survive → Wealth → Mastery → Territory
-- **Jack in** — run the net (only if the avatar has a cyberdeck; the protagonist
-  starts without one — see Known Gaps)
-- **Travel** — move to an adjacent district (manual override; the sim may move you too)
+Menu (the avatar self-drives micro-steps; you set focus + milestones):
+- **Standing orders** — sub-menu: pursue Survive / Wealth / Mastery / Territory
+- **Set focus** — sub-menu: Look for work · Rent an apartment · Found a company ·
+  Run the company · Resume daily work · Abandon the contract
+- **Company** — P&L screen + actions: Grow (hire) · Shrink (lay off) · Change
+  business model · (or **Found a company…** → pick a sector, if not yet founded)
+- **Jack in** — run the net (only if the avatar has a cyberdeck; starts without one)
+- **Travel** — set an adjacent district as the destination; the `@` walks to the
+  edge and crosses (no warp)
 
-Screen legend: `@` = you · `p`/`s`/`m` = human/synth/mutant NPCs · capital letters
-= POIs (`J`ob board, `$`market, `C`linic, `X`chop shop, `F`ab lab, `B`ar, `D`ata
-vault, `f`ence, `R`drone bay, `L`chem lab, `A`rmor shop, `G`forge) · `#` wall ·
-`.` floor · `~` hazard. The bottom cyan line is the **Gibson-voice ticker** (the
-narrator). Status bar top: `name $money [CompanyTier] Dday hh:00 [HURT] H#S#M#`
-(the H/S/M counts = living humans / synths / mutants).
+Screen rows (top→bottom): **status bar** (`name $money [CompanyTier] Dday hh:00
+[HURT] H#S#M#`; H/S/M = living humans/synths/mutants) · **focus row**
+(`Focus: … - …`, or `fleeing danger (was: …)`, or a contract line) · **legend row**
+· the **embark map** · the wrapping **log** (transactions + Gibson-voice narration)
+· footer. Glyphs: `@` = you · `p`/`s`/`m` = human/synth/mutant NPCs · POIs (`J`ob
+board, `$`market, `C`linic, `X`chop shop, `F`ab lab, `B`ar, `D`ata vault, `f`ence,
+`R`drone bay, `L`chem lab, `A`rmor shop, `G`forge) · `#` wall · `.` floor · `~` hazard.
 
 ---
 
 ## 5. What to look for (test-feedback checklist)
 
 Watch a crawl for a few in-game days and note:
+
+**Overhaul (batches A–D) — verify the punch-list fixes:**
+- [ ] Map is shorter; the **log wraps** cleanly with no mid-word breaks.
+- [ ] The **focus row** reads true (find work → work → commuting/resting; "fleeing
+      danger" when a block goes hot; a contract line when on a gig).
+- [ ] **Money matches the log**: every up/down on the status bar has a transaction
+      line (`+$ wage`, `-$ supplies`, `-$ rent`, `+$ contract`, `-$ invested`).
+- [ ] **No NPC spam**: you only see beats here / about you / city-scale.
+- [ ] **No warping**: travel + sim-driven moves walk the `@` to the edge first.
+- [ ] You start with **no job**; "Look for work" lands a job or a contract.
+- [ ] Menus: nested Orders / Set focus / Company; modal text fits the box.
+- [ ] **Company**: Found a company (pick a sector) → the Company screen shows P&L;
+      Grow/Shrink changes the crew target; the company doesn't appear on its own.
 
 **Does it feel alive?**
 - [ ] The ticker tells a coherent, varied story (not repetitive); arcs read well.
@@ -128,20 +161,24 @@ Please jot specifics: seed/screenshot, what the ticker said, what felt off
 
 ## 6. Known gaps / rough edges (expected, not bugs)
 
-- **Balance is rough on purpose.** Career death rate, water-riot frequency, and
-  the inflow turbulence are first-pass numbers (`MidTunables` in
-  `midnight_world.h`). Feedback on "too deadly / too easy / too chaotic" is exactly
-  what's wanted.
+- **Balance is rough on purpose.** Career death rate is HIGH right now: wage income
+  is presence-gated (you earn only at work, during work hours), so clawing up is
+  deadly. Sector revenue multipliers (`sector_rev_pct`) are flat upside with no
+  heat/risk downside yet. Water-riot frequency + inflow turbulence are first-pass.
+  All knobs live in `MidTunables` (`midnight_world.h`). "too deadly / too easy /
+  too chaotic" feedback is exactly what's wanted.
 - **Protagonist starts with no cyberdeck**, so "Jack in" is mostly NPC-facing for
   now; deck acquisition is future content. (NPC deckers do jack in the background.)
-- **Menu is shallow** (orders / jack / travel). Info screens (self / people here /
-  company) and collision→interaction decision modals + a live-play flatline spike
-  are planned next.
-- **Ticker shows whatever the latest beat is** — no selection/rate-limiting yet, so
-  busy days can flicker. Beat prioritization is a known follow-up.
-- **No births/immigration tuning pass** beyond keeping population stable; the
-  human/synth/mutant drift is a possibility space, mutant-led cities are rarer
-  (need toxic-heavy worldgen).
+- **No collision→interaction modals yet** — co-located NPCs walk the map but bumping
+  into one doesn't open a decision. Planned next.
+- **Contract/job/lease beats reuse generic event narration** (EV_RECRUIT/EV_BOUNTY),
+  so the *log line* for "got hired"/"signed a lease" reads generically; the focus
+  row + transaction line carry the precise meaning. Bespoke phrasing is a follow-up.
+- **Sector has no heat/risk downside** yet (#14 is choice + revenue only); illicit
+  sectors are currently pure upside. Heat/reputation is a planned balance pass.
+- **Log shows transactions + the latest narrated beat** each tick; on busy days it
+  can scroll fast (de-dup collapses identical consecutive lines). Beat
+  prioritization/rate-limiting is a known follow-up.
 
 ---
 

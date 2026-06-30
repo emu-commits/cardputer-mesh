@@ -1,5 +1,17 @@
 # Midnight City — design spec (v1, draft)
 
+> **Current truth (2026-06-30):** Phases 1–8 plus a playtest-feedback overhaul
+> (batches A–D) are implemented. The overhaul made the gameplay loop concrete and
+> player-directed: a **focus** state machine (start unemployed → find a steady job
+> *or* a one-time **contract** → a daily **work↔home commute** as the default →
+> player milestones **rent apartment / found company / run company**), **presence-
+> gated** wage income, **interrupt-and-return** when danger pulls you off task, a
+> transaction **ledger** in the log, **no district warping** (walk to the edge),
+> and **company management** (a chosen **sector** business model, P&L screen, and
+> grow/shrink headcount). Where §4/§4.1/§6 below describe the older auto-driving
+> model, the implemented behavior above + `docs/MIDNIGHT_CITY_TESTING.md` (and the
+> plan `.claude/plans/witty-doodling-adleman.md`) are the live reference.
+
 A Dwarf-Fortress-style emergent simulation re-skinned into a Neuromancer /
 Chiba-City cyberpunk setting, living as a normal app inside the Cardputer Deck
 firmware. You play **one** protagonist — a nobody who starts with nothing and
