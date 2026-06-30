@@ -351,6 +351,7 @@ void gen_world(World& w, uint32_t seed) {
     w.interrupt_focus = NONE8;
     w.apt_district = NONE8;
     w.work_district = NONE8;
+    w.craft_target = 0xFF;
     w.contract = Contract{};
     w.agents[0].status &= (uint8_t)~AF_EMPLOYED;
     w.agents[0].job = J_NONE;
@@ -496,6 +497,33 @@ int production_value(const World& w, const Agent& a) {
     v += v * w.districts[a.loc].prosperity / 200;   // up to +50% in a rich district
     return v;
 }
+// ---- crafting recipe tree (gather -> craft -> use/sell) ---------------------
+// Each discipline (profession + min tier) at a facility turns gathered inputs into an
+// output item, or a cyberdeck (out_item 0xFF -> AF_HAS_DECK). The cyberdeck is the
+// gated late goal that unlocks running the net.
+static const Recipe kRecipes[CR_COUNT] = {
+    /* CR_COMPONENTS */ { J_ELECTRONICS, ST_NOVICE,  SV_FABLAB,    2, 0, 0, IT_COMPONENTS },
+    /* CR_WEAPON     */ { J_GUNSMITH,    ST_SKILLED, SV_ARMORSHOP, 1, 1, 0, IT_WEAPONS },
+    /* CR_ARMOR      */ { J_ARMOR,       ST_SKILLED, SV_ARMORSHOP, 2, 1, 0, IT_ARMOR },
+    /* CR_IMPLANT    */ { J_RIPPERDOC,   ST_SKILLED, SV_CLINIC,    0, 2, 1, IT_IMPLANTS },
+    /* CR_CHEMS      */ { J_CHEMTECH,    ST_NOVICE,  SV_CHEMLAB,   1, 0, 0, IT_CHEMS },
+    /* CR_DECK       */ { J_DECKER,      ST_EXPERT,  SV_FABLAB,    1, 3, 2, 0xFF },
+};
+const Recipe& recipe_of(uint8_t cr) { return kRecipes[cr < CR_COUNT ? cr : 0]; }
+const char* craft_name(uint8_t cr) {
+    static const char* n[CR_COUNT] = { "components", "a weapon", "body armor", "an implant", "chems", "a cyberdeck" };
+    return cr < CR_COUNT ? n[cr] : "?";
+}
+// raw input item -> the commodity you buy to gather it
+static uint8_t item_commodity(uint8_t item) {
+    switch (item) {
+        case IT_MATERIALS:  return C_SCRAP;
+        case IT_COMPONENTS: return C_ELECTRONICS;
+        case IT_DATA:       return C_DATA;
+        default:            return C_COUNT;
+    }
+}
+
 // learning by doing — diminishing per tier so mastery is a long grind (deterministic).
 static void gain_skill(World& w, Agent& a, int boost = 0) {
     if (a.job < J_CONSTRUCTION || a.job >= J_COUNT || a.skill[a.job] >= 255) return;
@@ -596,7 +624,15 @@ static uint8_t do_work(World& w, Agent& a) {
     if (!(a.status & AF_EMPLOYED) || w.work_district >= w.district_count) { w.focus = FC_FIND_WORK; return do_find_work(w, a); }
     if (work_hours(w)) {
         if (a.loc != w.work_district) { uint8_t nx = next_hop_toward(w, a.loc, w.work_district); if (nx != a.loc) { a.loc = nx; return ACT_MOVE; } return ACT_MOVE; }
-        int wg = wage_of(w, a.loc, a); a.money += (uint32_t)wg; record_txn(w, a, wg, TXN_WAGE);
+        // skilled evolution of the job (chosen integration): once Skilled in your
+        // profession with its facility here, "work" CRAFTS a sellable item and sells
+        // it (income that outpaces wages); otherwise it's entry-level wage labor.
+        bool skilled_here = a.job >= J_CONSTRUCTION && a.job < J_COUNT &&
+                            skill_tier(a.skill[a.job]) >= ST_SKILLED &&
+                            (w.districts[a.loc].services & job_facility(a.job)) &&
+                            production_value(w, a) > 0;
+        if (skilled_here) { int v = production_value(w, a); a.money += (uint32_t)v; record_txn(w, a, v, TXN_SALE); }
+        else              { int wg = wage_of(w, a.loc, a); a.money += (uint32_t)wg; record_txn(w, a, wg, TXN_WAGE); }
         bump_need(a.need[ND_FATIGUE], T.fatigue_work);
         bool master = (w.directive.ambition == AMB_MASTERY && a.job == w.directive.target);
         gain_skill(w, a, master ? T.train_rate * 18 : 0);
@@ -605,6 +641,61 @@ static uint8_t do_work(World& w, Agent& a) {
     uint8_t home = (w.apt_district < w.district_count) ? w.apt_district : w.home;
     if (a.loc != home) { uint8_t nx = next_hop_toward(w, a.loc, home); if (nx != a.loc) { a.loc = nx; return ACT_MOVE; } }
     return ACT_REST;
+}
+
+// acquire one unit of a raw input by buying the matching commodity at a market
+// (logged); if the market here is dry/unaffordable, earn or go find one.
+static uint8_t gather_item(World& w, Agent& a, uint8_t item) {
+    uint8_t com = item_commodity(item);
+    District& here = w.districts[a.loc];
+    if (com < C_COUNT && (here.services & SV_MARKET) && here.supply[com] > 0) {
+        int price = price_of(w, a.loc, com);
+        if ((int)a.money >= price) {
+            a.money -= (uint32_t)price; record_txn(w, a, -price, TXN_BUY);
+            int s = here.supply[com] - 1; here.supply[com] = (uint8_t)(s < 0 ? 0 : s);
+            if (a.inv[item] < 250) a.inv[item]++;
+            return ACT_BUY;
+        }
+        return do_work(w, a);                            // can't afford the stock -> earn first
+    }
+    uint8_t nx = hop_to_service(w, a.loc, SV_MARKET);
+    if (nx != a.loc) { a.loc = nx; return ACT_MOVE; }
+    return do_work(w, a);                                // no stocked market reachable -> earn meanwhile
+}
+
+// FC_CRAFT (player directive): make w.craft_target. Adopt the discipline, train to
+// the required tier, gather the inputs, then craft at the facility and KEEP the
+// output (gear/deck) for use. Clears the target when done.
+static uint8_t do_craft(World& w, Agent& a) {
+    const MidTunables& T = g_mtune;
+    if (w.craft_target >= CR_COUNT) { w.focus = (a.status & AF_EMPLOYED) ? FC_WORK : FC_FIND_WORK; return ACT_REST; }
+    const Recipe& r = recipe_of(w.craft_target);
+    District& here = w.districts[a.loc];
+    if (a.job != r.job) { a.job = r.job; a.status |= AF_EMPLOYED; }        // adopt the trade
+    if (skill_tier(a.skill[r.job]) < r.min_tier) {                        // train up first
+        if (here.services & r.facility) { gain_skill(w, a, T.train_rate * 18); bump_need(a.need[ND_FATIGUE], T.fatigue_work); return ACT_WORK; }
+        uint8_t nx = hop_to_service(w, a.loc, r.facility);
+        if (nx != a.loc) { a.loc = nx; return ACT_MOVE; }
+        return ACT_REST;
+    }
+    if (a.inv[IT_MATERIALS]  < r.in_mat)  return gather_item(w, a, IT_MATERIALS);
+    if (a.inv[IT_COMPONENTS] < r.in_comp) return gather_item(w, a, IT_COMPONENTS);
+    if (a.inv[IT_DATA]       < r.in_data) return gather_item(w, a, IT_DATA);
+    if (!(here.services & r.facility)) {                                  // get to the workshop
+        uint8_t nx = hop_to_service(w, a.loc, r.facility);
+        if (nx != a.loc) { a.loc = nx; return ACT_MOVE; }
+        return ACT_REST;
+    }
+    a.inv[IT_MATERIALS]  -= r.in_mat;                                     // consume inputs
+    a.inv[IT_COMPONENTS] -= r.in_comp;
+    a.inv[IT_DATA]       -= r.in_data;
+    if (r.out_item == 0xFF) a.status |= AF_HAS_DECK;                      // cyberdeck -> jack-in unlocked
+    else if (a.inv[r.out_item] < 250) a.inv[r.out_item]++;
+    gain_skill(w, a);
+    push_event(w, EV_CRAFTED, a.loc, 0, w.craft_target);
+    w.craft_target = 0xFF;                                                // made it -> back to the daily loop
+    w.focus = (a.status & AF_EMPLOYED) ? FC_WORK : FC_FIND_WORK;
+    return ACT_WORK;
 }
 
 // FC_RENT_APT (player milestone): sign a lease here (3 periods up front), then
@@ -726,6 +817,7 @@ static uint8_t career_action(World& w, Agent& a) {
         case FC_CONTRACT:  return do_contract(w, a);
         case FC_FOUND_CO:  return do_found_co(w, a);
         case FC_RUN_CO:    return do_run_co(w, a);
+        case FC_CRAFT:     return do_craft(w, a);
         case FC_SURVIVE:   return npc_action(w, a);
         case FC_WORK:
         case FC_SAVE:
@@ -736,7 +828,7 @@ static uint8_t career_action(World& w, Agent& a) {
 const char* focus_name(uint8_t f) {
     static const char* n[FC_COUNT] = {
         "Survive", "Find work", "Rent an apartment", "Work", "Run a contract",
-        "Save up", "Found a company", "Run the company"
+        "Save up", "Found a company", "Run the company", "Craft"
     };
     return f < FC_COUNT ? n[f] : "?";
 }
@@ -888,6 +980,11 @@ static void agent_step(World& w, int idx) {
     bump_need(a.need[ND_SOCIAL], T.social_rate);
     bump_need(a.need[ND_SAFETY], here.danger > 40 ? 2 : -2);
     bump_need(a.need[ND_STRESS], here.danger / 16 - T.stress_relief);
+
+    // self-medicate: owned/crafted chems blunt stress, at the cost of dependency
+    if (a.need[ND_STRESS] > 180 && a.inv[IT_CHEMS] > 0) {
+        a.inv[IT_CHEMS]--; bump_need(a.need[ND_STRESS], -120); bump_need(a.need[ND_ADDICTION], 15);
+    }
 
     uint8_t action = (a.status & AF_PLAYER) ? career_action(w, a) : npc_action(w, a);
 
@@ -1474,6 +1571,12 @@ std::string narrate_event(const World& w, const Event& e) {
             else
                 std::snprintf(b, sizeof b, "The census tipped: the changed outnumber the clean now. The toxin won; the streets wear new faces.");
             break;
+        case EV_CRAFTED:
+            if (e.data == CR_DECK)
+                std::snprintf(b, sizeof b, "You jacked together a deck from scavenged parts. The matrix has a door now, and it knows your name.");
+            else
+                std::snprintf(b, sizeof b, "You finished %s on the %s bench - made, not bought.", craft_name(e.data), place);
+            break;
         default:
             std::snprintf(b, sizeof b, "The %s turns over in its sleep.", place);
             break;
@@ -1674,6 +1777,7 @@ void tick_world(World& w) {
             int dc = T.incident_lethal_pct;
             if (a.status & AF_PLAYER) dc = dc * (96 + (int)w.directive.risk) / 160;
             dc /= (1 + w.company.tier);
+            if (a.inv[IT_ARMOR] || a.inv[IT_IMPLANTS]) dc = dc * 2 / 3;   // crafted protection saves lives
             if (dc > 0 && w.rng.chance(dc)) { a.status &= (uint8_t)~AF_ALIVE; push_event(w, EV_DEATH, a.loc, (uint8_t)i, /*mugging*/3); }
         }
     }
@@ -1978,6 +2082,7 @@ void serialize(const World& w, std::string& out) {
     wr.u8(w.directive.risk); wr.u8(w.directive.thrift);
     // protagonist focus / commute / contract (v2)
     wr.u8(w.focus); wr.u8(w.interrupt_focus); wr.u8(w.apt_district); wr.u8(w.work_district);
+    wr.u8(w.craft_target);
     wr.u8(w.contract.active); wr.u8(w.contract.kind); wr.u8(w.contract.target);
     wr.u8(w.contract.progress); wr.u8(w.contract.need_ticks);
     wr.u16(w.contract.reward); wr.u16(w.contract.deadline);
@@ -2020,6 +2125,7 @@ bool deserialize(const std::string& in, World& w) {
     w.directive.ambition = rd.u8(); w.directive.target = rd.u8();
     w.directive.risk = rd.u8(); w.directive.thrift = rd.u8();
     w.focus = rd.u8(); w.interrupt_focus = rd.u8(); w.apt_district = rd.u8(); w.work_district = rd.u8();
+    w.craft_target = rd.u8();
     w.contract.active = rd.u8(); w.contract.kind = rd.u8(); w.contract.target = rd.u8();
     w.contract.progress = rd.u8(); w.contract.need_ticks = rd.u8();
     w.contract.reward = rd.u16(); w.contract.deadline = rd.u16();

@@ -805,6 +805,55 @@ static void econ_curve(uint32_t seed) {
                 start ? alive_count(w) * 100 / start : 100);
 }
 
+// ---- Phase H: crafting tree (gather -> craft -> use/sell, + cyberdeck) ------
+static void test_crafting() {
+    std::printf("[craft] gather->craft tree makes items; a cyberdeck unlocks the net\n");
+    // a Novice craft completes from raw gathering (buy scrap -> fab components)
+    {
+        World w; gen_world(w, 5);
+        w.agents[0].money = 5000;                 // plenty to gather; never broke -> won't die
+        w.focus = FC_CRAFT; w.craft_target = CR_COMPONENTS;
+        bool made = false;
+        for (int t = 0; t < 80000 && !made; ++t) {
+            tick_world(w);
+            if (w.agents[0].inv[IT_COMPONENTS] > 0) made = true;
+            if (!(w.agents[0].status & AF_ALIVE)) break;
+        }
+        CHECK(made, "a Novice components craft completes (gather scrap -> fab lab)");
+    }
+    // the cyberdeck: a long climb to Expert decker + parts, then AF_HAS_DECK -> jack-in
+    {
+        World w; gen_world(w, 5);
+        w.agents[0].money = 200000;
+        w.focus = FC_CRAFT; w.craft_target = CR_DECK;
+        bool deck = false;
+        for (int t = 0; t < 400000 && !deck; ++t) {
+            tick_world(w);
+            if (w.agents[0].status & AF_HAS_DECK) deck = true;
+            if (!(w.agents[0].status & AF_ALIVE)) break;
+        }
+        CHECK(deck, "a cyberdeck can be crafted (Expert decker + components + data)");
+        if (deck && net_target_count(w) > 0) {
+            JackResult r = jack_in(w, 0);
+            CHECK(r.ran, "with a crafted deck, the protagonist can run the net");
+        }
+    }
+    // deterministic for a fixed seed
+    {
+        auto run = [](uint32_t s) {
+            World w; gen_world(w, s); w.agents[0].money = 5000;
+            w.focus = FC_CRAFT; w.craft_target = CR_CHEMS;
+            for (int t = 0; t < 60000; ++t) {
+                tick_world(w);
+                if (w.agents[0].inv[IT_CHEMS] > 0) break;
+                if (!(w.agents[0].status & AF_ALIVE)) break;
+            }
+            return (int)w.agents[0].inv[IT_CHEMS];
+        };
+        CHECK(run(9) == run(9), "crafting is deterministic for a fixed seed");
+    }
+}
+
 // ---- a readable narrated chronicle of a live run (eyeballing emergence) -----
 // Drives a real world with the in-engine ArcTracker + narrator, exactly as the
 // renderer does, and prints the recognized chain-reaction ARCs as they fire plus a
@@ -939,6 +988,7 @@ int main(int argc, char** argv) {
     test_emergence();
     test_narrator();
     test_localmap();
+    test_crafting();
     std::printf("\n%d checks, %d failures\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

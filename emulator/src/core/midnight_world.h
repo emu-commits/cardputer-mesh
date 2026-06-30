@@ -34,7 +34,7 @@ static constexpr int TXNMAX        = 16;   // protagonist transaction ledger rin
 static constexpr uint8_t NONE8     = 0xFF;
 
 static constexpr uint16_t MID_MAGIC   = 0x434D; // 'M','C' little-endian
-static constexpr uint8_t  MID_VERSION = 3;      // v3: MAX_AGENTS 40->56 (denser city)
+static constexpr uint8_t  MID_VERSION = 4;      // v4: crafting (craft_target)
 
 // ---- enums -----------------------------------------------------------------
 enum Faction : uint8_t {
@@ -87,10 +87,13 @@ enum Ambition : uint8_t { AMB_SURVIVE, AMB_WEALTH, AMB_MASTERY, AMB_TERRITORY, A
 // and restored after); milestones (RENT_APT/FOUND_CO) are player commands.
 enum Focus : uint8_t {
     FC_SURVIVE, FC_FIND_WORK, FC_RENT_APT, FC_WORK, FC_CONTRACT,
-    FC_SAVE, FC_FOUND_CO, FC_RUN_CO, FC_COUNT
+    FC_SAVE, FC_FOUND_CO, FC_RUN_CO, FC_CRAFT, FC_COUNT
 };
 // a one-time gig: go to a district, do a thing, get paid a lump sum (#10).
 enum ContractKind : uint8_t { CK_COURIER, CK_FETCH, CK_SABOTAGE, CK_CLEAR, CK_GUARD, CK_COUNT };
+// craftable outputs (the crafting tree). Inputs are gathered (bought) commodities
+// turned into inventory; outputs are used (gear/deck) or sold. CR_DECK sets AF_HAS_DECK.
+enum CraftKind : uint8_t { CR_COMPONENTS, CR_WEAPON, CR_ARMOR, CR_IMPLANT, CR_CHEMS, CR_DECK, CR_COUNT };
 // the company's chosen line of business (#14) — keys company revenue (Batch D).
 enum Sector : uint8_t {
     SEC_NONE, SEC_FABRICATION, SEC_CYBERWARE, SEC_CHEMTECH, SEC_DATABROKER,
@@ -110,7 +113,7 @@ enum EventKind : uint8_t {
     EV_THREAT_DEFEAT, EV_REFUGEE, EV_EXTORT, EV_BOUNTY, EV_RECRUIT, EV_MARKET_DAY,
     EV_RUMOR, EV_COLLAPSE, EV_SHORTAGE, EV_HEATWAVE, EV_LOCKDOWN, EV_RIOT,
     EV_JACKIN, EV_HEIST, EV_FLATLINE, EV_NETALLY,
-    EV_NEWCOMER, EV_POP_SHIFT, EV_COUNT   // EV_POP_SHIFT.data = the new dominant AgentKind
+    EV_NEWCOMER, EV_POP_SHIFT, EV_CRAFTED, EV_COUNT   // EV_POP_SHIFT.data = dominant AgentKind; EV_CRAFTED.data = CraftKind
 };
 
 // what an agent did this tick (also drives the embark-view animation, Phase 8)
@@ -266,6 +269,7 @@ struct World {
     uint8_t  interrupt_focus = NONE8;        // focus stashed while a disruption overrides it
     uint8_t  apt_district    = NONE8;        // rented apartment (NONE8 = homeless)
     uint8_t  work_district   = NONE8;        // steady-job location
+    uint8_t  craft_target    = 0xFF;         // CraftKind the player is making (0xFF = none)
     Contract contract;                       // one live gig for the protagonist
     uint8_t  weather = 0;                  // heatwave/drought days remaining (#33)
     uint8_t  synth_tide = 0;               // 0..255 automation pressure -> synthetic inflow
@@ -404,6 +408,19 @@ struct JackResult {
 JackResult jack_in(World& w, int ai);
 int  net_target_count(const World& w);   // # of data targets (datacenters)
 const char* outcome_name(uint8_t cyber_outcome);
+
+// ---- crafting tree (gather -> craft -> use/sell) ----------------------------
+// A recipe: a discipline (profession + min skill tier) at a facility turns gathered
+// inputs into an output item (or a cyberdeck). Shared by the engine + the UI.
+struct Recipe {
+    uint8_t  job;        // required profession (Job)
+    uint8_t  min_tier;   // SkillTier needed
+    uint16_t facility;   // Service bit where it is made
+    uint8_t  in_mat, in_comp, in_data;   // inputs consumed (IT_MATERIALS/COMPONENTS/DATA)
+    uint8_t  out_item;   // ItemClass produced, or 0xFF = cyberdeck (sets AF_HAS_DECK)
+};
+const Recipe& recipe_of(uint8_t craft_kind);     // craft_kind in [0,CR_COUNT)
+const char*   craft_name(uint8_t craft_kind);
 
 // ---- focus / commute / contracts (#9/#10) ----------------------------------
 const char* focus_name(uint8_t f);
