@@ -22,7 +22,7 @@ namespace mid {
 
 // ---- fixed budgets (all freed on app-close; nothing in steady-state heap) ---
 static constexpr int MAX_DISTRICTS = 32;
-static constexpr int MAX_AGENTS    = 40;   // agents[0] is always the protagonist
+static constexpr int MAX_AGENTS    = 56;   // agents[0] is always the protagonist (denser city, #G)
 static constexpr int MAXDEG        = 5;    // graph adjacency per district
 static constexpr int RELMAX        = 4;    // sparse top-K relationships per agent
 static constexpr int SCARMAX       = 3;    // memory scars per agent
@@ -34,7 +34,7 @@ static constexpr int TXNMAX        = 16;   // protagonist transaction ledger rin
 static constexpr uint8_t NONE8     = 0xFF;
 
 static constexpr uint16_t MID_MAGIC   = 0x434D; // 'M','C' little-endian
-static constexpr uint8_t  MID_VERSION = 2;      // v2: focus/commute/contract/sector
+static constexpr uint8_t  MID_VERSION = 3;      // v3: MAX_AGENTS 40->56 (denser city)
 
 // ---- enums -----------------------------------------------------------------
 enum Faction : uint8_t {

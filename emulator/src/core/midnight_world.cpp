@@ -161,9 +161,16 @@ static uint16_t base_services(uint8_t type, Rng& rng) {
         case DT_METRO:        s = SV_FENCE | SV_CHOPSHOP; break;
         default: break;
     }
-    // a clinic/chopshop occasionally turns up elsewhere too
-    if (rng.chance(20)) s |= SV_CLINIC;
-    if (rng.chance(15)) s |= SV_ARMORSHOP;
+    // denser services (#G): more interaction sites per block -> more jobs, trade,
+    // fixers, crafting spots -> more economic pressure and emergent events. Free
+    // (services is a bitmask; POIs are regenerated, not serialized).
+    if (rng.chance(28)) s |= SV_CLINIC;
+    if (rng.chance(22)) s |= SV_ARMORSHOP;
+    if (rng.chance(32)) s |= SV_JOB_BOARD;   // more places to get hired
+    if (rng.chance(26)) s |= SV_MARKET;      // more trade -> more shortage pressure
+    if (rng.chance(22)) s |= SV_BAR;         // more fixers / gigs
+    if (rng.chance(18)) s |= SV_FENCE;
+    if (rng.chance(16)) s |= SV_FABLAB;      // more crafting sites (feeds Batch H)
     return s;
 }
 
@@ -276,7 +283,7 @@ void gen_world(World& w, uint32_t seed) {
     }
 
     // --- agents -------------------------------------------------------------
-    int m = r.between(28, MAX_AGENTS);
+    int m = r.between(40, MAX_AGENTS);   // denser population (#G) -> more emergent pressure
     if (m < F_COUNT + 1) m = F_COUNT + 1;
     w.agent_count = (uint8_t)m;
 
