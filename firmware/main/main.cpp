@@ -111,6 +111,7 @@ extern "C" void app_main(void) {
     mgr.reg("channels", "Channels", apps::make_channels);
     mgr.reg("system", "System", apps::make_system);
     mgr.reg("cyberhack", "CyberHack", apps::make_cyberhack);
+    mgr.reg("midnight", "Midnight City", apps::make_midnight);
     mgr.reg("settings", "Settings", apps::make_settings);
     mgr.reg("wizard", "Mesh setup wizard", apps::make_wizard, /*hidden=*/true);
     mgr.reg("presets", "Config presets", apps::make_presets, /*hidden=*/true);

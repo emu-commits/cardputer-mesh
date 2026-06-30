@@ -27,5 +27,6 @@ std::unique_ptr<app::App> make_system();
 std::unique_ptr<app::App> make_wiki();
 std::unique_ptr<app::App> make_search();
 std::unique_ptr<app::App> make_cyberhack();
+std::unique_ptr<app::App> make_midnight();
 
 } // namespace apps
