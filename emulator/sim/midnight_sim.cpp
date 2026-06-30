@@ -594,6 +594,50 @@ static void test_population_inflow() {
     }
 }
 
+// ---- Phase 8a: local embark map gen + pathfinding (the gate) ---------------
+static int popcount16(uint16_t v) { int n = 0; while (v) { n += v & 1; v >>= 1; } return n; }
+static void test_localmap() {
+    std::printf("[map] LocalMap deterministic per district; every POI reachable; @ pathfinds\n");
+    std::printf("       sizeof(LocalMap) = %zu bytes (one resident at a time)\n", sizeof(LocalMap));
+    CHECK(sizeof(LocalMap) < 4096, "one resident tile map is a few KB");
+    long poi_total = 0, poi_reachable = 0, walked = 0;
+    for (uint32_t s = 1; s <= 200; ++s) {
+        World w; gen_world(w, s);
+        for (int d = 0; d < w.district_count; d += 3) {       // sample districts
+            LocalMap a, b;
+            gen_localmap(a, w, (uint8_t)d);
+            gen_localmap(b, w, (uint8_t)d);
+            CHECK(std::memcmp(&a, &b, sizeof(LocalMap)) == 0, "gen_localmap is deterministic (seed+type)");
+            CHECK(localmap_walkable(a, a.entry_x, a.entry_y), "the @ spawns on a walkable tile");
+            int want = popcount16(w.districts[d].services);
+            if (want > LMAP_POI_MAX) want = LMAP_POI_MAX;
+            CHECK(a.poi_count == want, "a POI is placed for each offered service");
+            for (int p = 0; p < a.poi_count; ++p) {
+                ++poi_total;
+                const LocalPOI& q = a.poi[p];
+                CHECK(localmap_walkable(a, q.x, q.y), "POI sits on a walkable tile");
+                if (localmap_reachable(a, a.entry_x, a.entry_y, q.x, q.y)) ++poi_reachable;
+            }
+            // the @ can actually walk from the entry to the first POI, step by step
+            if (a.poi_count > 0) {
+                int cx = a.entry_x, cy = a.entry_y, tx = a.poi[0].x, ty = a.poi[0].y, guard = 0;
+                while ((cx != tx || cy != ty) && guard++ < LMAP_W * LMAP_H) {
+                    int nx = cx, ny = cy;
+                    if (!localmap_step_toward(a, cx, cy, tx, ty, &nx, &ny)) break;
+                    if (nx == cx && ny == cy) break;
+                    cx = nx; cy = ny;
+                }
+                if (cx == tx && cy == ty) ++walked;
+            }
+        }
+    }
+    std::printf("       POIs placed=%ld, reachable from entry=%ld; @ walked entry->POI in %ld maps\n",
+                poi_total, poi_reachable, walked);
+    CHECK(poi_total > 0, "POIs were generated");
+    CHECK(poi_reachable == poi_total, "EVERY POI is reachable from the @ spawn (map is connected)");
+    CHECK(walked > 0, "step_toward walks the @ to its destination");
+}
+
 // ---- Phase 7: generative narrator (the gate) -------------------------------
 static bool ascii_ok(const std::string& s) {
     if (s.empty()) return false;
@@ -756,6 +800,21 @@ int main(int argc, char** argv) {
         econ_curve(argc >= 3 ? (uint32_t)std::strtoul(argv[2], nullptr, 10) : 1);
         return 0;
     }
+    if (argc >= 2 && !std::strcmp(argv[1], "map")) {
+        uint32_t seed = argc >= 3 ? (uint32_t)std::strtoul(argv[2], nullptr, 10) : 1;
+        int d = argc >= 4 ? (int)std::strtoul(argv[3], nullptr, 10) : 0;
+        World w; gen_world(w, seed);
+        if (d >= w.district_count) d = 0;
+        LocalMap m; gen_localmap(m, w, (uint8_t)d);
+        std::printf("== %s  seed=%u d%d  (%d POIs) ==\n", district_type_name(w.districts[d].type), seed, d, m.poi_count);
+        char grid[LMAP_H][LMAP_W];
+        for (int y = 0; y < LMAP_H; ++y) for (int x = 0; x < LMAP_W; ++x) grid[y][x] = localmap_tile_glyph(m.tile[y][x]);
+        for (int p = 0; p < m.poi_count; ++p) grid[m.poi[p].y][m.poi[p].x] = localmap_poi_glyph(m.poi[p].service_bit);
+        grid[m.entry_y][m.entry_x] = '@';
+        for (int y = 0; y < LMAP_H; ++y) { for (int x = 0; x < LMAP_W; ++x) std::putchar(grid[y][x]); std::putchar('\n'); }
+        for (int p = 0; p < m.poi_count; ++p) std::printf("  %c = %s\n", localmap_poi_glyph(m.poi[p].service_bit), localmap_poi_name(m.poi[p].service_bit));
+        return 0;
+    }
     if (argc >= 2 && !std::strcmp(argv[1], "career")) {
         uint32_t seed = argc >= 3 ? (uint32_t)std::strtoul(argv[2], nullptr, 10) : 1;
         uint8_t amb = AMB_WEALTH;
@@ -794,6 +853,7 @@ int main(int argc, char** argv) {
     test_population_inflow();
     test_emergence();
     test_narrator();
+    test_localmap();
     std::printf("\n%d checks, %d failures\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

@@ -371,6 +371,34 @@ struct ArcTracker {
     uint8_t ingest(uint8_t kind, uint8_t d, uint8_t data, int t);      // -> ArcKind
 };
 
+// ---- Phase 8a: realized local embark map (view layer, §2.7) ----------------
+// The ONE district the protagonist occupies, realized as a DF-classic tile map
+// you watch the @ walk. Deterministic from district.seed + type (regenerable, not
+// stored). Tile-aware view layer ONLY — the abstract sim never reads these.
+static constexpr int LMAP_W       = 64;
+static constexpr int LMAP_H       = 40;
+static constexpr int LMAP_POI_MAX = 12;
+static constexpr int LMAP_ACTORS  = 16;
+enum LocalTile : uint8_t { LT_WALL, LT_FLOOR, LT_DOOR, LT_HAZARD, LT_RUBBLE, LT_TCOUNT };
+struct LocalPOI { uint8_t x = 0, y = 0, service_bit = 0; }; // service_bit = index of a Service flag
+struct LocalMap {
+    uint8_t  tile[LMAP_H][LMAP_W];
+    uint8_t  entry_x = 0, entry_y = 0;          // the @ spawn
+    uint8_t  poi_count = 0;
+    LocalPOI poi[LMAP_POI_MAX];
+    uint8_t  actor_count = 0;
+    uint8_t  actor_xy[LMAP_ACTORS][2];          // co-located NPC spawn tiles (8b assigns agents)
+};
+void gen_localmap(LocalMap& m, const World& w, uint8_t district);
+bool localmap_walkable(const LocalMap& m, int x, int y);
+bool localmap_reachable(const LocalMap& m, int fx, int fy, int tx, int ty);
+// first step from (fx,fy) toward (tx,ty) over walkable tiles; writes *nx,*ny.
+// returns false (and leaves *nx,*ny) if there is no path.
+bool localmap_step_toward(const LocalMap& m, int fx, int fy, int tx, int ty, int* nx, int* ny);
+char localmap_tile_glyph(uint8_t tile);
+char localmap_poi_glyph(uint8_t service_bit);
+const char* localmap_poi_name(uint8_t service_bit);
+
 // ---- save format (byte-exact, fixed-width) ---------------------------------
 void serialize(const World& w, std::string& out);
 bool deserialize(const std::string& in, World& w);

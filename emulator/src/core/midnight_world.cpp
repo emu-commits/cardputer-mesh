@@ -1471,6 +1471,154 @@ void tick_world(World& w) {
     w.tick++;
 }
 
+// ============================================================================
+// Phase 8a: realized local embark map (view layer, §2.7) — deterministic,
+// regenerable from district.seed + type; tile-aware VIEW only, never the sim.
+// ============================================================================
+bool localmap_walkable(const LocalMap& m, int x, int y) {
+    return x >= 0 && x < LMAP_W && y >= 0 && y < LMAP_H && m.tile[y][x] != LT_WALL;
+}
+char localmap_tile_glyph(uint8_t t) {
+    switch (t) { case LT_FLOOR: return '.'; case LT_DOOR: return '+';
+                 case LT_HAZARD: return '~'; case LT_RUBBLE: return ','; default: return '#'; }
+}
+char localmap_poi_glyph(uint8_t bit) {
+    switch (1u << bit) {
+        case SV_JOB_BOARD: return 'J'; case SV_MARKET: return '$'; case SV_CLINIC: return 'C';
+        case SV_CHOPSHOP: return 'X';  case SV_FABLAB: return 'F'; case SV_BAR: return 'B';
+        case SV_DATAVAULT: return 'D'; case SV_FENCE: return 'f';  case SV_DRONEBAY: return 'R';
+        case SV_CHEMLAB: return 'L';   case SV_ARMORSHOP: return 'A'; case SV_FORGE: return 'G';
+        default: return '?';
+    }
+}
+const char* localmap_poi_name(uint8_t bit) {
+    switch (1u << bit) {
+        case SV_JOB_BOARD: return "job board"; case SV_MARKET: return "market"; case SV_CLINIC: return "clinic";
+        case SV_CHOPSHOP: return "chop shop";  case SV_FABLAB: return "fab lab"; case SV_BAR: return "bar";
+        case SV_DATAVAULT: return "data vault"; case SV_FENCE: return "fence";   case SV_DRONEBAY: return "drone bay";
+        case SV_CHEMLAB: return "chem lab";    case SV_ARMORSHOP: return "armor shop"; case SV_FORGE: return "forge";
+        default: return "?";
+    }
+}
+
+namespace {
+const int kDX[4] = { 1, -1, 0, 0 }, kDY[4] = { 0, 0, 1, -1 };
+// BFS distance field from (sx,sy) over walkable tiles (255 = unreachable).
+bool lmap_bfs(const LocalMap& m, int sx, int sy, uint8_t dist[LMAP_H][LMAP_W]) {
+    for (int y = 0; y < LMAP_H; ++y) for (int x = 0; x < LMAP_W; ++x) dist[y][x] = 255;
+    if (!localmap_walkable(m, sx, sy)) return false;
+    static uint16_t q[LMAP_W * LMAP_H];
+    int head = 0, tail = 0;
+    dist[sy][sx] = 0; q[tail++] = (uint16_t)(sy * LMAP_W + sx);
+    while (head < tail) {
+        int idx = q[head++], x = idx % LMAP_W, y = idx / LMAP_W;
+        int nd = dist[y][x] + 1; if (nd > 254) nd = 254;
+        for (int k = 0; k < 4; ++k) {
+            int nx = x + kDX[k], ny = y + kDY[k];
+            if (localmap_walkable(m, nx, ny) && dist[ny][nx] == 255) {
+                dist[ny][nx] = (uint8_t)nd; q[tail++] = (uint16_t)(ny * LMAP_W + nx);
+            }
+        }
+    }
+    return true;
+}
+} // namespace
+
+bool localmap_reachable(const LocalMap& m, int fx, int fy, int tx, int ty) {
+    static uint8_t dist[LMAP_H][LMAP_W];
+    if (!lmap_bfs(m, fx, fy, dist)) return false;
+    if (tx < 0 || tx >= LMAP_W || ty < 0 || ty >= LMAP_H) return false;
+    return dist[ty][tx] != 255;
+}
+bool localmap_step_toward(const LocalMap& m, int fx, int fy, int tx, int ty, int* nx, int* ny) {
+    static uint8_t dist[LMAP_H][LMAP_W];
+    if (!lmap_bfs(m, tx, ty, dist)) return false;          // distances TO the target
+    if (fx < 0 || fx >= LMAP_W || fy < 0 || fy >= LMAP_H || dist[fy][fx] == 255) return false;
+    int best = dist[fy][fx], bx = fx, by = fy;
+    for (int k = 0; k < 4; ++k) {                          // descend the gradient
+        int ax = fx + kDX[k], ay = fy + kDY[k];
+        if (localmap_walkable(m, ax, ay) && dist[ay][ax] < best) { best = dist[ay][ax]; bx = ax; by = ay; }
+    }
+    *nx = bx; *ny = by;
+    return true;
+}
+
+void gen_localmap(LocalMap& m, const World& w, uint8_t district) {
+    m = LocalMap{};
+    uint8_t  type     = (district < w.district_count) ? w.districts[district].type : (uint8_t)DT_SLUM;
+    uint16_t services = (district < w.district_count) ? w.districts[district].services : 0;
+    uint32_t seed     = (district < w.district_count) ? w.districts[district].seed : (uint32_t)(district + 1);
+    Rng r; r.seed(seed ^ (0xB5297A4Du + (uint32_t)type * 2654435761u));
+
+    for (int y = 0; y < LMAP_H; ++y) for (int x = 0; x < LMAP_W; ++x) m.tile[y][x] = LT_WALL;
+
+    // room density/size by district type (slum = cramped warren, arcology = halls)
+    int rooms, rmin, rmax;
+    switch (type) {
+        case DT_ARCOLOGY:  rooms = 5;  rmin = 7; rmax = 14; break;
+        case DT_MARKET:    rooms = 4;  rmin = 8; rmax = 16; break;
+        case DT_SLUM:      rooms = 11; rmin = 3; rmax = 6;  break;
+        case DT_UNDERCITY: rooms = 9;  rmin = 3; rmax = 7;  break;
+        case DT_INDUSTRIAL:rooms = 6;  rmin = 6; rmax = 11; break;
+        case DT_DATACENTER:rooms = 6;  rmin = 5; rmax = 9;  break;
+        case DT_TOXIC:     rooms = 6;  rmin = 4; rmax = 9;  break;
+        default:           rooms = 7;  rmin = 4; rmax = 9;  break;
+    }
+    if (rooms > 14) rooms = 14;
+
+    struct RR { int x, y, w, h; } rr[16]; int nr = 0;
+    for (int i = 0; i < rooms && nr < 16; ++i) {
+        int rw = r.between(rmin, rmax), rh = r.between(rmin, rmax);
+        if (rw > LMAP_W - 3) rw = LMAP_W - 3;
+        if (rh > LMAP_H - 3) rh = LMAP_H - 3;
+        int rx = r.between(1, LMAP_W - rw - 1), ry = r.between(1, LMAP_H - rh - 1);
+        for (int yy = ry; yy < ry + rh; ++yy) for (int xx = rx; xx < rx + rw; ++xx) m.tile[yy][xx] = LT_FLOOR;
+        rr[nr++] = { rx, ry, rw, rh };
+    }
+    if (nr == 0) { rr[nr++] = { LMAP_W / 2 - 3, LMAP_H / 2 - 3, 6, 6 };
+                   for (int yy = rr[0].y; yy < rr[0].y + 6; ++yy) for (int xx = rr[0].x; xx < rr[0].x + 6; ++xx) m.tile[yy][xx] = LT_FLOOR; }
+
+    // connect consecutive rooms with L-corridors -> the whole map is one component
+    for (int i = 1; i < nr; ++i) {
+        int ax = rr[i - 1].x + rr[i - 1].w / 2, ay = rr[i - 1].y + rr[i - 1].h / 2;
+        int bx = rr[i].x + rr[i].w / 2,         by = rr[i].y + rr[i].h / 2;
+        for (int x = (ax < bx ? ax : bx); x <= (ax < bx ? bx : ax); ++x) if (m.tile[ay][x] == LT_WALL) m.tile[ay][x] = LT_FLOOR;
+        for (int y = (ay < by ? ay : by); y <= (ay < by ? by : ay); ++y) if (m.tile[y][bx] == LT_WALL) m.tile[y][bx] = LT_FLOOR;
+    }
+
+    // hazard flavor (walkable): toxin/rubble sprinkled on floor by the district's state
+    int toxin = (district < w.district_count) ? w.districts[district].hazard[HZ_TOXIN] : 0;
+    for (int i = 0; i < (toxin / 12); ++i) {
+        int x = r.between(0, LMAP_W - 1), y = r.between(0, LMAP_H - 1);
+        if (m.tile[y][x] == LT_FLOOR) m.tile[y][x] = LT_HAZARD;
+    }
+
+    // POIs: one per offered service, placed on a room floor tile (reachable via corridors)
+    for (uint8_t bit = 0; bit < 12 && m.poi_count < LMAP_POI_MAX; ++bit) {
+        if (!(services & (1u << bit))) continue;
+        const RR& room = rr[m.poi_count % nr];
+        int px = room.x + 1 + (m.poi_count * 2) % (room.w > 2 ? room.w - 2 : 1);
+        int py = room.y + room.h / 2;
+        if (px >= LMAP_W) px = LMAP_W - 1;
+        if (py >= LMAP_H) py = LMAP_H - 1;
+        m.tile[py][px] = LT_DOOR;
+        m.poi[m.poi_count].x = (uint8_t)px; m.poi[m.poi_count].y = (uint8_t)py; m.poi[m.poi_count].service_bit = bit;
+        m.poi_count++;
+    }
+
+    // the @ spawns at the heart of the first room
+    m.entry_x = (uint8_t)(rr[0].x + rr[0].w / 2);
+    m.entry_y = (uint8_t)(rr[0].y + rr[0].h / 2);
+
+    // scatter co-located NPC spawn tiles on the floor (8b binds agents to these)
+    for (int i = 0; i < LMAP_ACTORS; ++i) {
+        for (int tries = 0; tries < 8; ++tries) {
+            int x = r.between(1, LMAP_W - 2), y = r.between(1, LMAP_H - 2);
+            if (m.tile[y][x] == LT_FLOOR) { m.actor_xy[m.actor_count][0] = (uint8_t)x; m.actor_xy[m.actor_count][1] = (uint8_t)y; m.actor_count++; break; }
+        }
+    }
+}
+
 // ---- serialization (byte-exact, little-endian, fixed-width) -----------------
 namespace {
 struct Writer {
