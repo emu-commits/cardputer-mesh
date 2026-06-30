@@ -2,13 +2,27 @@
 
 A cold-start handoff for testing **Midnight City** (the DF-style emergent cyberpunk
 sim). Read this + `docs/MIDNIGHT_CITY.md` (the design spec) to resume after context
-loss. Status as of this writing: **Phases 1–8 complete** plus the **playtest-feedback
-overhaul (batches A–D)** (plan: `.claude/plans/witty-doodling-adleman.md`). The
-on-glass soak (open it on the CYD, run it a while, watch heap) is the open step;
-balance is intentionally rough ("tune more later" — career death rate is high right
-now because wage income is presence-gated).
+loss. Status as of this writing: **Phases 1–8 complete** plus **two playtest-feedback
+rounds — overhaul A–D and round-2 polish E–H** (plan:
+`.claude/plans/witty-doodling-adleman.md`). The on-glass soak (open it on the CYD, run
+it a while, watch heap) is the open step; balance is intentionally first-pass.
 
-What the overhaul changed (vs the first on-glass build):
+Round-2 polish (batches E–H, after the first round's chronicle review):
+- **Death is choice-gated** (E): an incident never one-shots — it robs + wounds; death
+  only strikes the *already injured AND broke* on a repeat hit. A cautious avatar gets
+  patched up (survives); a *reckless* one (high risk dial) pushes on through wounds and
+  lingers in dangerous blocks → that's how risk-takers die. At default risk you now
+  survive 1500+ days.
+- **Narrator is generative-only** (F): the renderer dropped the baked "named arcs" and
+  the "X gave way to X" spam; it surfaces one salience-ranked per-event beat per crawl.
+- **Denser world** (G): `MAX_AGENTS` 40→56 + denser services → far more
+  shortages/riots/turf/combat/refugees (save format v4).
+- **Crafting tree** (H): the **Crafting** menu shows your trade/skill + inventory +
+  recipes; pick one and the @ gathers parts and makes it. Skilled work crafts-and-sells
+  for income. Craft a **cyberdeck** (Expert decker + parts) to unlock "Jack in". Crafted
+  armor/implants cut mugging lethality; chems blunt stress (addiction risk).
+
+What the first overhaul (A–D) changed (vs the very first on-glass build):
 - **Layout**: shorter map + a wrapping multi-line **log** panel; a **focus row** and
   a **legend row** under the status bar; content-sized modals.
 - **Economy is legible**: every change to your cash is a logged transaction
@@ -99,7 +113,9 @@ Menu (the avatar self-drives micro-steps; you set focus + milestones):
   Run the company · Resume daily work · Abandon the contract
 - **Company** — P&L screen + actions: Grow (hire) · Shrink (lay off) · Change
   business model · (or **Found a company…** → pick a sector, if not yet founded)
-- **Jack in** — run the net (only if the avatar has a cyberdeck; starts without one)
+- **Crafting** — trade/skill + inventory + recipes; pick one to set a craft directive
+  (the @ gathers parts and makes it). Craft a **cyberdeck** to unlock jacking in.
+- **Jack in** — run the net (needs a cyberdeck — craft one; starts without)
 - **Travel** — set an adjacent district as the destination; the `@` walks to the
   edge and crosses (no warp)
 
@@ -161,24 +177,25 @@ Please jot specifics: seed/screenshot, what the ticker said, what felt off
 
 ## 6. Known gaps / rough edges (expected, not bugs)
 
-- **Balance is rough on purpose.** Career death rate is HIGH right now: wage income
-  is presence-gated (you earn only at work, during work hours), so clawing up is
-  deadly. Sector revenue multipliers (`sector_rev_pct`) are flat upside with no
-  heat/risk downside yet. Water-riot frequency + inflow turbulence are first-pass.
-  All knobs live in `MidTunables` (`midnight_world.h`). "too deadly / too easy /
-  too chaotic" feedback is exactly what's wanted.
-- **Protagonist starts with no cyberdeck**, so "Jack in" is mostly NPC-facing for
-  now; deck acquisition is future content. (NPC deckers do jack in the background.)
-- **No collision→interaction modals yet** — co-located NPCs walk the map but bumping
-  into one doesn't open a decision. Planned next.
-- **Contract/job/lease beats reuse generic event narration** (EV_RECRUIT/EV_BOUNTY),
-  so the *log line* for "got hired"/"signed a lease" reads generically; the focus
-  row + transaction line carry the precise meaning. Bespoke phrasing is a follow-up.
+- **Balance is still first-pass** (knobs in `MidTunables`, `midnight_world.h`).
+  Death is now choice-gated (cautious survives; reckless dies) — feedback on whether
+  reckless death feels frequent *enough* (or too much) is wanted. Skilled crafting
+  income (`production_value`) vs the company ladder may want tuning. Riots remain the
+  rarest emergent beat (fire in aggregate, sparse per-seed).
 - **Sector has no heat/risk downside** yet (#14 is choice + revenue only); illicit
   sectors are currently pure upside. Heat/reputation is a planned balance pass.
-- **Log shows transactions + the latest narrated beat** each tick; on busy days it
-  can scroll fast (de-dup collapses identical consecutive lines). Beat
-  prioritization/rate-limiting is a known follow-up.
+- **No collision→interaction modals yet** — co-located NPCs walk the map but bumping
+  into one doesn't open a decision. Planned next.
+- **Some beats reuse generic event narration** (e.g. hired/lease via EV_RECRUIT), so a
+  few *log lines* read generically; the focus row + transaction line carry the precise
+  meaning. (Crafting/deck now have bespoke EV_CRAFTED lines.)
+- **The named arcs are TEST-ONLY now**: the player log is pure generative per-event
+  narration (one salient beat/crawl). `ArcTracker`/`narrate_arc` live only in the
+  engine + harness to prove the chains fire (`./midnight_sim chronicle <seed> <days>`
+  prints them for eyeballing).
+- **Heap watch (on-glass):** Batch G's `MAX_AGENTS` 40→56 grows World + the
+  RAM-resident NVS save (~+1.5 KB). Confirm idle/app-open/after-a-save heap is healthy
+  before pushing `MAX_AGENTS` higher.
 
 ---
 
