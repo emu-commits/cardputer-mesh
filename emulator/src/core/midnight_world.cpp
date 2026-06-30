@@ -739,6 +739,26 @@ uint8_t avatar_target_poi(const World& w) {
     }
 }
 
+// per-day company P&L (#12) — sector modulates gross; SEC_NONE keeps base math.
+CompanyFinance company_finance(const World& w) {
+    const MidTunables& T = g_mtune;
+    const Company& co = w.company;
+    CompanyFinance f;
+    if (co.emp_count == 0 && co.treasury == 0) return f;   // unfounded -> all zero
+    int tier = co.tier < CT_COUNT ? co.tier : CT_COUNT - 1;
+    uint64_t labor = (uint64_t)co.emp_count * T.per_emp * T.tier_mult[tier];
+    labor += labor * (uint64_t)(co.asset_count * T.asset_bonus_pct) / 100;
+    uint64_t capital = (uint64_t)co.treasury * (uint64_t)T.tier_return[tier] / 10000;
+    int sp = (co.sector < SEC_COUNT) ? T.sector_rev_pct[co.sector] : 100;
+    uint64_t gross = (labor + capital) * (uint64_t)sp / 100;
+    if (gross > 4000000000ULL) gross = 4000000000ULL;
+    f.gross   = (uint32_t)gross;
+    f.payroll = (uint32_t)((uint64_t)co.emp_count * T.emp_payroll);
+    f.upkeep  = (uint32_t)((uint64_t)co.asset_count * T.asset_upkeep);
+    f.net     = (int32_t)((int64_t)f.gross - (int64_t)f.payroll - (int64_t)f.upkeep);
+    return f;
+}
+
 void company_step(World& w) {
     const MidTunables& T = g_mtune;
     Company& co = w.company;
@@ -746,24 +766,25 @@ void company_step(World& w) {
 
     int tier = co.tier < CT_COUNT ? co.tier : CT_COUNT - 1;
 
-    // revenue = labor (emp x tier multiplier x asset bonus) + capital return
-    uint64_t labor = (uint64_t)co.emp_count * T.per_emp * T.tier_mult[tier];
-    labor += labor * (uint64_t)(co.asset_count * T.asset_bonus_pct) / 100;
-    uint64_t capital = (uint64_t)co.treasury * (uint64_t)T.tier_return[tier] / 10000;
-    uint64_t cost = (uint64_t)co.emp_count * T.emp_payroll + (uint64_t)co.asset_count * T.asset_upkeep;
-
-    uint64_t t = (uint64_t)co.treasury + labor + capital;
+    CompanyFinance f = company_finance(w);
+    uint64_t cost = (uint64_t)f.payroll + (uint64_t)f.upkeep;
+    uint64_t t = (uint64_t)co.treasury + (uint64_t)f.gross;
     t = (cost > t) ? 0 : t - cost;
     if (t > 4000000000ULL) t = 4000000000ULL;
     co.treasury = (uint32_t)t;
 
-    // reinvest a slice (keep ~80% compounding): fill capacity for this tier
+    // headcount directive (#13): target_emp == 0 -> auto-fill capacity; otherwise
+    // hire/fire toward the player's target (bounded by this tier's cap).
+    int desired_emp = (co.target_emp > 0 && co.target_emp <= T.emp_cap[tier]) ? co.target_emp : T.emp_cap[tier];
+    if (co.emp_count > desired_emp) co.emp_count--;   // a layoff (one per day)
+
+    // reinvest a slice (keep ~80% compounding): grow toward the desired headcount
     bool favor_assets = (w.directive.ambition == AMB_TERRITORY);
     int asset_cap = tier * 4;   // assets only pay off from CREW up
     for (int guard = 0; guard < 6; ++guard) {
         int hire_cost  = T.hire_cost0 * (1 + co.emp_count);
         int asset_cost = T.asset_cost0 * (1 + co.asset_count);
-        bool can_hire  = co.emp_count < T.emp_cap[tier] && (int)co.treasury >= hire_cost * 5;
+        bool can_hire  = co.emp_count < desired_emp && (int)co.treasury >= hire_cost * 5;
         bool can_asset = co.asset_count < asset_cap && (int)co.treasury >= asset_cost * 5;
         if (favor_assets && can_asset) { co.treasury -= (uint32_t)asset_cost; co.asset_count++; }
         else if (can_hire) { co.treasury -= (uint32_t)hire_cost; co.emp_count++; }

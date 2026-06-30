@@ -23,7 +23,7 @@ namespace mc = mid;
 namespace apps {
 
 class Midnight : public App {
-    enum View { EMBARK, MENU, ORDERS, FOCUSMENU, TRAVEL };
+    enum View { EMBARK, MENU, ORDERS, FOCUSMENU, COMPANY, SECTOR, TRAVEL };
     static constexpr uint32_t STEP_MS = 600;   // "watch it crawl" cadence
     static constexpr uint32_t ANIM_MS = 110;   // @ walks smoothly between crawls
     static constexpr size_t   LOG_CAP = 24;     // recent log entries kept
@@ -46,6 +46,8 @@ public:
         if (view_ == MENU)      return key_menu(ctx, k);
         if (view_ == ORDERS)    return key_orders(ctx, k);
         if (view_ == FOCUSMENU) return key_focus(ctx, k);
+        if (view_ == COMPANY)   return key_company(ctx, k);
+        if (view_ == SECTOR)    return key_sector(ctx, k);
         if (view_ == TRAVEL)    return key_travel(ctx, k);
         // EMBARK
         if (k.is_char() && (k.ch == 'm' || k.ch == 'M')) { open_menu(); return true; }
@@ -321,13 +323,14 @@ private:
     // ---- menus -------------------------------------------------------------
     void open_menu() { view_ = MENU; mls_ = ui::ListState{}; }
 
-    int main_menu_n() const { return 5; }      // Orders / Focus / Jack in / Travel / Close
+    int main_menu_n() const { return 6; } // Orders / Focus / Company / Jack in / Travel / Close
     std::string main_menu_item(int i) {
         switch (i) {
             case 0: return "Standing orders";
             case 1: return "Set focus";
-            case 2: return (world_.agents[0].status & mc::AF_HAS_DECK) ? "Jack in (run the net)" : "Jack in (need a deck)";
-            case 3: return "Travel to an adjacent district";
+            case 2: return "Company";
+            case 3: return (world_.agents[0].status & mc::AF_HAS_DECK) ? "Jack in (run the net)" : "Jack in (need a deck)";
+            case 4: return "Travel to an adjacent district";
             default: return "Close";
         }
     }
@@ -341,16 +344,77 @@ private:
             switch (mls_.sel) {
                 case 0: view_ = ORDERS; mls_ = ui::ListState{}; return true;
                 case 1: view_ = FOCUSMENU; mls_ = ui::ListState{}; return true;
-                case 2: { if (world_.agents[0].status & mc::AF_HAS_DECK) { mc::JackResult r = mc::jack_in(world_, 0);
+                case 2: view_ = COMPANY; mls_ = ui::ListState{}; return true;
+                case 3: { if (world_.agents[0].status & mc::AF_HAS_DECK) { mc::JackResult r = mc::jack_in(world_, 0);
                               push_log(r.ran ? (std::string("You jacked in: ") + mc::outcome_name(r.outcome) + (r.flatlined ? " - flatline." : "."))
                                              : "No data target in reach.");
                           } else push_log("You have no cyberdeck to jack with."); view_ = EMBARK; break; }
-                case 3: view_ = TRAVEL; mls_ = ui::ListState{}; return true;
+                case 4: view_ = TRAVEL; mls_ = ui::ListState{}; return true;
                 default: view_ = EMBARK; break;
             }
             return true;
         }
         return true;   // modal swallows keys
+    }
+
+    // ---- company management (#12/#13/#14) ----------------------------------
+    bool company_founded() const { const mc::Company& co = world_.company; return !(co.treasury == 0 && co.emp_count == 0); }
+    int  company_emp_cap() const { int t = world_.company.tier < mc::CT_COUNT ? world_.company.tier : mc::CT_COUNT - 1; return mc::g_mtune.emp_cap[t]; }
+    int  company_n() const { return company_founded() ? 4 : 2; }
+    std::string company_item(int i) {
+        if (!company_founded()) return i == 0 ? "Found a company..." : "Close";
+        switch (i) {
+            case 0: return "Grow: hire more";
+            case 1: return "Shrink: lay off";
+            case 2: return "Change business model";
+            default: return "Close";
+        }
+    }
+    bool key_company(AppContext& ctx, const KeyEvent& k) {
+        (void)ctx;
+        int n = company_n();
+        if (mls_.move(k, n, n)) return true;
+        if (k.key == Key::Esc) { view_ = MENU; mls_ = ui::ListState{}; return true; }
+        if (k.key == Key::Enter) {
+            mc::Company& co = world_.company;
+            if (!company_founded()) {
+                if (mls_.sel == 0) { view_ = SECTOR; mls_ = ui::ListState{}; return true; }
+                view_ = EMBARK; return true;
+            }
+            int cap = company_emp_cap();
+            switch (mls_.sel) {
+                case 0: { int t = (co.target_emp ? co.target_emp : co.emp_count) + 1; if (t > cap) t = cap; if (t < 1) t = 1; co.target_emp = (uint8_t)t;
+                          char b[48]; std::snprintf(b, sizeof b, "Orders: grow the crew toward %d.", t); push_log(b); view_ = EMBARK; break; }
+                case 1: { int t = (co.target_emp ? co.target_emp : co.emp_count); if (t > 1) t--; co.target_emp = (uint8_t)t;
+                          char b[48]; std::snprintf(b, sizeof b, "Orders: trim the crew toward %d.", t); push_log(b); view_ = EMBARK; break; }
+                case 2: view_ = SECTOR; mls_ = ui::ListState{}; return true;
+                default: view_ = EMBARK; break;
+            }
+            return true;
+        }
+        return true;
+    }
+
+    // sector picker (#14): the named business models (skip SEC_NONE)
+    int sector_n() const { return mc::SEC_COUNT - 1; }
+    bool key_sector(AppContext& ctx, const KeyEvent& k) {
+        (void)ctx;
+        int n = sector_n();
+        if (mls_.move(k, n, n)) return true;
+        if (k.key == Key::Esc) { view_ = COMPANY; mls_ = ui::ListState{}; return true; }
+        if (k.key == Key::Enter) {
+            uint8_t sec = (uint8_t)(clampi(mls_.sel, 0, n - 1) + 1);   // +1 skips SEC_NONE
+            world_.company.sector = sec;
+            if (!company_founded()) {
+                world_.focus = mc::FC_FOUND_CO;
+                push_log(std::string("Founding a ") + mc::sector_name(sec) + " outfit (saving the stake).");
+            } else {
+                push_log(std::string("Business model is now ") + mc::sector_name(sec) + ".");
+            }
+            view_ = EMBARK;
+            return true;
+        }
+        return true;
     }
 
     // the player's focus commands (#9/#10): milestones + redirects the avatar pursues
@@ -454,7 +518,45 @@ private:
             list_modal(c, "Set focus", "enter:set  esc:back", FOCUS_N, [&](int i) { return focus_item(i); });
             return;
         }
+        if (view_ == COMPANY) { draw_company(c); return; }
+        if (view_ == SECTOR) {
+            list_modal(c, "Business model", "enter:pick  esc:back", sector_n(),
+                       [&](int i) { return std::string(mc::sector_name((uint8_t)(i + 1))); });
+            return;
+        }
         list_modal(c, "Menu", "enter:do  esc:back", main_menu_n(), [&](int i) { return main_menu_item(i); });
+    }
+
+    // the company P&L readout (#12) + the action list (grow/shrink/model/found)
+    void draw_company(TextCanvas& c) {
+        const mc::Company& co = world_.company;
+        bool founded = company_founded();
+        mc::CompanyFinance f = mc::company_finance(world_);
+        int nact = company_n();
+        int infolines = founded ? 6 : 1;
+        int rows = clampi(infolines + nact + 4, 6, c.height() - 2);
+        int ir, ic, iw, ih;
+        ui::modal_box(c, rows, 46, "Company", ui::BrightCyan, ir, ic, iw, ih, "enter:do  esc:back");
+        int r = ir; char b[64];
+        if (!founded) {
+            c.text(r++, ic, ui::fit("No company yet. Save up, then found one.", iw), ui::White, ui::Black);
+        } else {
+            std::snprintf(b, sizeof b, "%s  [%s]", mc::sector_name(co.sector), mc::company_tier_name(co.tier));
+            c.text(r++, ic, ui::fit(b, iw), ui::BrightWhite, ui::Black);
+            std::snprintf(b, sizeof b, "Treasury: $%u", (unsigned)co.treasury);
+            c.text(r++, ic, ui::fit(b, iw), ui::White, ui::Black);
+            if (co.target_emp) std::snprintf(b, sizeof b, "Crew %u (target %u, cap %d)  Assets %u", (unsigned)co.emp_count, (unsigned)co.target_emp, company_emp_cap(), (unsigned)co.asset_count);
+            else               std::snprintf(b, sizeof b, "Crew %u (auto, cap %d)  Assets %u", (unsigned)co.emp_count, company_emp_cap(), (unsigned)co.asset_count);
+            c.text(r++, ic, ui::fit(b, iw), ui::White, ui::Black);
+            std::snprintf(b, sizeof b, "Gross/day $%u", (unsigned)f.gross);
+            c.text(r++, ic, ui::fit(b, iw), ui::White, ui::Black);
+            std::snprintf(b, sizeof b, "Payroll $%u   Upkeep $%u", (unsigned)f.payroll, (unsigned)f.upkeep);
+            c.text(r++, ic, ui::fit(b, iw), ui::White, ui::Black);
+            std::snprintf(b, sizeof b, "Net/day %s$%ld", f.net < 0 ? "-" : "+", (long)(f.net < 0 ? -f.net : f.net));
+            c.text(r++, ic, ui::fit(b, iw), f.net < 0 ? ui::BrightMagenta : ui::BrightGreen, ui::Black);
+        }
+        int list_rows = ih - (r - ir); if (list_rows < 1) list_rows = 1;
+        ui::list(c, r, list_rows, mls_, nact, [&](int i) { return company_item(i); });
     }
 
     std::string chronicle_death() {

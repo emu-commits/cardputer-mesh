@@ -323,6 +323,9 @@ struct MidTunables {
     // capital return (basis points/day per tier) — the geometric driver that lets
     // a thriving company compound from thousands toward the billion-shard megacorp.
     int tier_return[CT_COUNT] = { 0, 20, 45, 90, 150 };
+    // #14 business-model revenue character (percent of base). SEC_NONE = 100 keeps
+    // an unfounded/sector-less company on the original math (harness baseline).
+    int sector_rev_pct[SEC_COUNT] = { 100, 95, 115, 110, 125, 120, 135, 140 };
     // street incidents (front-loaded danger): muggings scale with district danger
     // + the avatar's risk appetite; lethal only while broke + injured (wealth = safety).
     int incident_div = 7;          // per-day mugging chance = danger / incident_div (%)
@@ -366,6 +369,10 @@ const char* company_tier_name(uint8_t t);
 int         production_value(const World& w, const Agent& a); // value/tick when operating
 uint8_t     top_skill_tier(const Agent& a);                   // best tier across professions
 void        company_step(World& w);                          // per-day compounding (no-op if empty)
+// per-day company P&L (#12) — the numbers the company menu shows; company_step
+// uses the same figures so the readout matches what actually happens.
+struct CompanyFinance { uint32_t gross = 0, payroll = 0, upkeep = 0; int32_t net = 0; };
+CompanyFinance company_finance(const World& w);
 const char* agent_kind_name(uint8_t kind);
 int         human_count(const World& w);
 int         synth_count(const World& w);
