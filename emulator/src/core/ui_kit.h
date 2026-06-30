@@ -55,6 +55,11 @@ struct ListState {
 void list(TextCanvas& c, int r0, int rows, ListState& ls, int n,
           const std::function<std::string(int)>& item,
           uint8_t fg = White, uint8_t accent = BrightWhite);
+// region-aware variant: renders inside [col, col+width) (e.g. a modal's inner rect)
+// so the rows + scrollbar stay within the box instead of spanning the whole screen.
+void list(TextCanvas& c, int r0, int col, int rows, int width, ListState& ls, int n,
+          const std::function<std::string(int)>& item,
+          uint8_t fg = White, uint8_t accent = BrightWhite);
 
 // ---- overlays --------------------------------------------------------------
 // Draw a centered modal box (rows x cols) with a title; clears its interior and

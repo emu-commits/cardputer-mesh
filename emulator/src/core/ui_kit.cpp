@@ -59,18 +59,19 @@ bool ListState::move(const KeyEvent& k, int n, int rows) {
     return handled;
 }
 
-void list(TextCanvas& c, int r0, int rows, ListState& ls, int n,
+// region-aware list: renders inside [col, col+width) so it stays within a modal box
+// (fit clips each row to the region; scrollbar sits at the region's right edge).
+void list(TextCanvas& c, int r0, int col, int rows, int width, ListState& ls, int n,
           const std::function<std::string(int)>& item, uint8_t fg, uint8_t accent) {
     ls.clamp(n, rows); // keep scroll window consistent with current row count
-    int w = c.width();
     bool bar = n > rows; // need a scrollbar?
-    int textW = w - (bar ? 1 : 0);
+    int textW = width - (bar ? 1 : 0);
     for (int r = 0; r < rows; ++r) {
         int i = ls.top + r;
         if (i >= n) break;
         bool sel = (i == ls.sel);
         std::string line = (sel ? "> " : "  ") + item(i);
-        c.text(r0 + r, 0, fit(line, textW), sel ? (uint8_t)BrightWhite : fg, Black,
+        c.text(r0 + r, col, fit(line, textW), sel ? (uint8_t)BrightWhite : fg, Black,
                sel ? ATTR_INVERSE : ATTR_NONE);
     }
     if (bar) {
@@ -80,9 +81,15 @@ void list(TextCanvas& c, int r0, int rows, ListState& ls, int n,
         int pos = (rows - thumb) * ls.top / denom;
         for (int r = 0; r < rows; ++r) {
             bool on = (r >= pos && r < pos + thumb);
-            c.put(r0 + r, w - 1, on ? U'█' : U'│', on ? accent : (uint8_t)Gray, Black);
+            c.put(r0 + r, col + width - 1, on ? U'█' : U'│', on ? accent : (uint8_t)Gray, Black);
         }
     }
+}
+
+// full-width convenience (body lists): the original signature, now a thin wrapper.
+void list(TextCanvas& c, int r0, int rows, ListState& ls, int n,
+          const std::function<std::string(int)>& item, uint8_t fg, uint8_t accent) {
+    list(c, r0, 0, rows, c.width(), ls, n, item, fg, accent);
 }
 
 void modal_box(TextCanvas& c, int rows, int cols, const std::string& title,

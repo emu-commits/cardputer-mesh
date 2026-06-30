@@ -23,7 +23,7 @@ namespace mc = mid;
 namespace apps {
 
 class Midnight : public App {
-    enum View { EMBARK, MENU, ORDERS, FOCUSMENU, COMPANY, SECTOR, CRAFT, TRAVEL };
+    enum View { EMBARK, MENU, ORDERS, FOCUSMENU, COMPANY, SECTOR, CRAFT, INVENTORY, TRAVEL };
     static constexpr uint32_t STEP_MS = 600;   // "watch it crawl" cadence
     static constexpr uint32_t ANIM_MS = 110;   // @ walks smoothly between crawls
     static constexpr size_t   LOG_CAP = 24;     // recent log entries kept
@@ -48,6 +48,7 @@ public:
         if (view_ == COMPANY)   return key_company(ctx, k);
         if (view_ == SECTOR)    return key_sector(ctx, k);
         if (view_ == CRAFT)     return key_craft(ctx, k);
+        if (view_ == INVENTORY) { if (k.key == Key::Esc || k.key == Key::Enter) { view_ = MENU; mls_ = ui::ListState{}; } return true; }
         if (view_ == TRAVEL)    return key_travel(ctx, k);
         // EMBARK
         if (k.is_char() && (k.ch == 'm' || k.ch == 'M')) { open_menu(); return true; }
@@ -334,15 +335,16 @@ private:
     // ---- menus -------------------------------------------------------------
     void open_menu() { view_ = MENU; mls_ = ui::ListState{}; }
 
-    int main_menu_n() const { return 7; } // Orders/Focus/Company/Crafting/Jack/Travel/Close
+    int main_menu_n() const { return 8; } // Orders/Focus/Company/Crafting/Inventory/Jack/Travel/Close
     std::string main_menu_item(int i) {
         switch (i) {
             case 0: return "Standing orders";
             case 1: return "Set focus";
             case 2: return "Company";
             case 3: return "Crafting";
-            case 4: return (world_.agents[0].status & mc::AF_HAS_DECK) ? "Jack in (run the net)" : "Jack in (need a deck)";
-            case 5: return "Travel to an adjacent district";
+            case 4: return "Inventory";
+            case 5: return (world_.agents[0].status & mc::AF_HAS_DECK) ? "Jack in (run the net)" : "Jack in (need a deck)";
+            case 6: return "Travel to an adjacent district";
             default: return "Close";
         }
     }
@@ -358,11 +360,12 @@ private:
                 case 1: view_ = FOCUSMENU; mls_ = ui::ListState{}; return true;
                 case 2: view_ = COMPANY; mls_ = ui::ListState{}; return true;
                 case 3: view_ = CRAFT; mls_ = ui::ListState{}; return true;
-                case 4: { if (world_.agents[0].status & mc::AF_HAS_DECK) { mc::JackResult r = mc::jack_in(world_, 0);
+                case 4: view_ = INVENTORY; mls_ = ui::ListState{}; return true;
+                case 5: { if (world_.agents[0].status & mc::AF_HAS_DECK) { mc::JackResult r = mc::jack_in(world_, 0);
                               push_log(r.ran ? (std::string("You jacked in: ") + mc::outcome_name(r.outcome) + (r.flatlined ? " - flatline." : "."))
                                              : "No data target in reach.");
                           } else push_log("You have no cyberdeck to jack with."); view_ = EMBARK; break; }
-                case 5: view_ = TRAVEL; mls_ = ui::ListState{}; return true;
+                case 6: view_ = TRAVEL; mls_ = ui::ListState{}; return true;
                 default: view_ = EMBARK; break;
             }
             return true;
@@ -526,7 +529,7 @@ private:
         int rows = clampi(n + 4, 6, c.height() - 2);
         int ir, ic, iw, ih;
         ui::modal_box(c, rows, cols, title, ui::BrightCyan, ir, ic, iw, ih, foot);
-        ui::list(c, ir, ih, mls_, n, item);
+        ui::list(c, ir, ic, ih, iw, mls_, n, item);
     }
 
     void draw_menu(TextCanvas& c) {
@@ -550,6 +553,7 @@ private:
         }
         if (view_ == COMPANY) { draw_company(c); return; }
         if (view_ == CRAFT) { draw_craft(c); return; }
+        if (view_ == INVENTORY) { draw_inventory(c); return; }
         if (view_ == SECTOR) {
             list_modal(c, "Business model", "enter:pick  esc:back", sector_n(),
                        [&](int i) { return std::string(mc::sector_name((uint8_t)(i + 1))); });
@@ -587,7 +591,40 @@ private:
             c.text(r++, ic, ui::fit(b, iw), f.net < 0 ? ui::BrightMagenta : ui::BrightGreen, ui::Black);
         }
         int list_rows = ih - (r - ir); if (list_rows < 1) list_rows = 1;
-        ui::list(c, r, list_rows, mls_, nact, [&](int i) { return company_item(i); });
+        ui::list(c, r, ic, list_rows, iw, mls_, nact, [&](int i) { return company_item(i); });
+    }
+
+    // plain inventory nouns (item_name() carries articles for "sold a weapon")
+    static const char* inv_label(int it) {
+        switch (it) {
+            case mc::IT_MATERIALS:  return "scrap";
+            case mc::IT_COMPONENTS: return "components";
+            case mc::IT_WEAPONS:    return "weapons";
+            case mc::IT_ARMOR:      return "armor";
+            case mc::IT_IMPLANTS:   return "implants";
+            case mc::IT_CHEMS:      return "chems";
+            case mc::IT_DATA:       return "data shards";
+            case mc::IT_FOOD:       return "rations";
+            default:                return "goods";
+        }
+    }
+    // read-only inventory list (#6): one line per item class with quantity.
+    void draw_inventory(TextCanvas& c) {
+        const mc::Agent& p = world_.agents[0];
+        std::vector<std::string> lines; char b[48];
+        std::snprintf(b, sizeof b, "Cash: $%u", (unsigned)p.money); lines.push_back(b);
+        if (p.status & mc::AF_HAS_DECK) lines.push_back("cyberdeck x1");
+        for (int it = 0; it < mc::IT_COUNT; ++it) if (p.inv[it] > 0) {
+            std::snprintf(b, sizeof b, "%s x%u", inv_label(it), (unsigned)p.inv[it]);
+            lines.push_back(b);
+        }
+        if (lines.size() == 1) lines.push_back("(nothing but the rain)");
+        int n = (int)lines.size();
+        int rows = clampi(n + 4, 6, c.height() - 2);
+        int ir, ic, iw, ih;
+        ui::modal_box(c, rows, 32, "Inventory", ui::BrightCyan, ir, ic, iw, ih, "esc:back");
+        for (int i = 0; i < n && i < ih; ++i)
+            c.text(ir + i, ic, ui::fit(lines[i], iw), ui::White, ui::Black);
     }
 
     // a recipe row: what it is + the discipline/tier it takes
@@ -628,7 +665,7 @@ private:
             c.text(r++, ic, ui::fit("Pick something to build (the @ will gather + make it):", iw), ui::Gray, ui::Black);
         }
         int list_rows = ih - (r - ir); if (list_rows < 1) list_rows = 1;
-        ui::list(c, r, list_rows, mls_, n, [&](int i) { return craft_item(i); });
+        ui::list(c, r, ic, list_rows, iw, mls_, n, [&](int i) { return craft_item(i); });
     }
 
     std::string chronicle_death() {
