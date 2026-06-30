@@ -657,7 +657,7 @@ static uint8_t do_work(World& w, Agent& a) {
             int v = production_value(w, a);
             if (a.inv[out] > 0) { a.inv[out]--; a.money += (uint32_t)v; record_txn(w, a, v, TXN_SALE, out); }
         } else {
-            int wg = wage_of(w, a.loc, a); a.money += (uint32_t)wg; record_txn(w, a, wg, TXN_WAGE);
+            int wg = wage_of(w, a.loc, a); a.money += (uint32_t)wg; record_txn(w, a, wg, TXN_WAGE, a.job);
         }
         bump_need(a.need[ND_FATIGUE], T.fatigue_work);
         bool master = (w.directive.ambition == AMB_MASTERY && a.job == w.directive.target);
@@ -778,7 +778,7 @@ static uint8_t do_found_co(World& w, Agent& a) {
     if ((int)a.money >= T.found_threshold) {
         uint32_t reserve = (uint32_t)T.personal_reserve;
         uint32_t seed = a.money > reserve ? a.money - reserve : 0;
-        a.money -= seed;   // personal -> company treasury is an internal transfer, not logged (#9)
+        a.money -= seed; record_txn(w, a, -(int32_t)seed, TXN_INVEST);   // one-time founding stake (logged, #3)
         Company& co = w.company;
         co.treasury += seed;
         if (co.tier < CT_SOLO) co.tier = CT_SOLO;
@@ -789,13 +789,15 @@ static uint8_t do_found_co(World& w, Agent& a) {
     return (a.status & AF_EMPLOYED) ? do_work(w, a) : do_find_work(w, a);    // raise the stake first
 }
 
-// FC_RUN_CO: feed personal surplus into the company; it earns passively
-// (company_step compounds it daily, whether or not the avatar is present).
+// FC_RUN_CO: keep earning personally; sweep the day's surplus into the company ONCE
+// a day (18:00) as a single, NAMED, logged move -- so personal cash builds visibly
+// through the day instead of silently bleeding every tick (#3/#9). The company also
+// compounds on its own (company_step), present or not.
 static uint8_t do_run_co(World& w, Agent& a) {
     const MidTunables& T = g_mtune;
-    if ((int)a.money > T.personal_reserve + 100) {
+    if ((int)(w.tick % 24) == 18 && (int)a.money > T.personal_reserve + 50) {
         uint32_t invest = a.money - (uint32_t)T.personal_reserve;
-        a.money -= invest;   // internal transfer to the company treasury, not logged (#9)
+        a.money -= invest; record_txn(w, a, -(int32_t)invest, TXN_INVEST);
         uint64_t t = (uint64_t)w.company.treasury + invest;
         w.company.treasury = (uint32_t)(t > 4000000000ULL ? 4000000000ULL : t);
         return ACT_WORK;
@@ -982,7 +984,7 @@ static uint8_t npc_action(World& w, Agent& a) {
             action = ACT_BUY;
         } else if ((int)a.money < price) {
             // can't afford -> need income
-            if (a.status & AF_EMPLOYED) { int wg = wage_of(w, a.loc, a); a.money += (uint32_t)wg; record_txn(w, a, wg, TXN_WAGE); bump_need(a.need[ND_FATIGUE], T.fatigue_work); action = ACT_WORK; }
+            if (a.status & AF_EMPLOYED) { int wg = wage_of(w, a.loc, a); a.money += (uint32_t)wg; record_txn(w, a, wg, TXN_WAGE, a.job); bump_need(a.need[ND_FATIGUE], T.fatigue_work); action = ACT_WORK; }
             else if (here.services & SV_JOB_BOARD) { a.job = (uint8_t)w.rng.between(J_CONSTRUCTION, J_INFRA); a.status |= AF_EMPLOYED; action = ACT_SEEKJOB; }
             else { uint8_t nx = hop_to_service(w, a.loc, SV_JOB_BOARD); if (nx != a.loc) { a.loc = nx; action = ACT_MOVE; } else { action = ACT_REST; } }
         } else {
@@ -993,7 +995,7 @@ static uint8_t npc_action(World& w, Agent& a) {
         }
     } else if ((int)a.money < T.reserve) {
         // build a buffer for the next purchases
-        if (a.status & AF_EMPLOYED) { int wg = wage_of(w, a.loc, a); a.money += (uint32_t)wg; record_txn(w, a, wg, TXN_WAGE); bump_need(a.need[ND_FATIGUE], T.fatigue_work); gain_skill(w, a); action = ACT_WORK; }
+        if (a.status & AF_EMPLOYED) { int wg = wage_of(w, a.loc, a); a.money += (uint32_t)wg; record_txn(w, a, wg, TXN_WAGE, a.job); bump_need(a.need[ND_FATIGUE], T.fatigue_work); gain_skill(w, a); action = ACT_WORK; }
         else if (here.services & SV_JOB_BOARD) { a.job = (uint8_t)w.rng.between(J_CONSTRUCTION, J_INFRA); a.status |= AF_EMPLOYED; action = ACT_SEEKJOB; }
         else { uint8_t nx = hop_to_service(w, a.loc, SV_JOB_BOARD); if (nx != a.loc) { a.loc = nx; action = ACT_MOVE; } else { action = ACT_REST; } }
     } else {

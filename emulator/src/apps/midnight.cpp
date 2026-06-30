@@ -93,7 +93,8 @@ private:
     uint8_t  cur_district_ = 0;
     uint8_t  pending_district_ = mc::NONE8; // sim moved us; @ must walk to edge first (#3)
     int      px_ = 0, py_ = 0;            // @ tile on local_
-    int      tx_ = -1, ty_ = -1;          // current walk target (edge when crossing)
+    int      tx_ = -1, ty_ = -1;          // current walk target
+    int      exit_x_ = 0, exit_y_ = 0;    // far gate the @ walks to before leaving the zone (#1)
     uint32_t last_step_ = 0, step_ms_ = STEP_MS;
     uint32_t last_anim_ = 0;
     bool     paused_ = false;
@@ -126,6 +127,14 @@ private:
         cur_district_ = d;
         mc::gen_localmap(local_, world_, d);
         px_ = local_.entry_x; py_ = local_.entry_y; tx_ = ty_ = -1;
+        // exit gate = the POI farthest from entry (POIs are reachable) so leaving a zone
+        // is a visible walk ACROSS it, never an instant blink to the next (#1).
+        exit_x_ = local_.entry_x; exit_y_ = local_.entry_y;
+        int bd = -1;
+        for (int i = 0; i < local_.poi_count; ++i) {
+            int dd = iabs(local_.poi[i].x - local_.entry_x) + iabs(local_.poi[i].y - local_.entry_y);
+            if (dd > bd) { bd = dd; exit_x_ = local_.poi[i].x; exit_y_ = local_.poi[i].y; }
+        }
         if (announce) push_log(std::string("You move into the ") + mc::district_type_name(world_.districts[d].type) + ".");
     }
 
@@ -155,6 +164,10 @@ private:
             std::snprintf(b, sizeof b, "-$%ld bought %s", v, mc::commodity_name(t.data));
         else if (t.reason == mc::TXN_SALE)
             std::snprintf(b, sizeof b, "+$%ld sold %s", v, mc::item_name(t.data));
+        else if (t.reason == mc::TXN_WAGE)
+            std::snprintf(b, sizeof b, "+$%ld wage (%s)", v, mc::job_name(t.data));
+        else if (t.reason == mc::TXN_INVEST)
+            std::snprintf(b, sizeof b, "-$%ld into %s", v, mc::company_name(world_.company.name_id));
         else
             std::snprintf(b, sizeof b, "%s$%ld %s", sign, v, mc::txn_reason_name(t.reason));
         return std::string(b);
@@ -202,14 +215,14 @@ private:
     // visible walk, never an instant jump). Pure view animation; never touches the sim.
     void step_avatar() {
         if (pending_district_ != mc::NONE8) {
-            int gx = local_.entry_x, gy = local_.entry_y;     // leave via the gate (always reachable)
-            for (int step = 0; step < 3; ++step) {            // brisk but visible
-                if (px_ == gx && py_ == gy) break;
+            int moved = 0;
+            for (int step = 0; step < 6; ++step) {            // brisk slide across to the far gate
+                if (px_ == exit_x_ && py_ == exit_y_) break;
                 int nx = px_, ny = py_;
-                if (mc::localmap_step_toward(local_, px_, py_, gx, gy, &nx, &ny)) { px_ = nx; py_ = ny; }
+                if (mc::localmap_step_toward(local_, px_, py_, exit_x_, exit_y_, &nx, &ny)) { px_ = nx; py_ = ny; ++moved; }
                 else break;
             }
-            if (px_ == gx && py_ == gy) {                     // reached the gate -> cross
+            if ((px_ == exit_x_ && py_ == exit_y_) || moved == 0) {   // arrived (or stuck) -> cross
                 uint8_t d = pending_district_; pending_district_ = mc::NONE8;
                 enter_district(d, /*announce=*/true);
             }
