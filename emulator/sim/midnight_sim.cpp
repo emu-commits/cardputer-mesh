@@ -217,13 +217,10 @@ static void test_economy_soak() {
         total_buys += buys; total_works += works;
 
         // --- per-world gate assertions --------------------------------------
-        // "No extinction" = society persists, not that a fixed cohort all live.
-        // The world is now lethal by design (combat, threats, droughts, riots) and
-        // has no births/immigration yet, so a fixed starting cohort only declines
-        // over 417 days. A third surviving with the economy fully running is clearly
-        // not extinction. (Population replacement is a future system; then this can
-        // measure steady-state population instead of cohort decay.)
-        CHECK(end_alive >= start_alive / 3, "no extinction (society persists the soak)");
+        // "No extinction" = the city stays populated. The world is lethal by design
+        // (combat/threats/droughts/riots), but population inflow (#26) backfills the
+        // dead, so the living population holds at a steady state rather than decaying.
+        CHECK(end_alive >= start_alive * 3 / 5, "no extinction (inflow holds the population)");
         CHECK(buys > 0, "economy moves: agents buy");
         CHECK(works > 0, "economy moves: agents work");
         CHECK(last_quarter_activity > 0, "no deadlock: still active in the final quarter");
@@ -552,6 +549,43 @@ static void test_phase4_systems() {
     CHECK(grudge_peak > 10, "combat/turf builds faction grudges");
 }
 
+// ---- population inflow + automation tide (endless world) -------------------
+static void test_population_inflow() {
+    std::printf("[pop] inflow keeps the city alive; the automation tide can replace it\n");
+    // 1) inflow holds the population over a long run (no slow depopulation)
+    {
+        World w; gen_world(w, 11);
+        int start = alive_count(w);
+        long newcomers = 0;
+        for (uint32_t t = 0; t < 40000; ++t) {
+            tick_world(w);
+            uint16_t tk = (uint16_t)(w.tick - 1);
+            for (int i = 0; i < EVMAX; ++i) if (w.events[i].kind == EV_NEWCOMER && w.events[i].tick == tk) ++newcomers;
+        }
+        int end = alive_count(w);
+        std::printf("       run A: alive %d -> %d over 1666 days, %ld newcomers admitted\n", start, end, newcomers);
+        CHECK(newcomers > 0, "newcomers arrive to backfill the dead");
+        CHECK(end >= start * 3 / 5, "inflow keeps the population from collapsing");
+    }
+    // 2) over a long game the automation tide rises and synths can take over
+    //    (the protagonist's road to being the last human)
+    {
+        World w; gen_world(w, 7);
+        int synth0 = synth_count(w), human0 = human_count(w);
+        bool synth_majority_ever = false;
+        for (uint32_t t = 0; t < 200000; ++t) {  // ~8300 days
+            tick_world(w);
+            if (synth_count(w) > human_count(w)) synth_majority_ever = true;
+        }
+        std::printf("       run B: tide %d, humans %d->%d, synths %d->%d, synth-majority reached=%s\n",
+                    w.synth_tide, human0, human_count(w), synth0, synth_count(w),
+                    synth_majority_ever ? "yes" : "no");
+        CHECK(w.synth_tide > 60, "the automation tide rises over a long game");
+        CHECK(synth_count(w) > synth0, "the synthetic population grows as humans are replaced");
+        CHECK(alive_count(w) > 0, "the city stays alive even as it changes hands");
+    }
+}
+
 // ---- Phase 7: generative narrator (the gate) -------------------------------
 static bool ascii_ok(const std::string& s) {
     if (s.empty()) return false;
@@ -749,6 +783,7 @@ int main(int argc, char** argv) {
     test_combat_mechanics();
     test_phase4_systems();
     test_cyberhack_bridge();
+    test_population_inflow();
     test_emergence();
     test_narrator();
     std::printf("\n%d checks, %d failures\n", g_checks, g_fail);

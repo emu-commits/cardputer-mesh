@@ -68,6 +68,11 @@ enum CompanyTier : uint8_t {
 // packed personality: each trait 0..255, biases the DecisionPolicy (Phase 3)
 enum Trait : uint8_t { TR_GREED, TR_CAUTION, TR_LOYALTY, TR_AGGRESSION, TR_COUNT };
 
+// who walks the sprawl. As the automation tide rises, newcomers skew synthetic —
+// the society can, over a long game, be replaced by machines with only the
+// (human) protagonist left. (#26 inflow side.)
+enum AgentKind : uint8_t { AK_HUMAN, AK_SYNTH, AK_MUTANT, AK_COUNT };
+
 // skill curriculum tiers (docs/MIDNIGHT_CITY.md §4): Novice->Skilled->Expert->Master
 enum SkillTier : uint8_t { ST_NOVICE, ST_SKILLED, ST_EXPERT, ST_MASTER, ST_COUNT };
 
@@ -86,7 +91,8 @@ enum EventKind : uint8_t {
     EV_NONE, EV_COMBAT, EV_DEATH, EV_TURF_FLIP, EV_RAID, EV_THREAT_SPAWN,
     EV_THREAT_DEFEAT, EV_REFUGEE, EV_EXTORT, EV_BOUNTY, EV_RECRUIT, EV_MARKET_DAY,
     EV_RUMOR, EV_COLLAPSE, EV_SHORTAGE, EV_HEATWAVE, EV_LOCKDOWN, EV_RIOT,
-    EV_JACKIN, EV_HEIST, EV_FLATLINE, EV_NETALLY, EV_COUNT
+    EV_JACKIN, EV_HEIST, EV_FLATLINE, EV_NETALLY,
+    EV_NEWCOMER, EV_SYNTH_MAJORITY, EV_COUNT
 };
 
 // what an agent did this tick (also drives the embark-view animation, Phase 8)
@@ -138,6 +144,7 @@ struct District {
 
 struct Agent {
     uint8_t  name_id  = 0;
+    uint8_t  kind     = AK_HUMAN;          // human / synth / mutant
     uint8_t  loc      = 0;
     uint8_t  faction  = F_COUNT;
     uint8_t  trait[TR_COUNT] = {0};
@@ -214,6 +221,7 @@ struct World {
     Company  company;
     Directive directive;                   // the protagonist's standing orders (§4.1)
     uint8_t  weather = 0;                  // heatwave/drought days remaining (#33)
+    uint8_t  synth_tide = 0;               // 0..255 automation pressure -> synthetic inflow
     uint8_t  threat_count = 0;             // active threats in threats[]
     Threat   threats[MAX_THREATS];
     // remembered cyberspace targets — the matrix remembers across jack-ins (§5.2)
@@ -286,6 +294,9 @@ struct MidTunables {
     int jack_pct = 2;              // per-day chance a decker jacks a data target
     int flatline_death_pct = 16;   // chance a cyberspace flatline kills in meatspace
     int heist_score = 200;         // shards extracted that count as a "big heist"
+    // --- population inflow (#26): newcomers keep the city alive endlessly -----
+    int inflow_pct = 30;           // per-day chance to admit a newcomer when below target
+    int synth_rise_pct = 6;        // per-day chance the automation tide ticks up
 };
 extern MidTunables g_mtune;
 
@@ -302,6 +313,9 @@ const char* company_tier_name(uint8_t t);
 int         production_value(const World& w, const Agent& a); // value/tick when operating
 uint8_t     top_skill_tier(const Agent& a);                   // best tier across professions
 void        company_step(World& w);                          // per-day compounding (no-op if empty)
+const char* agent_kind_name(uint8_t kind);
+int         human_count(const World& w);
+int         synth_count(const World& w);
 
 // ---- Phase 4 queries -------------------------------------------------------
 int         combat_atk(const World& w, const Agent& a);

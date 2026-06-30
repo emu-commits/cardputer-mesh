@@ -73,6 +73,22 @@ const char* faction_name(uint8_t f) { return f < F_COUNT ? kFactionNames[f] : "U
 const char* district_type_name(uint8_t t) { return t < DT_COUNT ? kDistrictTypeNames[t] : "?"; }
 const char* job_name(uint8_t j) { return j < J_COUNT ? kJobNames[j] : "?"; }
 const char* commodity_name(uint8_t c) { return c < C_COUNT ? kCommodityNames[c] : "?"; }
+const char* agent_kind_name(uint8_t k) {
+    static const char* n[AK_COUNT] = { "human", "synth", "mutant" };
+    return k < AK_COUNT ? n[k] : "?";
+}
+int human_count(const World& w) {
+    int n = 0;
+    for (int i = 0; i < w.agent_count; ++i)
+        if ((w.agents[i].status & AF_ALIVE) && w.agents[i].kind == AK_HUMAN) ++n;
+    return n;
+}
+int synth_count(const World& w) {
+    int n = 0;
+    for (int i = 0; i < w.agent_count; ++i)
+        if ((w.agents[i].status & AF_ALIVE) && w.agents[i].kind == AK_SYNTH) ++n;
+    return n;
+}
 
 // ---- graph queries ----------------------------------------------------------
 bool districts_adjacent(const World& w, uint8_t a, uint8_t b) {
@@ -280,12 +296,18 @@ void gen_world(World& w, uint32_t seed) {
         p.money = (uint32_t)r.between(10, 40);
         p.status = AF_PLAYER | AF_ALIVE;
         p.mood = (uint8_t)r.between(40, 70);
+        p.kind = AK_HUMAN;                          // the protagonist is human
     }
+    w.synth_tide = (uint8_t)r.between(0, 25);       // the future hasn't fully automated yet
 
     for (int i = 1; i < m; ++i) {
         Agent& a = w.agents[i];
         a.name_id = (uint8_t)r.range((uint32_t)agent_name_count());
         a.loc = (uint8_t)r.range((uint32_t)n);
+        // mostly human at worldgen; a few synths/mutants by district flavor
+        uint8_t dt = w.districts[a.loc].type;
+        a.kind = ((dt == DT_TOXIC || dt == DT_UNDERCITY) && r.chance(35)) ? (uint8_t)AK_MUTANT
+                 : r.chance(12) ? (uint8_t)AK_SYNTH : (uint8_t)AK_HUMAN;
         a.faction = r.chance(50) ? (uint8_t)r.range(F_COUNT) : (uint8_t)F_COUNT;
         for (int t = 0; t < TR_COUNT; ++t) a.trait[t] = (uint8_t)r.between(0, 255);
         for (int nd = 0; nd < ND_COUNT; ++nd) a.need[nd] = (uint8_t)r.between(10, 60);
@@ -610,9 +632,11 @@ static void agent_step(World& w, int idx) {
 
     District& here = w.districts[a.loc];
 
-    // --- needs decay --------------------------------------------------------
-    bump_need(a.need[ND_HUNGER], T.hunger_rate);
-    bump_need(a.need[ND_THIRST], T.thirst_rate + (w.weather > 0 ? 2 : 0)); // heatwave (#33)
+    // --- needs decay (synths sip power, not food/water) ---------------------
+    int hr = T.hunger_rate, tr = T.thirst_rate + (w.weather > 0 ? 2 : 0); // heatwave (#33)
+    if (a.kind == AK_SYNTH) { hr = hr / 3; tr = tr / 3; }
+    bump_need(a.need[ND_HUNGER], hr);
+    bump_need(a.need[ND_THIRST], tr);
     bump_need(a.need[ND_SOCIAL], T.social_rate);
     bump_need(a.need[ND_SAFETY], here.danger > 40 ? 2 : -2);
     bump_need(a.need[ND_STRESS], here.danger / 16 - T.stress_relief);
@@ -654,7 +678,7 @@ const char* event_name(uint8_t k) {
         "-", "combat", "death", "turf flip", "raid", "threat spawn", "threat defeat",
         "refugee", "extortion", "bounty", "recruit", "market day", "rumor", "collapse",
         "shortage", "heatwave", "lockdown", "riot",
-        "jack-in", "heist", "flatline", "net-ally"
+        "jack-in", "heist", "flatline", "net-ally", "newcomer", "synth-majority"
     };
     return k < EV_COUNT ? n[k] : "?";
 }
@@ -1189,6 +1213,13 @@ std::string narrate_event(const World& w, const Event& e) {
         case EV_NETALLY:
             std::snprintf(b, sizeof b, "%s found a friend in the matrix, of all the cold places to find one.", who);
             break;
+        case EV_NEWCOMER:
+            std::snprintf(b, sizeof b, "A fresh face in the %s - %s, a %s, looking for a foothold under %s.",
+                          place, who, agent_kind_name(e.data), sky(h));
+            break;
+        case EV_SYNTH_MAJORITY:
+            std::snprintf(b, sizeof b, "The census tipped: the machines outnumber the living now. The sprawl hums where it used to breathe.");
+            break;
         default:
             std::snprintf(b, sizeof b, "The %s turns over in its sleep.", place);
             break;
@@ -1257,6 +1288,49 @@ uint8_t ArcTracker::ingest(uint8_t kind, uint8_t d, uint8_t data, int t) {
 
     last_kind[d] = kind; last_t[d] = t;
     return arc;
+}
+
+// ---- population inflow (#26): newcomers keep the sprawl alive endlessly -----
+static uint8_t pick_newcomer_kind(World& w, uint8_t loc) {
+    uint8_t dt = w.districts[loc].type;
+    if ((dt == DT_TOXIC || dt == DT_UNDERCITY) && w.rng.chance(30)) return AK_MUTANT;
+    // the automation tide: as synth_tide climbs, the sprawl fills with machines
+    if ((int)w.rng.range(255) < w.synth_tide) return AK_SYNTH;
+    return AK_HUMAN;
+}
+static void respawn_newcomer(World& w, int slot) {
+    Agent& a = w.agents[slot];
+    a = Agent{};                                   // a fresh arrival fills the dead slot
+    a.name_id = (uint8_t)w.rng.range((uint32_t)agent_name_count());
+    uint8_t loc = w.home;                          // arrive at a market if one exists
+    for (int i = 0; i < w.district_count; ++i) if (w.districts[i].services & SV_MARKET) { loc = (uint8_t)i; break; }
+    a.loc = loc;
+    a.kind = pick_newcomer_kind(w, loc);
+    a.faction = F_COUNT;
+    for (int t = 0; t < TR_COUNT; ++t) a.trait[t] = (uint8_t)w.rng.between(0, 255);
+    for (int nd = 0; nd < ND_COUNT; ++nd) a.need[nd] = (uint8_t)w.rng.between(10, 50);
+    a.status = AF_ALIVE;
+    if (w.rng.chance(12)) a.status |= AF_HAS_DECK;
+    if (w.rng.chance(60)) { a.job = (uint8_t)w.rng.between(J_CONSTRUCTION, J_INFRA); a.skill[a.job] = (uint8_t)w.rng.between(5, 50); a.status |= AF_EMPLOYED; }
+    a.money = (uint32_t)w.rng.between(10, 60);
+    a.mood = (uint8_t)w.rng.between(40, 70);
+    push_event(w, EV_NEWCOMER, loc, (uint8_t)slot, a.kind);
+}
+static void population_step(World& w) {
+    // the future automates — the tide of synthetic life rises, slowly, forever
+    if (w.rng.chance(g_mtune.synth_rise_pct) && w.synth_tide < 255) w.synth_tide++;
+    // inflow: backfill the dead toward the worldgen population (never slot 0 = player)
+    int alive = 0;
+    for (int i = 0; i < w.agent_count; ++i) if (w.agents[i].status & AF_ALIVE) ++alive;
+    if (alive < w.agent_count && w.rng.chance(g_mtune.inflow_pct)) {
+        for (int i = 1; i < w.agent_count; ++i)
+            if (!(w.agents[i].status & AF_ALIVE)) { respawn_newcomer(w, i); break; }
+    }
+    // the tipping point: when machines outnumber the living, the city has changed
+    // hands — an occasional beat (the protagonist may end up the last human).
+    int humans = human_count(w), synths = synth_count(w);
+    if (synths > humans && humans > 0 && w.rng.chance(2))
+        push_event(w, EV_SYNTH_MAJORITY, NONE8, NONE8, (uint8_t)(humans < 256 ? humans : 255));
 }
 
 void tick_world(World& w) {
@@ -1350,6 +1424,7 @@ void tick_world(World& w) {
         for (int i = 0; i < w.agent_count; ++i)
             if ((w.agents[i].status & (AF_ALIVE | AF_HAS_DECK)) == (AF_ALIVE | AF_HAS_DECK) && w.rng.chance(T.jack_pct))
                 jack_in(w, i);
+        population_step(w);
         company_step(w);
     }
 
@@ -1424,7 +1499,7 @@ void get_legends(Reader& rd, cyber::Legends& L) {
     for (int k = 0; k < cyber::MAX_MARKED; ++k) L.marked[k] = rd.u8();
 }
 void put_agent(Writer& wr, const Agent& a) {
-    wr.u8(a.name_id); wr.u8(a.loc); wr.u8(a.faction);
+    wr.u8(a.name_id); wr.u8(a.kind); wr.u8(a.loc); wr.u8(a.faction);
     for (int t = 0; t < TR_COUNT; ++t) wr.u8(a.trait[t]);
     for (int nd = 0; nd < ND_COUNT; ++nd) wr.u8(a.need[nd]);
     wr.u8(a.job);
@@ -1436,7 +1511,7 @@ void put_agent(Writer& wr, const Agent& a) {
     for (int k = 0; k < SCARMAX; ++k) { wr.u8(a.scar[k].node); wr.u8(a.scar[k].kind); wr.i8(a.scar[k].valence); }
 }
 void get_agent(Reader& rd, Agent& a) {
-    a.name_id = rd.u8(); a.loc = rd.u8(); a.faction = rd.u8();
+    a.name_id = rd.u8(); a.kind = rd.u8(); a.loc = rd.u8(); a.faction = rd.u8();
     for (int t = 0; t < TR_COUNT; ++t) a.trait[t] = rd.u8();
     for (int nd = 0; nd < ND_COUNT; ++nd) a.need[nd] = rd.u8();
     a.job = rd.u8();
@@ -1471,7 +1546,7 @@ void serialize(const World& w, std::string& out) {
     wr.u8(w.company.asset_count); wr.u16(w.company.assets); wr.u8(w.company.reputation);
     wr.u8(w.directive.ambition); wr.u8(w.directive.target);
     wr.u8(w.directive.risk); wr.u8(w.directive.thrift);
-    wr.u8(w.weather);
+    wr.u8(w.weather); wr.u8(w.synth_tide);
     wr.u8(w.threat_count);
     for (int i = 0; i < MAX_THREATS; ++i) {
         const Threat& t = w.threats[i];
@@ -1508,7 +1583,7 @@ bool deserialize(const std::string& in, World& w) {
     w.company.asset_count = rd.u8(); w.company.assets = rd.u16(); w.company.reputation = rd.u8();
     w.directive.ambition = rd.u8(); w.directive.target = rd.u8();
     w.directive.risk = rd.u8(); w.directive.thrift = rd.u8();
-    w.weather = rd.u8();
+    w.weather = rd.u8(); w.synth_tide = rd.u8();
     w.threat_count = rd.u8();
     for (int i = 0; i < MAX_THREATS; ++i) {
         Threat& t = w.threats[i];

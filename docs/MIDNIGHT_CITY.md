@@ -4,7 +4,7 @@ A Dwarf-Fortress-style emergent simulation re-skinned into a Neuromancer /
 Chiba-City cyberpunk setting, living as a normal app inside the Cardputer Deck
 firmware. You play **one** protagonist — a nobody who starts with nothing and
 claws toward an unstoppable megacorp. The world is a small graph of districts
-full of algorithmically-driven NPCs. The payoff is **emergence**: ~65 tiny
+full of algorithmically-driven NPCs. The payoff is **emergence**: ~67 tiny
 interacting micro-systems that continuously manufacture scarcity, conflict, and
 opportunity, colliding into unpredictable chain-reaction story arcs.
 
@@ -14,7 +14,7 @@ opportunity, colliding into unpredictable chain-reaction story arcs.
 >
 > 1. **Simulation layer — abstract district graph.** A graph of ~32 district
 >    nodes (not a global tile world), ~40 agents, abstract recipe tables. This is
->    where all ~65 micro-systems live. No digging, z-levels, fluids, or hundreds
+>    where all ~67 micro-systems live. No digging, z-levels, fluids, or hundreds
 >    of agents — the things that blow up RAM/CPU. Cheap: rules are code (~1.8 MB
 >    flash free); the live state substrate is a few KB.
 > 2. **View layer — realized local embark map.** The *one* district the
@@ -53,7 +53,7 @@ opportunity, colliding into unpredictable chain-reaction story arcs.
 
 ```
         ┌─────────────────────────────────────────────────────────┐
-        │  world ticks (hours) — ~65 micro-systems update the      │
+        │  world ticks (hours) — ~67 micro-systems update the      │
         │  shared substrate; pressure/scarcity/opportunity build   │
         └─────────────┬───────────────────────────────────────────┘
                       │  a system raises an event that needs you
@@ -101,7 +101,7 @@ tier, which keeps playing.
 ## 2. State substrate (the thing that costs RAM)
 
 Everything below is fixed-size arrays — no per-tick allocation, IDs + flash
-string tables instead of `std::string` for names. The ~65 systems all read and
+string tables instead of `std::string` for names. The ~67 systems all read and
 write *these same fields*; that shared substrate is what makes chains possible.
 
 ### 2.1 Districts (nodes) — `N ≈ 32`
@@ -202,7 +202,7 @@ tiles; the District's abstract `services` bitmask (§2.1) decides which exist. T
 the chop shop" order (within-district pathfinding, §6).
 
 > **Layering principle (what "tile-aware" means precisely).** The **abstract
-> simulation layer** — all ~65 micro-systems (§3) and every agent's
+> simulation layer** — all ~67 micro-systems (§3) and every agent's
 > *decision-making* — never reads a tile coordinate. It works in district IDs and
 > POI IDs: the order is "be at POI = chop_shop," never "walk to (x,y)." Only the
 > **view layer's single resident `LocalMap`** is tile-aware, and it is *derived
@@ -221,7 +221,7 @@ a rounding error — confirming system *count* is not the constraint.
 
 ---
 
-## 3. The micro-system catalog (~65 systems)
+## 3. The micro-system catalog (~67 systems)
 
 Each system is a small update function over the shared substrate. Most are 5–20
 lines. They are grouped only for readability — at runtime they form one
@@ -328,13 +328,27 @@ another system *reads*.
 | 64 | Bounty & retaliation | grudge (`#25`), revenge arc (`#41`) | spawns a hunter who seeks + fights the target |
 | 65 | Megathreat behavior | `threats[]`, behavior | roam/occupy/attack; driven off → loot + legend + `#26` refugees |
 
+### K. Population & the automation tide (the endless world)
+| # | System | Reads | Writes |
+|---|---|---|---|
+| 66 | Population inflow | alive count vs. worldgen target | admits a newcomer into a dead slot — the inflow side of `#26`, so the city stays populated as long as the player survives |
+| 67 | Automation tide | `synth_tide` (rises slowly, forever) | newcomers skew **synthetic** over time; humans dying are replaced by machines |
+
+> **Endless by design — and the city can change hands.** The protagonist can
+> climb slowly, dodging death, indefinitely (there's no run cap; the game ends
+> only on the protagonist's death). Inflow (`#66`) keeps the *world* alive
+> alongside them. And because the **automation tide** (`#67`) climbs over a long
+> game, the human population can dwindle while synths fill the streets — a society
+> **replaced by machines, with the (human) protagonist left as one of the last of
+> their kind** (`EV_SYNTH_MAJORITY`). Not scripted; an emergent late-game.
+
 ### I. Surfacing
 | # | System | Reads | Writes |
 |---|---|---|---|
 | 59 | Micro-quest generator | needs + environment | emits goals for player & NPCs |
 | 60 | Arc narrator | event stream | Gibson-voice chronicle lines (§7) |
 
-That's **65** — many are one-liners. We can ship a first cut at ~40 and grow the
+That's **67** — many are one-liners. We can ship a first cut at ~40 and grow the
 rest, but the architecture (shared substrate + scheduler) treats them uniformly.
 
 ### 3.1 Worked chains (these must *emerge*, not be scripted)
@@ -633,7 +647,7 @@ detects *arcs* (a chain of related events on a node/agent within a window) and
 emits Gibson-voice lines into the ticker and a per-day log on SD. Hard rule
 (inherited): original pastiche only, never embedded source text.
 
-**Generative, not enumerated — this is the whole point.** Because ~65 systems
+**Generative, not enumerated — this is the whole point.** Because ~67 systems
 share one substrate, the set of *possible* event chains is combinatorial: there
 are effectively **n arcs**, not a fixed menu. The §3.1 examples (debt cascade,
 water riot) are *illustrative samples* of that space, never a closed list. So the
@@ -701,7 +715,7 @@ Mirrors CyberHack exactly so it shares the proven pipeline:
   Non-negotiables, same as the firmware's standing RAM rules: fixed-size arrays,
   no per-tick allocation, IDs + flash string pools instead of `std::string`,
   stream the day-log/chronicle to SD.
-- **CPU:** ~65 systems × (≤40 agents + ≤32 nodes + ≤8 threats) per full sweep ≈ a
+- **CPU:** ~67 systems × (≤40 agents + ≤32 nodes + ≤8 threats) per full sweep ≈ a
   few thousand ops; at watch-it-crawl tick rate on a 240 MHz S3 it's trivial. The
   scheduler
   (§11) still staggers systems to keep any single tick cheap.
