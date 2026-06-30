@@ -23,8 +23,9 @@ namespace mc = mid;
 namespace apps {
 
 class Midnight : public App {
-    enum View { EMBARK, MENU, ORDERS, TRAVEL };
+    enum View { EMBARK, MENU, ORDERS, FOCUSMENU, TRAVEL };
     static constexpr uint32_t STEP_MS = 600;   // "watch it crawl" cadence
+    static constexpr uint32_t ANIM_MS = 110;   // @ walks smoothly between crawls
     static constexpr size_t   LOG_CAP = 24;     // recent log entries kept
 
 public:
@@ -42,9 +43,10 @@ public:
     void on_destroy(AppContext& ctx) override { save(ctx); }
 
     bool on_key(AppContext& ctx, const KeyEvent& k) override {
-        if (view_ == MENU)   return key_menu(ctx, k);
-        if (view_ == ORDERS) return key_orders(ctx, k);
-        if (view_ == TRAVEL) return key_travel(ctx, k);
+        if (view_ == MENU)      return key_menu(ctx, k);
+        if (view_ == ORDERS)    return key_orders(ctx, k);
+        if (view_ == FOCUSMENU) return key_focus(ctx, k);
+        if (view_ == TRAVEL)    return key_travel(ctx, k);
         // EMBARK
         if (k.is_char() && (k.ch == 'm' || k.ch == 'M')) { open_menu(); return true; }
         if (k.is_char() && k.ch == ' ') { paused_ = !paused_; return true; }
@@ -57,9 +59,9 @@ public:
         if (view_ != EMBARK || paused_) return;
         if (ctx.keep_awake) ctx.keep_awake();             // hold the CYD awake through the crawl
         if (!(world_.agents[0].status & mc::AF_ALIVE)) { paused_ = true; push_log(chronicle_death()); return; }
-        if (ctx.now_ms - last_step_ < step_ms_) return;
-        last_step_ = ctx.now_ms;
-        crawl();
+        // the @ walks smoothly (faster than the world crawl) toward its focus
+        if (ctx.now_ms - last_anim_ >= ANIM_MS) { last_anim_ = ctx.now_ms; step_avatar(); }
+        if (ctx.now_ms - last_step_ >= step_ms_) { last_step_ = ctx.now_ms; crawl(); }
     }
 
     void render(AppContext& ctx, TextCanvas& c) override {
@@ -87,15 +89,18 @@ private:
     mc::LocalMap  local_;
     mc::ArcTracker arcs_;
     uint8_t  cur_district_ = 0;
+    uint8_t  pending_district_ = mc::NONE8; // sim moved us; @ must walk to edge first (#3)
     int      px_ = 0, py_ = 0;            // @ tile on local_
-    int      tx_ = -1, ty_ = -1;          // cosmetic walk target
+    int      tx_ = -1, ty_ = -1;          // current walk target (edge when crossing)
     uint32_t last_step_ = 0, step_ms_ = STEP_MS;
+    uint32_t last_anim_ = 0;
     bool     paused_ = false;
     View     view_ = EMBARK;
     std::vector<std::string> log_;        // scrolling log ring (newest at back)
     ui::ListState mls_;
 
     static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+    static int iabs(int v) { return v < 0 ? -v : v; }
 
     static const char* act_name(uint8_t a) {
         switch (a) {
@@ -159,21 +164,58 @@ private:
         }
         if (!line.empty()) push_log(line);
 
-        // the sim is authoritative about which district the avatar is in
-        if (world_.agents[0].loc != cur_district_) enter_district(world_.agents[0].loc, /*announce=*/true);
-        else animate_avatar();
+        // the sim is authoritative about WHICH district the avatar is in, but the
+        // view never warps: flag a pending crossing so the @ walks to the edge (#3).
+        if (world_.agents[0].loc != cur_district_ && pending_district_ == mc::NONE8)
+            pending_district_ = world_.agents[0].loc;
     }
 
-    // cosmetic: drift the @ toward a target POI (or idle) — never affects the sim
-    void animate_avatar() {
-        if (tx_ < 0) {                                    // pick a wander target occasionally
-            if (local_.poi_count && (world_.tick & 7) == 0) { const mc::LocalPOI& p = local_.poi[world_.tick % local_.poi_count]; tx_ = p.x; ty_ = p.y; }
+    static bool on_edge(int x, int y) { return x == 0 || y == 0 || x == mc::LMAP_W - 1 || y == mc::LMAP_H - 1; }
+
+    // pick the nearest walkable map-boundary tile as the crossing point
+    void pick_edge_target() {
+        int bd = 1 << 30, bx = px_, by = py_;
+        auto consider = [&](int x, int y) {
+            if (!mc::localmap_walkable(local_, x, y)) return;
+            int d = iabs(x - px_) + iabs(y - py_);
+            if (d < bd) { bd = d; bx = x; by = y; }
+        };
+        for (int x = 0; x < mc::LMAP_W; ++x) { consider(x, 0); consider(x, mc::LMAP_H - 1); }
+        for (int y = 0; y < mc::LMAP_H; ++y) { consider(0, y); consider(mc::LMAP_W - 1, y); }
+        tx_ = bx; ty_ = by;
+    }
+
+    // walk the @ one tile toward where the current focus needs it (#9), or — when a
+    // district crossing is pending — toward the edge, then transition (#3). Pure
+    // view animation: it reads the sim's activity but never changes the sim.
+    void step_avatar() {
+        if (pending_district_ != mc::NONE8) {
+            if (tx_ < 0) pick_edge_target();
+            if ((px_ == tx_ && py_ == ty_) || on_edge(px_, py_)) {
+                uint8_t d = pending_district_; pending_district_ = mc::NONE8;
+                enter_district(d, /*announce=*/true);
+                return;
+            }
+            int nx = px_, ny = py_;
+            if (mc::localmap_step_toward(local_, px_, py_, tx_, ty_, &nx, &ny)) { px_ = nx; py_ = ny; }
+            else { uint8_t d = pending_district_; pending_district_ = mc::NONE8; enter_district(d, true); }
             return;
         }
-        if (px_ == tx_ && py_ == ty_) { tx_ = ty_ = -1; return; }
+        // path toward the POI the avatar's current activity calls for (work / market
+        // / job board); 0xFF = head "home" (the entry tile) and idle there.
+        uint8_t want = mc::avatar_target_poi(world_);
+        int gx = local_.entry_x, gy = local_.entry_y;
+        if (want != 0xFF) {
+            int bd = 1 << 30, found = 0;
+            for (int i = 0; i < local_.poi_count; ++i) if (local_.poi[i].service_bit == want) {
+                int d = iabs(local_.poi[i].x - px_) + iabs(local_.poi[i].y - py_);
+                if (d < bd) { bd = d; gx = local_.poi[i].x; gy = local_.poi[i].y; found = 1; }
+            }
+            (void)found;
+        }
+        if (px_ == gx && py_ == gy) return;               // arrived; stay put (at work/home)
         int nx = px_, ny = py_;
-        if (mc::localmap_step_toward(local_, px_, py_, tx_, ty_, &nx, &ny)) { px_ = nx; py_ = ny; }
-        else tx_ = ty_ = -1;
+        if (mc::localmap_step_toward(local_, px_, py_, gx, gy, &nx, &ny)) { px_ = nx; py_ = ny; }
     }
 
     // ---- rendering ---------------------------------------------------------
@@ -184,19 +226,25 @@ private:
         for (int i = 0; i < world_.agent_count; ++i) if ((world_.agents[i].status & mc::AF_ALIVE) && world_.agents[i].kind == mc::AK_MUTANT) ++mut;
         char b[96];
         std::snprintf(b, sizeof b, "%s $%u [%s] D%u %02u:00%s H%dS%dM%d",
-                      mc::agent_name(p.name_id), p.money, mc::company_tier_name(co.tier),
-                      world_.tick / 24, world_.tick % 24, (p.status & mc::AF_INJURED) ? " HURT" : "",
-                      hum, syn, mut);
+                      mc::agent_name(p.name_id), (unsigned)p.money, mc::company_tier_name(co.tier),
+                      (unsigned)(world_.tick / 24), (unsigned)(world_.tick % 24),
+                      (p.status & mc::AF_INJURED) ? " HURT" : "", hum, syn, mut);
         c.text(row, 0, ui::fit(b, c.width()), ui::Black, ui::BrightGreen);
     }
 
-    // Row 1: the standing order + what the avatar is doing right now. (Batch C
-    // upgrades this into a concrete focus + destination.)
+    // Row 1: the avatar's concrete current focus + destination (#9).
     void draw_focus(TextCanvas& c, int row) {
-        const mc::Directive& d = world_.directive;
-        char b[80];
-        std::snprintf(b, sizeof b, "Order: pursue %s  -  now: %s",
-                      mc::ambition_name(d.ambition), act_name(world_.agents[0].activity));
+        const mc::World& w = world_;
+        char b[96];
+        if (w.interrupt_focus != mc::NONE8) {
+            std::snprintf(b, sizeof b, "Focus: fleeing danger  (was: %s)", mc::focus_name(w.focus));
+        } else if (w.focus == mc::FC_CONTRACT && w.contract.active) {
+            std::snprintf(b, sizeof b, "Focus: %s -> %s (%s)", mc::contract_kind_name(w.contract.kind),
+                          mc::district_type_name(w.districts[w.contract.target].type),
+                          w.agents[0].loc == w.contract.target ? "working" : "en route");
+        } else {
+            std::snprintf(b, sizeof b, "Focus: %s - %s", mc::focus_name(w.focus), act_name(w.agents[0].activity));
+        }
         c.text(row, 0, ui::fit(b, c.width()), ui::BrightYellow, ui::Black);
     }
 
@@ -273,12 +321,13 @@ private:
     // ---- menus -------------------------------------------------------------
     void open_menu() { view_ = MENU; mls_ = ui::ListState{}; }
 
-    int main_menu_n() const { return 4; }                 // Orders / Jack in / Travel / Close
+    int main_menu_n() const { return 5; }      // Orders / Focus / Jack in / Travel / Close
     std::string main_menu_item(int i) {
         switch (i) {
             case 0: return "Standing orders";
-            case 1: return (world_.agents[0].status & mc::AF_HAS_DECK) ? "Jack in (run the net)" : "Jack in (need a deck)";
-            case 2: return "Travel to an adjacent district";
+            case 1: return "Set focus";
+            case 2: return (world_.agents[0].status & mc::AF_HAS_DECK) ? "Jack in (run the net)" : "Jack in (need a deck)";
+            case 3: return "Travel to an adjacent district";
             default: return "Close";
         }
     }
@@ -291,16 +340,53 @@ private:
         if (k.key == Key::Enter) {
             switch (mls_.sel) {
                 case 0: view_ = ORDERS; mls_ = ui::ListState{}; return true;
-                case 1: { if (world_.agents[0].status & mc::AF_HAS_DECK) { mc::JackResult r = mc::jack_in(world_, 0);
+                case 1: view_ = FOCUSMENU; mls_ = ui::ListState{}; return true;
+                case 2: { if (world_.agents[0].status & mc::AF_HAS_DECK) { mc::JackResult r = mc::jack_in(world_, 0);
                               push_log(r.ran ? (std::string("You jacked in: ") + mc::outcome_name(r.outcome) + (r.flatlined ? " - flatline." : "."))
                                              : "No data target in reach.");
                           } else push_log("You have no cyberdeck to jack with."); view_ = EMBARK; break; }
-                case 2: view_ = TRAVEL; mls_ = ui::ListState{}; return true;
+                case 3: view_ = TRAVEL; mls_ = ui::ListState{}; return true;
                 default: view_ = EMBARK; break;
             }
             return true;
         }
         return true;   // modal swallows keys
+    }
+
+    // the player's focus commands (#9/#10): milestones + redirects the avatar pursues
+    static constexpr int FOCUS_N = 6;
+    std::string focus_item(int i) {
+        switch (i) {
+            case 0: return "Look for work";
+            case 1: return "Rent an apartment";
+            case 2: return "Found a company";
+            case 3: return "Run the company";
+            case 4: return "Resume daily work";
+            default: return world_.contract.active ? "Abandon the contract" : "(no contract to abandon)";
+        }
+    }
+    bool key_focus(AppContext& ctx, const KeyEvent& k) {
+        (void)ctx;
+        if (mls_.move(k, FOCUS_N, FOCUS_N)) return true;
+        if (k.key == Key::Esc)  { view_ = MENU; mls_ = ui::ListState{}; return true; }
+        if (k.key == Key::Enter) {
+            mc::World& w = world_;
+            bool emp = (w.agents[0].status & mc::AF_EMPLOYED) != 0;
+            switch (mls_.sel) {
+                case 0: w.focus = mc::FC_FIND_WORK; push_log("New focus: out looking for work."); break;
+                case 1: w.focus = mc::FC_RENT_APT;  push_log("New focus: find a place to live."); break;
+                case 2: w.focus = mc::FC_FOUND_CO;  push_log("New focus: scrape together a company."); break;
+                case 3: w.focus = mc::FC_RUN_CO;    push_log("New focus: build the company up."); break;
+                case 4: w.focus = emp ? mc::FC_WORK : mc::FC_FIND_WORK; push_log("Back to the daily grind."); break;
+                default:
+                    if (w.contract.active) { w.contract.active = 0; w.focus = emp ? mc::FC_WORK : mc::FC_FIND_WORK; push_log("You walk away from the contract."); }
+                    else push_log("No contract to abandon.");
+                    break;
+            }
+            view_ = EMBARK;
+            return true;
+        }
+        return true;
     }
 
     // Standing-orders sub-menu (#7): a real selection, not a cycle.
@@ -326,8 +412,9 @@ private:
         if (k.key == Key::Enter && n > 0) {
             uint8_t dest = world_.districts[cur_district_].adj[clampi(mls_.sel, 0, n - 1)];
             if (dest != mc::NONE8 && dest < world_.district_count) {
-                world_.agents[0].loc = dest;              // manual travel override
-                enter_district(dest, /*announce=*/true);
+                world_.agents[0].loc = dest;              // sim authoritative
+                pending_district_ = dest; tx_ = ty_ = -1; // @ walks to the edge, then crosses (#3)
+                push_log(std::string("Heading for the ") + mc::district_type_name(world_.districts[dest].type) + ".");
             }
             view_ = EMBARK;
             return true;
@@ -361,6 +448,10 @@ private:
             list_modal(c, "Standing orders", "enter:set  esc:back", mc::AMB_COUNT, [&](int i) {
                 return std::string("Pursue ") + mc::ambition_name((uint8_t)i);
             });
+            return;
+        }
+        if (view_ == FOCUSMENU) {
+            list_modal(c, "Set focus", "enter:set  esc:back", FOCUS_N, [&](int i) { return focus_item(i); });
             return;
         }
         list_modal(c, "Menu", "enter:do  esc:back", main_menu_n(), [&](int i) { return main_menu_item(i); });

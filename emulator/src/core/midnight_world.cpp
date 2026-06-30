@@ -339,6 +339,15 @@ void gen_world(World& w, uint32_t seed) {
     w.company.treasury = 0;
     w.company.reputation = 0;
 
+    // --- protagonist focus: starts unemployed, hunting for work (#10) -------
+    w.focus = FC_FIND_WORK;
+    w.interrupt_focus = NONE8;
+    w.apt_district = NONE8;
+    w.work_district = NONE8;
+    w.contract = Contract{};
+    w.agents[0].status &= (uint8_t)~AF_EMPLOYED;
+    w.agents[0].job = J_NONE;
+
     // --- events: empty ring -------------------------------------------------
     w.event_count = 0;
     w.event_head = 0;
@@ -480,14 +489,6 @@ int production_value(const World& w, const Agent& a) {
     v += v * w.districts[a.loc].prosperity / 200;   // up to +50% in a rich district
     return v;
 }
-static bool can_craft(const World& w, const Agent& a) {
-    if (a.job < J_CONSTRUCTION || a.job >= J_COUNT) return false;
-    if (skill_tier(a.skill[a.job]) < ST_SKILLED) return false;
-    uint16_t fac = job_facility(a.job);
-    return fac && (w.districts[a.loc].services & fac);
-}
-// guarded skill access (a.job is a uint8_t; keep the array index provably in range)
-static uint8_t cur_skill(const Agent& a) { return a.job < J_COUNT ? a.skill[a.job] : 0; }
 // learning by doing — diminishing per tier so mastery is a long grind (deterministic).
 static void gain_skill(World& w, Agent& a, int boost = 0) {
     if (a.job < J_CONSTRUCTION || a.job >= J_COUNT || a.skill[a.job] >= 255) return;
@@ -499,69 +500,243 @@ static void gain_skill(World& w, Agent& a, int boost = 0) {
 
 // --- forward decl: the basic NPC subsistence ladder (also the survival floor) -
 static uint8_t npc_action(World& w, Agent& a);
+static bool    flee_to_safer(World& w, Agent& a);   // defined with the combat layer
 
-// the protagonist's self-driving policy (§1 agency model + §4.1 directives)
+// ============================================================================
+// Focus state machine (#9/#10): the protagonist self-drives toward a concrete
+// focus (find work -> commute -> save -> found/run a company), can be pulled off
+// it by danger (the interrupt-and-return arc engine), and earns ONLY when present
+// at work — deviating costs a wage laborer income, while a staffed company keeps
+// paying passively (company_step runs daily regardless of where the avatar is).
+// ============================================================================
+
+// work hours of the daily commute: 08:00..18:00 (10 earning hours)
+static bool work_hours(const World& w) { int h = (int)(w.tick % 24); return h >= 8 && h < 18; }
+
+// one hop along the shortest district route toward `to` (greedy on BFS distance)
+static uint8_t next_hop_toward(const World& w, uint8_t from, uint8_t to) {
+    if (from == to || to >= w.district_count) return from;
+    int best = district_distance(w, from, to);
+    if (best < 0) return from;
+    uint8_t nx = from;
+    const District& d = w.districts[from];
+    for (int i = 0; i < d.deg; ++i) {
+        uint8_t nb = d.adj[i];
+        if (nb == NONE8 || nb >= w.district_count) continue;
+        int dd = district_distance(w, nb, to);
+        if (dd >= 0 && dd < best) { best = dd; nx = nb; }
+    }
+    return nx;
+}
+
+// pick a profession to take here — prefer one whose facility this block offers
+static uint8_t pick_job_for(World& w, uint8_t loc) {
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        uint8_t j = (uint8_t)w.rng.between(J_CONSTRUCTION, J_INFRA);
+        if (w.districts[loc].services & job_facility(j)) return j;
+    }
+    return (uint8_t)w.rng.between(J_CONSTRUCTION, J_INFRA);
+}
+
+// post a one-time gig at a fixer: travel to a far district, do a thing, get paid.
+static void offer_contract(World& w, Agent& a) {
+    Contract& c = w.contract;
+    c.active = 1;
+    c.kind   = (uint8_t)w.rng.range(CK_COUNT);
+    uint8_t t = a.loc;
+    for (int i = 0; i < 5 && t == a.loc; ++i) t = (uint8_t)w.rng.range(w.district_count);
+    c.target = t;
+    c.progress = 0;
+    c.need_ticks = (uint8_t)w.rng.between(2, 5);
+    int dist = district_distance(w, a.loc, t); if (dist < 1) dist = 1;
+    c.reward   = (uint16_t)(80 + dist * 40 + w.rng.between(0, 120));
+    c.deadline = (uint16_t)(w.tick + (uint32_t)w.rng.between(48, 120));   // 2-5 days
+    w.focus = FC_CONTRACT;
+    push_event(w, EV_BOUNTY, t, 0, c.kind);   // a gig pointing at district t
+}
+
+// FC_FIND_WORK: get to a hiring spot, then land a steady job OR a one-time gig.
+static uint8_t do_find_work(World& w, Agent& a) {
+    District& here = w.districts[a.loc];
+    const uint16_t hiring = SV_JOB_BOARD | SV_BAR | SV_FENCE;
+    if (!(here.services & hiring)) {
+        uint8_t nx = hop_to_service(w, a.loc, SV_JOB_BOARD);
+        if (nx != a.loc) { a.loc = nx; return ACT_MOVE; }
+        return ACT_REST;   // nothing reachable; wait for the world to shift
+    }
+    // MASTERY: the player wants a specific trade — take it, skip the gig roll.
+    if (w.directive.ambition == AMB_MASTERY) {
+        uint8_t tgt = (w.directive.target >= J_CONSTRUCTION && w.directive.target < J_COUNT)
+                          ? w.directive.target : (uint8_t)J_DECKER;
+        a.job = tgt; a.status |= AF_EMPLOYED; w.work_district = a.loc; w.focus = FC_WORK;
+        push_event(w, EV_RECRUIT, a.loc, 0, a.faction);
+        return ACT_SEEKJOB;
+    }
+    // otherwise: sometimes a fixer offers a gig instead of steady work
+    if (!w.contract.active && w.district_count > 1 && w.rng.chance(35)) {
+        offer_contract(w, a);
+        return ACT_SEEKJOB;
+    }
+    a.job = pick_job_for(w, a.loc); a.status |= AF_EMPLOYED; w.work_district = a.loc; w.focus = FC_WORK;
+    push_event(w, EV_RECRUIT, a.loc, 0, a.faction);
+    return ACT_SEEKJOB;
+}
+
+// FC_WORK / FC_SAVE: the default daily commute (#10). On-hours -> be at work and
+// earn (presence-gated); off-hours -> head home and rest.
+static uint8_t do_work(World& w, Agent& a) {
+    const MidTunables& T = g_mtune;
+    if (!(a.status & AF_EMPLOYED) || w.work_district >= w.district_count) { w.focus = FC_FIND_WORK; return do_find_work(w, a); }
+    if (work_hours(w)) {
+        if (a.loc != w.work_district) { uint8_t nx = next_hop_toward(w, a.loc, w.work_district); if (nx != a.loc) { a.loc = nx; return ACT_MOVE; } return ACT_MOVE; }
+        int wg = wage_of(w, a.loc, a); a.money += (uint32_t)wg; record_txn(w, a, wg, TXN_WAGE);
+        bump_need(a.need[ND_FATIGUE], T.fatigue_work);
+        bool master = (w.directive.ambition == AMB_MASTERY && a.job == w.directive.target);
+        gain_skill(w, a, master ? T.train_rate * 18 : 0);
+        return ACT_WORK;
+    }
+    uint8_t home = (w.apt_district < w.district_count) ? w.apt_district : w.home;
+    if (a.loc != home) { uint8_t nx = next_hop_toward(w, a.loc, home); if (nx != a.loc) { a.loc = nx; return ACT_MOVE; } }
+    return ACT_REST;
+}
+
+// FC_RENT_APT (player milestone): sign a lease here (3 periods up front), then
+// fall back to the work/seek loop.
+static uint8_t do_rent_apt(World& w, Agent& a) {
+    const MidTunables& T = g_mtune;
+    int deposit = (T.rent_base + w.districts[a.loc].prosperity / 8) * 3;
+    if ((int)a.money >= deposit) {
+        a.money -= (uint32_t)deposit; record_txn(w, a, -deposit, TXN_RENT);
+        w.apt_district = a.loc;
+        push_event(w, EV_RECRUIT, a.loc, 0, F_COUNT);   // "signed a lease" beat
+        w.focus = (a.status & AF_EMPLOYED) ? FC_WORK : FC_FIND_WORK;
+        return ACT_REST;
+    }
+    return (a.status & AF_EMPLOYED) ? do_work(w, a) : do_find_work(w, a);   // earn the deposit first
+}
+
+// FC_CONTRACT: travel to the gig's district, work it, collect the lump sum.
+static uint8_t do_contract(World& w, Agent& a) {
+    Contract& c = w.contract;
+    if (!c.active) { w.focus = (a.status & AF_EMPLOYED) ? FC_WORK : FC_FIND_WORK; return ACT_REST; }
+    if ((uint16_t)w.tick > c.deadline) {                 // blew the deadline
+        c.active = 0; push_event(w, EV_RUMOR, a.loc, 0, c.kind);
+        w.focus = (a.status & AF_EMPLOYED) ? FC_WORK : FC_FIND_WORK; return ACT_REST;
+    }
+    if (a.loc != c.target) { uint8_t nx = next_hop_toward(w, a.loc, c.target); if (nx != a.loc) a.loc = nx; return ACT_MOVE; }
+    if (++c.progress >= c.need_ticks) {                  // delivered
+        a.money += c.reward; record_txn(w, a, (int32_t)c.reward, TXN_CONTRACT);
+        District& d = w.districts[c.target];
+        d.danger = (uint8_t)clampi(d.danger + 4, 0, 255);   // gigs leave heat -> feeds arcs
+        push_event(w, EV_BOUNTY, c.target, 0, c.kind);
+        c.active = 0;
+        w.focus = (a.status & AF_EMPLOYED) ? FC_WORK : FC_FIND_WORK;
+    }
+    return ACT_WORK;
+}
+
+// FC_FOUND_CO (player milestone): seed the company from personal cash.
+static uint8_t do_found_co(World& w, Agent& a) {
+    const MidTunables& T = g_mtune;
+    if ((int)a.money >= T.found_threshold) {
+        uint32_t reserve = (uint32_t)T.personal_reserve;
+        uint32_t seed = a.money > reserve ? a.money - reserve : 0;
+        a.money -= seed; record_txn(w, a, -(int32_t)seed, TXN_INVEST);
+        Company& co = w.company;
+        co.treasury += seed;
+        if (co.tier < CT_SOLO) co.tier = CT_SOLO;
+        push_event(w, EV_RECRUIT, a.loc, 0, F_CREW);
+        w.focus = FC_RUN_CO;
+        return ACT_WORK;
+    }
+    return (a.status & AF_EMPLOYED) ? do_work(w, a) : do_find_work(w, a);    // raise the stake first
+}
+
+// FC_RUN_CO: feed personal surplus into the company; it earns passively
+// (company_step compounds it daily, whether or not the avatar is present).
+static uint8_t do_run_co(World& w, Agent& a) {
+    const MidTunables& T = g_mtune;
+    if ((int)a.money > T.personal_reserve + 100) {
+        uint32_t invest = a.money - (uint32_t)T.personal_reserve;
+        a.money -= invest; record_txn(w, a, -(int32_t)invest, TXN_INVEST);
+        uint64_t t = (uint64_t)w.company.treasury + invest;
+        w.company.treasury = (uint32_t)(t > 4000000000ULL ? 4000000000ULL : t);
+        return ACT_WORK;
+    }
+    return (a.status & AF_EMPLOYED) ? do_work(w, a) : (uint8_t)ACT_REST;
+}
+
+// the protagonist's self-driving policy (§1 agency model) — a focus dispatcher
+// with a survival floor and a danger interrupt.
 static uint8_t career_action(World& w, Agent& a) {
     const MidTunables& T = g_mtune;
     District& here = w.districts[a.loc];
-    const Directive& dir = w.directive;
 
-    // survival first: a pressing vital this tick -> behave like an NPC
+    // survival floor: a pressing vital this tick -> behave like an NPC (eat/drink)
     if (a.need[ND_HUNGER] > T.buy_thresh || a.need[ND_THIRST] > T.buy_thresh)
         return npc_action(w, a);
 
-    if (dir.ambition == AMB_MASTERY) {
-        uint8_t tgt = (dir.target >= J_CONSTRUCTION && dir.target < J_COUNT) ? dir.target : (uint8_t)J_DECKER;
-        if (a.job != tgt) {
-            if (here.services & SV_JOB_BOARD) { a.job = tgt; a.status |= AF_EMPLOYED; return ACT_SEEKJOB; }
-            uint8_t nx = hop_to_service(w, a.loc, SV_JOB_BOARD);
-            if (nx != a.loc) { a.loc = nx; return ACT_MOVE; }
-            return ACT_REST;
-        }
-        { int wg = wage_of(w, a.loc, a); a.money += (uint32_t)wg; record_txn(w, a, wg, TXN_WAGE); }
-        bump_need(a.need[ND_FATIGUE], T.fatigue_work);
-        a.job = tgt; gain_skill(w, a, /*boost=*/T.train_rate * 18); // dedicated training is faster
-        return ACT_WORK;
+    // INTERRUPT-AND-RETURN (the arc engine): a dangerous block or a threat here
+    // pulls the avatar off its focus to flee; the prior focus is stashed and
+    // restored once it clears.
+    bool threat_here = false;
+    for (int i = 0; i < w.threat_count; ++i)
+        if (w.threats[i].active && w.threats[i].district == a.loc) { threat_here = true; break; }
+    if (here.danger >= T.refugee_danger || threat_here) {
+        if (w.interrupt_focus == NONE8) w.interrupt_focus = w.focus;
+        if (flee_to_safer(w, a)) return ACT_MOVE;
+        return ACT_REST;
     }
+    if (w.interrupt_focus != NONE8) { w.focus = w.interrupt_focus; w.interrupt_focus = NONE8; }
 
-    if (dir.ambition == AMB_WEALTH || dir.ambition == AMB_TERRITORY) {
-        // 1) invest surplus personal cash to seed/feed the company. Reckless keeps a
-        //    thin reserve (faster growth, deadlier early); cautious keeps a buffer.
-        int reserve = T.personal_reserve + (int)dir.thrift / 4 - (int)dir.risk / 2;
-        if (reserve < 20) reserve = 20;
-        if ((int)a.money > T.found_threshold && (int)a.money > reserve) {
-            uint32_t invest = a.money - (uint32_t)reserve;
-            a.money -= invest;
-            record_txn(w, a, -(int32_t)invest, TXN_INVEST);
-            uint64_t t = (uint64_t)w.company.treasury + invest;
-            w.company.treasury = (uint32_t)(t > 4000000000ULL ? 4000000000ULL : t);
-            return ACT_WORK;
-        }
-        // 2) need a trade first
-        if (a.job == J_NONE) {
-            if (here.services & SV_JOB_BOARD) { a.job = (uint8_t)w.rng.between(J_CONSTRUCTION, J_INFRA); a.status |= AF_EMPLOYED; return ACT_SEEKJOB; }
-            uint8_t nx = hop_to_service(w, a.loc, SV_JOB_BOARD);
-            if (nx != a.loc) { a.loc = nx; return ACT_MOVE; }
-            return ACT_REST;
-        }
-        // 3) craft for profit if we can; else build skill / go to our facility
-        if (can_craft(w, a)) {
-            { int pv = production_value(w, a); a.money += (uint32_t)pv; record_txn(w, a, pv, TXN_CRAFT); }
-            bump_need(a.need[ND_FATIGUE], T.fatigue_work);
-            gain_skill(w, a);
-            return ACT_WORK;
-        }
-        if (skill_tier(cur_skill(a)) >= ST_SKILLED) {
-            uint8_t nx = hop_to_service(w, a.loc, job_facility(a.job));
-            if (nx != a.loc) { a.loc = nx; return ACT_MOVE; }
-        }
-        { int wg = wage_of(w, a.loc, a); a.money += (uint32_t)wg; record_txn(w, a, wg, TXN_WAGE); }
-        bump_need(a.need[ND_FATIGUE], T.fatigue_work);
-        gain_skill(w, a);
-        return ACT_WORK;
+    switch (w.focus) {
+        case FC_FIND_WORK: return do_find_work(w, a);
+        case FC_RENT_APT:  return do_rent_apt(w, a);
+        case FC_CONTRACT:  return do_contract(w, a);
+        case FC_FOUND_CO:  return do_found_co(w, a);
+        case FC_RUN_CO:    return do_run_co(w, a);
+        case FC_SURVIVE:   return npc_action(w, a);
+        case FC_WORK:
+        case FC_SAVE:
+        default:           return do_work(w, a);
     }
+}
 
-    return npc_action(w, a); // AMB_SURVIVE
+const char* focus_name(uint8_t f) {
+    static const char* n[FC_COUNT] = {
+        "Survive", "Find work", "Rent an apartment", "Work", "Run a contract",
+        "Save up", "Found a company", "Run the company"
+    };
+    return f < FC_COUNT ? n[f] : "?";
+}
+const char* contract_kind_name(uint8_t k) {
+    static const char* n[CK_COUNT] = { "courier run", "fetch job", "sabotage job", "clear-out job", "guard detail" };
+    return k < CK_COUNT ? n[k] : "job";
+}
+const char* sector_name(uint8_t s) {
+    static const char* n[SEC_COUNT] = {
+        "Unfounded", "Fabrication", "Cyberware", "Chemtech", "Data-brokering",
+        "Drone Ops", "Protection", "Smuggling"
+    };
+    return s < SEC_COUNT ? n[s] : "?";
+}
+// lowest set-bit index of a Service mask (1<<n -> n), or 0xFF if none
+static uint8_t svc_bit_index(uint16_t mask) {
+    for (uint8_t i = 0; i < 16; ++i) if (mask & (1u << i)) return i;
+    return 0xFF;
+}
+uint8_t avatar_target_poi(const World& w) {
+    const Agent& a = w.agents[0];
+    switch (a.activity) {
+        case ACT_WORK: {
+            uint16_t f = (a.job >= J_CONSTRUCTION && a.job < J_COUNT) ? job_facility(a.job) : 0;
+            uint8_t bi = svc_bit_index(f);
+            return bi != 0xFF ? bi : (uint8_t)0;   // fall back to the job board (bit 0)
+        }
+        case ACT_BUY:     return 1;   // SV_MARKET
+        case ACT_SEEKJOB: return 0;   // SV_JOB_BOARD
+        default:          return 0xFF;  // home / wander
+    }
 }
 
 void company_step(World& w) {
@@ -1755,8 +1930,14 @@ void serialize(const World& w, std::string& out) {
     wr.u8(w.company.emp_count);
     for (int k = 0; k < EMPMAX; ++k) wr.u8(w.company.employees[k]);
     wr.u8(w.company.asset_count); wr.u16(w.company.assets); wr.u8(w.company.reputation);
+    wr.u8(w.company.sector); wr.u8(w.company.target_emp);
     wr.u8(w.directive.ambition); wr.u8(w.directive.target);
     wr.u8(w.directive.risk); wr.u8(w.directive.thrift);
+    // protagonist focus / commute / contract (v2)
+    wr.u8(w.focus); wr.u8(w.interrupt_focus); wr.u8(w.apt_district); wr.u8(w.work_district);
+    wr.u8(w.contract.active); wr.u8(w.contract.kind); wr.u8(w.contract.target);
+    wr.u8(w.contract.progress); wr.u8(w.contract.need_ticks);
+    wr.u16(w.contract.reward); wr.u16(w.contract.deadline);
     wr.u8(w.weather); wr.u8(w.synth_tide); wr.u8(w.mutant_tide);
     wr.u8(w.threat_count);
     for (int i = 0; i < MAX_THREATS; ++i) {
@@ -1792,8 +1973,13 @@ bool deserialize(const std::string& in, World& w) {
     w.company.emp_count = rd.u8();
     for (int k = 0; k < EMPMAX; ++k) w.company.employees[k] = rd.u8();
     w.company.asset_count = rd.u8(); w.company.assets = rd.u16(); w.company.reputation = rd.u8();
+    w.company.sector = rd.u8(); w.company.target_emp = rd.u8();
     w.directive.ambition = rd.u8(); w.directive.target = rd.u8();
     w.directive.risk = rd.u8(); w.directive.thrift = rd.u8();
+    w.focus = rd.u8(); w.interrupt_focus = rd.u8(); w.apt_district = rd.u8(); w.work_district = rd.u8();
+    w.contract.active = rd.u8(); w.contract.kind = rd.u8(); w.contract.target = rd.u8();
+    w.contract.progress = rd.u8(); w.contract.need_ticks = rd.u8();
+    w.contract.reward = rd.u16(); w.contract.deadline = rd.u16();
     w.weather = rd.u8(); w.synth_tide = rd.u8(); w.mutant_tide = rd.u8();
     w.threat_count = rd.u8();
     for (int i = 0; i < MAX_THREATS; ++i) {

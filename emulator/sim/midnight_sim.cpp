@@ -258,6 +258,14 @@ static CareerResult run_career(uint32_t seed, uint8_t ambition, uint8_t target,
     w.directive.thrift = thrift;
     uint32_t t = 0;
     for (; t < max_ticks; ++t) {
+        // simulate the player issuing milestones (founding is a player command now,
+        // not something the sim does on its own): a WEALTH/TERRITORY player founds a
+        // company as soon as they can afford the stake, then runs it.
+        if ((ambition == AMB_WEALTH || ambition == AMB_TERRITORY) &&
+            w.company.treasury == 0 && w.company.emp_count == 0 &&
+            w.focus != FC_FOUND_CO && w.focus != FC_RUN_CO &&
+            (int)w.agents[0].money >= g_mtune.found_threshold)
+            w.focus = FC_FOUND_CO;
         tick_world(w);
         if (!(w.agents[0].status & AF_ALIVE)) break;
         if (w.company.tier == CT_MEGACORP) { ++t; break; } // goal reached

@@ -34,7 +34,7 @@ static constexpr int TXNMAX        = 16;   // protagonist transaction ledger rin
 static constexpr uint8_t NONE8     = 0xFF;
 
 static constexpr uint16_t MID_MAGIC   = 0x434D; // 'M','C' little-endian
-static constexpr uint8_t  MID_VERSION = 1;
+static constexpr uint8_t  MID_VERSION = 2;      // v2: focus/commute/contract/sector
 
 // ---- enums -----------------------------------------------------------------
 enum Faction : uint8_t {
@@ -81,6 +81,21 @@ enum SkillTier : uint8_t { ST_NOVICE, ST_SKILLED, ST_EXPERT, ST_MASTER, ST_COUNT
 
 // standing-orders ambitions (§4.1) — the avatar's long arc
 enum Ambition : uint8_t { AMB_SURVIVE, AMB_WEALTH, AMB_MASTERY, AMB_TERRITORY, AMB_COUNT };
+
+// the protagonist's concrete current pursuit (#9/#10). The daily WORK commute is
+// the default loop; events can interrupt it (focus stashed in World.interrupt_focus
+// and restored after); milestones (RENT_APT/FOUND_CO) are player commands.
+enum Focus : uint8_t {
+    FC_SURVIVE, FC_FIND_WORK, FC_RENT_APT, FC_WORK, FC_CONTRACT,
+    FC_SAVE, FC_FOUND_CO, FC_RUN_CO, FC_COUNT
+};
+// a one-time gig: go to a district, do a thing, get paid a lump sum (#10).
+enum ContractKind : uint8_t { CK_COURIER, CK_FETCH, CK_SABOTAGE, CK_CLEAR, CK_GUARD, CK_COUNT };
+// the company's chosen line of business (#14) — keys company revenue (Batch D).
+enum Sector : uint8_t {
+    SEC_NONE, SEC_FABRICATION, SEC_CYBERWARE, SEC_CHEMTECH, SEC_DATABROKER,
+    SEC_DRONEOPS, SEC_PROTECTION, SEC_SMUGGLING, SEC_COUNT
+};
 
 // in-world threats (§5.1): drones + DF-megabeast-scale megathreats
 enum ThreatKind : uint8_t {
@@ -181,6 +196,8 @@ struct Company {
     uint8_t  asset_count = 0;          // facilities owned across districts
     uint16_t assets    = 0;            // bitmask of facility kinds (flavor)
     uint8_t  reputation = 0;
+    uint8_t  sector    = SEC_NONE;     // chosen business model (#14)
+    uint8_t  target_emp = 0;           // headcount the player wants (#13); 0 = auto
 };
 
 // standing-orders directive (§4.1): the player's incremental goals that bias the
@@ -210,6 +227,17 @@ enum TxnReason : uint8_t {
 struct Txn { int32_t amount = 0; uint8_t reason = 0; uint16_t tick = 0; };
 const char* txn_reason_name(uint8_t r);
 
+// a one-time contract/gig the protagonist is running (#10). One live at a time.
+struct Contract {
+    uint8_t  active     = 0;
+    uint8_t  kind       = 0;     // ContractKind
+    uint8_t  target     = NONE8; // district the work is in
+    uint8_t  progress   = 0;     // ticks worked on site
+    uint8_t  need_ticks = 0;     // ticks required to finish
+    uint16_t reward     = 0;     // lump-sum payout
+    uint16_t deadline   = 0;     // world tick by which it must complete
+};
+
 // a non-agent combatant: feral/security drones, kill-drone swarms, and the
 // DF-megabeast-scale megathreats (rogue mechs, leviathans, rogue-AI bodies…)
 struct Threat {
@@ -233,6 +261,12 @@ struct World {
     FactionState factions[F_COUNT];
     Company  company;
     Directive directive;                   // the protagonist's standing orders (§4.1)
+    // protagonist focus + daily-commute state (#9/#10)
+    uint8_t  focus           = FC_FIND_WORK; // current pursuit; starts unemployed
+    uint8_t  interrupt_focus = NONE8;        // focus stashed while a disruption overrides it
+    uint8_t  apt_district    = NONE8;        // rented apartment (NONE8 = homeless)
+    uint8_t  work_district   = NONE8;        // steady-job location
+    Contract contract;                       // one live gig for the protagonist
     uint8_t  weather = 0;                  // heatwave/drought days remaining (#33)
     uint8_t  synth_tide = 0;               // 0..255 automation pressure -> synthetic inflow
     uint8_t  mutant_tide = 0;              // 0..255 mutation pressure  -> mutant inflow
@@ -360,6 +394,14 @@ struct JackResult {
 JackResult jack_in(World& w, int ai);
 int  net_target_count(const World& w);   // # of data targets (datacenters)
 const char* outcome_name(uint8_t cyber_outcome);
+
+// ---- focus / commute / contracts (#9/#10) ----------------------------------
+const char* focus_name(uint8_t f);
+const char* contract_kind_name(uint8_t k);
+const char* sector_name(uint8_t s);
+// the POI service-bit index (0..11) the @ should be walking to given the avatar's
+// current activity, or 0xFF for "home / no specific destination" (view layer, #9).
+uint8_t avatar_target_poi(const World& w);
 
 // ---- Phase 7: generative Gibson-voice narrator (§7) ------------------------
 // Generative, not enumerated: any single event narrates (the long tail); a
